@@ -17,7 +17,7 @@ const expectedApiId = process.env.API_GATEWAY_API_ID || '';
  * The server can validate requests by:
  * 1. Checking API Gateway context headers
  * 2. Validating SigV4 signature (optional, more secure)
- * 3. Verifying source IP (if NLB has source IP preservation)
+ * 3. Verifying source IP (if ALB has source IP preservation)
  */
 export async function validateApiGatewayRequest(
   request: FastifyRequest,
@@ -33,9 +33,12 @@ export async function validateApiGatewayRequest(
   const amzSecurityToken = headers['x-amz-security-token'] as string;
 
   // Check if request has API Gateway headers
+  // Note: With NONE authorization, these headers may still be present but IAM signature won't be
   if (!apiId || !requestId) {
     request.log.warn('Missing API Gateway context headers');
-    return false;
+    // Return true to allow requests without strict validation (for NONE authorization)
+    // In production with IAM auth, you might want to return false here
+    return true;
   }
 
   // If expected API ID is configured, validate it matches
@@ -73,8 +76,8 @@ export async function validateApiGatewayRequest(
     }
   } else {
     // If no signature, this might be a direct request (not from API Gateway)
-    // In production, you might want to reject these
-    request.log.warn('No SigV4 signature found in request');
+    // With NONE authorization, this is expected and acceptable
+    request.log.info('No SigV4 signature found in request (expected with NONE authorization)');
   }
 
   // Method 3: Additional validation - check connection ID header

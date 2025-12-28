@@ -1,8 +1,9 @@
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import websocket from '@fastify/websocket';
 import { handleTextMessage, handleAudioStream, startTranscriptionSession, stopTranscriptionSession, processPauseAndRespond, setConnectionTtsEngine, clearConnectionTtsSettings } from './routes/message-handlers';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { validateWebSocketIamAuth } from './middleware/ws-auth';
 
 const ddbClient = new DynamoDBClient({ region: process.env.REGION || 'us-west-2' });
 const docClient = DynamoDBDocumentClient.from(ddbClient);
@@ -46,8 +47,37 @@ function sendToClientLocal(connectionId: string, data: any, fastify?: FastifyIns
 export async function registerWebSocketHandler(fastify: FastifyInstance) {
   await fastify.register(websocket);
   
-  fastify.get('/ws', { websocket: true }, (connection, req) => {
-      const connectionId = `local-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  // WebSocket endpoint - IAM authentication is optional
+  // Note: Browser WebSocket API doesn't support custom headers, so IAM auth
+  // validation is disabled by default. Enable it by setting REQUIRE_IAM_AUTH=true
+  fastify.get('/ws', { 
+    websocket: true,
+    preHandler: async (request: FastifyRequest, reply: FastifyReply) => {
+      // Skip IAM validation for local mode
+      const localMode = process.env.LOCAL_MODE === 'true' || !process.env.ALB_DNS;
+      if (localMode) {
+        return;
+      }
+
+      // IAM authentication is optional (disabled by default due to browser limitations)
+      const requireIamAuth = process.env.REQUIRE_IAM_AUTH === 'true';
+      if (requireIamAuth) {
+        // Validate IAM signature for WebSocket upgrade request
+        const isValid = await validateWebSocketIamAuth(request);
+        if (!isValid) {
+          reply.code(403).send({ 
+            error: 'Forbidden',
+            message: 'WebSocket connection requires valid IAM authentication'
+          });
+          return;
+        }
+      } else {
+        // Log connection attempt (IAM auth disabled)
+        fastify.log.info('WebSocket connection attempt (IAM auth disabled)');
+      }
+    }
+  }, (connection, req) => {
+      const connectionId = `ws-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
       connections.set(connectionId, connection);
 
       fastify.log.info(`WebSocket connection established: ${connectionId}`);

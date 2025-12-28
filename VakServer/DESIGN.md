@@ -4,7 +4,7 @@
 - Streaming speech-to-speech and text assistant for real-time conversations.
 - React client captures microphone audio, streams PCM16 over WebSocket, and renders live transcripts plus Polly playback.
 - Fastify server orchestrates AWS Transcribe Streaming, Bedrock, and Polly to produce bi-directional audio/text responses.
-- Infrastructure is deployed with AWS CDK to ECS Fargate behind an NLB and API Gateway WebSocket, with DynamoDB for session state.
+- Infrastructure is deployed with AWS CDK to ECS Fargate behind an ALB and API Gateway WebSocket, with DynamoDB for session state.
 
 ## Goals
 - Provide low-latency bidirectional voice and text interactions.
@@ -19,19 +19,19 @@
 
 ## System Architecture
 - **Client (`VakClient`)**: Vite/React SPA with Web Audio API, manages WebSocket lifecycle, audio capture/playback, and UI status.
-- **Edge**: API Gateway WebSocket (`$connect`, `$default`, `$disconnect`) forwards to Network Load Balancer (NLB).
+- **Edge**: API Gateway WebSocket (`$connect`, `$default`, `$disconnect`) forwards to Application Load Balancer (ALB).
 - **Compute**: `VakServer` Fastify service running on ECS Fargate, handles WebSocket sessions (local mode) or API Gateway callbacks.
 - **AI & Voice Services**: AWS Transcribe Streaming (PCM16 @ 16 kHz), Bedrock Claude 3 Haiku streaming, and Polly for synthesized speech.
 - **State & Storage**: DynamoDB `Sessions` table with TTL, optional S3 artifacts bucket for transcripts/audio.
-- **Infrastructure (`VakInfra`)**: CDK stack provisioning VPC, ECS service, IAM roles, NLB, API Gateway, and ECR repository.
+- **Infrastructure (`VakInfra`)**: CDK stack provisioning VPC, ECS service, IAM roles, ALB, API Gateway, and ECR repository.
 
 ## AWS Services Used End-to-End
 - **Compute & Containers**: AWS Fargate on Amazon ECS for the Fastify workload; Amazon ECR for container image storage.
-- **Networking & Connectivity**: Amazon VPC (public/private subnets, NAT Gateway), Elastic Load Balancing (Network Load Balancer), Amazon API Gateway WebSocket API, VPC Endpoint Service for private consumers.
+- **Networking & Connectivity**: Amazon VPC (public/private subnets, NAT Gateway), Elastic Load Balancing (Application Load Balancer), Amazon API Gateway WebSocket API, VPC Endpoint Service for private consumers.
 - **AI & Voice**: Amazon Transcribe Streaming (speech-to-text), Amazon Bedrock (Claude 3 Haiku for LLM responses), Amazon Polly (text-to-speech engines: generative/neural/standard).
 - **State & Storage**: Amazon DynamoDB (session store with TTL), Amazon S3 (artifacts bucket for transcripts/audio, optional persistence).
 - **Security & Access Control**: AWS Identity and Access Management (IAM) roles/policies for ECS tasks, API Gateway IAM authorization; AWS STS leveraged for optional request validation.
-- **Monitoring & Operations**: Amazon CloudWatch Logs via `awslogs` driver for ECS, CloudWatch metrics/alarms (planned) for API Gateway, NLB, and Fargate health.
+- **Monitoring & Operations**: Amazon CloudWatch Logs via `awslogs` driver for ECS, CloudWatch metrics/alarms (planned) for API Gateway, ALB, and Fargate health.
 - **Developer Tooling & Deployment**: AWS Cloud Development Kit (CDK) for infrastructure-as-code, AWS CLI for deployments and ECR pushes.
 
 ### Key Server Responsibilities
@@ -58,7 +58,7 @@
 
 ## Deployment & Environments
 - **Local Mode**: Enabled when `LOCAL_MODE=true` or `WS_API_ENDPOINT` absent; Fastify serves `/ws` endpoint directly.
-- **AWS Mode**: API Gateway WebSocket with IAM authorization integrates with NLB -> Fargate; server uses `WS_API_ENDPOINT` for callbacks.
+- **AWS Mode**: API Gateway WebSocket with IAM authorization integrates with ALB -> Fargate; server uses `WS_API_ENDPOINT` for callbacks.
 - **Infrastructure Highlights**:
   - VPC with public/private subnets, single NAT.
   - ECS Fargate task (512 MiB / 0.25 vCPU) with health checks on `/health`.
@@ -73,7 +73,7 @@
 ## Observability
 - Fastify logger outputs structured logs for transcripts, speech synthesis, and errors.
 - ECS task uses CloudWatch Logs (`streamPrefix=vak-server`).
-- NLB health checks ensure container readiness.
+- ALB health checks ensure container readiness.
 - Future enhancements: CloudWatch alarms/dashboards, distributed tracing (e.g., AWS X-Ray), request metrics.
 
 ## Failure & Recovery

@@ -11,18 +11,20 @@ const fastify = Fastify({
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const HOST = process.env.HOST || '0.0.0.0';
-const LOCAL_MODE = process.env.LOCAL_MODE === 'true' || !process.env.WS_API_ENDPOINT;
+const LOCAL_MODE = process.env.LOCAL_MODE === 'true' || !process.env.ALB_DNS;
 
 // Register routes
 fastify.register(healthRoute);
+// Note: connect/disconnect/default routes are for API Gateway integration
+// When using direct ALB WebSocket, these routes are not needed
+// But keeping them for backward compatibility
 fastify.register(connectRoute);
 fastify.register(disconnectRoute);
 fastify.register(defaultRoute);
 
-// Register WebSocket handler for local testing
-if (LOCAL_MODE) {
-  fastify.register(registerWebSocketHandler);
-}
+// Register WebSocket handler for direct connections (ALB or local)
+// WebSocket connections go directly to /ws endpoint
+fastify.register(registerWebSocketHandler);
 
 const start = async () => {
   try {

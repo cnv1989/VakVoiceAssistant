@@ -7,7 +7,7 @@ export interface VakNetworkStackProps extends cdk.StackProps {}
 
 export class VakNetworkStack extends cdk.Stack {
   public readonly vpc: ec2.Vpc;
-  public readonly ecrRepo: ecr.Repository;
+  public readonly ecrRepo: ecr.IRepository;
 
   constructor(scope: Construct, id: string, props?: VakNetworkStackProps) {
     super(scope, id, props);
@@ -31,11 +31,13 @@ export class VakNetworkStack extends cdk.Stack {
     });
 
     // ECR repository for VakServer image
+    // Import existing repository (created when we pushed the image manually)
     // Note: Docker image assets create their own repo, but this is kept for manual image pushes
-    this.ecrRepo = new ecr.Repository(this, 'VakServerRepo', {
-      repositoryName: 'vak-server',
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-    });
+    this.ecrRepo = ecr.Repository.fromRepositoryName(
+      this,
+      'VakServerRepo',
+      'vak-server'
+    );
 
     // Outputs
     new cdk.CfnOutput(this, 'VpcId', {

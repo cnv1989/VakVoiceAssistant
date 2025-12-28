@@ -42,6 +42,7 @@ const TTS_OPTIONS: Array<{ value: PollyTtsEngine; label: string }> = [
 
 function App() {
   // Default to localhost WebSocket for local development
+  // For ALB, use: ws://ALB_DNS/ws
   const defaultWsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:8080/ws';
   const [wsUrl, setWsUrl] = useState<string>(defaultWsUrl);
   const [connected, setConnected] = useState(false);
@@ -155,7 +156,7 @@ function App() {
     [addSystemMessage]
   );
 
-  const connectWebSocket = () => {
+  const connectWebSocket = async () => {
     if (!wsUrl) {
       alert('Please enter WebSocket URL');
       return;
@@ -163,6 +164,11 @@ function App() {
 
     try {
       addSystemMessage('🟡 Connecting to assistant...');
+      
+      // Connect directly to ALB WebSocket endpoint
+      // Note: For IAM authentication, the server will validate signatures
+      // Browser WebSocket API doesn't support custom headers, so IAM auth
+      // would need to be handled via query parameters or a proxy
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
@@ -1154,7 +1160,7 @@ function App() {
           <div className="input-group">
             <input
               type="text"
-              placeholder="WebSocket URL (wss://...)"
+              placeholder="WebSocket URL (ws://alb-dns/ws or wss://...)"
               value={wsUrl}
               onChange={(e) => setWsUrl(e.target.value)}
               disabled={connected}
