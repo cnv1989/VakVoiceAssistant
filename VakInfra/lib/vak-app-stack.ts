@@ -2,7 +2,6 @@ import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
-import * as apigatewayv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -99,9 +98,10 @@ export class VakAppStack extends cdk.Stack {
     sessionsTable.grantReadWriteData(taskRole);
 
     // ECS Task Definition
+    // Valid Fargate CPU/Memory combinations: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-cpu-memory-error.html
     const taskDefinition = new ecs.FargateTaskDefinition(this, 'VakTaskDefinition', {
-      memoryLimitMiB: 512,
-      cpu: 256,
+      memoryLimitMiB: 2048,  // 2 GB
+      cpu: 1024,              // 1 vCPU (valid combination with 2048 MB)
       executionRole: taskExecutionRole,
       taskRole: taskRole,
     });
@@ -111,6 +111,7 @@ export class VakAppStack extends cdk.Stack {
     // Use the ECR repository from the network stack
     const container = taskDefinition.addContainer('VakServer', {
       image: ecs.ContainerImage.fromEcrRepository(ecrRepo, 'latest'),
+      cpu: 1024,  // 1 vCPU (matching task definition CPU allocation)
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: 'vak-server',
       }),
@@ -149,10 +150,9 @@ export class VakAppStack extends cdk.Stack {
       healthCheckGracePeriod: cdk.Duration.seconds(60), // Grace period before health checks start counting failures
     });
 
-    // Network Load Balancer
-    // Made internet-facing so WebSocket API can reach it (WebSocket APIs don't support VPC Links)
-    // VPC Endpoint Service is still available for other VPC consumers
-    const nlb = new elbv2.NetworkLoadBalancer(this, 'VakNlb', {
+    // Application Load Balancer
+    // Internet-facing ALB for direct WebSocket connections with IAM authentication
+    const alb = new elbv2.ApplicationLoadBalancer(this, 'VakAlb', {
       vpc,
       internetFacing: true,
       vpcSubnets: {
@@ -162,10 +162,10 @@ export class VakAppStack extends cdk.Stack {
 
     // Target Group
     // For Fargate tasks with awsvpc network mode, targetType must be 'ip'
-    const targetGroup = new elbv2.NetworkTargetGroup(this, 'VakTargetGroup', {
+    const targetGroup = new elbv2.ApplicationTargetGroup(this, 'VakTargetGroup', {
       vpc,
       port: 8080,
-      protocol: elbv2.Protocol.TCP,
+      protocol: elbv2.ApplicationProtocol.HTTP,
       targetType: elbv2.TargetType.IP, // Required for Fargate with awsvpc network mode
       healthCheck: {
         enabled: true,
@@ -177,134 +177,54 @@ export class VakAppStack extends cdk.Stack {
       },
     });
 
-    service.attachToNetworkTargetGroup(targetGroup);
+    service.attachToApplicationTargetGroup(targetGroup);
 
-    nlb.addListener('VakListener', {
+    // HTTP listener on port 80 for WebSocket connections
+    // Note: ALB supports WebSocket connections over HTTP
+    // For IAM authentication, we validate signatures in the application
+    // ALB doesn't have native IAM auth actions for WebSocket, so we handle it at app level
+    // In production, consider using HTTPS listener with ACM certificate
+    const httpListener = alb.addListener('VakListener', {
       port: 80,
-      protocol: elbv2.Protocol.TCP,
+      protocol: elbv2.ApplicationProtocol.HTTP,
       defaultTargetGroups: [targetGroup],
     });
 
-    // VPC Endpoint Service for NLB
-    const vpcEndpointService = new ec2.VpcEndpointService(this, 'VakVpcEndpointService', {
-      vpcEndpointServiceLoadBalancers: [nlb],
-      acceptanceRequired: false,
-    });
-
-    // IAM role for API Gateway to sign requests to NLB with SigV4
-    const apiGatewayIntegrationRole = new iam.Role(this, 'ApiGatewayIntegrationRole', {
-      assumedBy: new iam.ServicePrincipal('apigateway.amazonaws.com'),
-      description: 'Role for API Gateway to invoke NLB with IAM authentication',
-    });
-
-    // WebSocket API with HTTP integrations to NLB
-    // Note: WebSocket APIs don't support VPC Links, so NLB must be internet-facing
-    // The VPC Endpoint Service is still available for other VPC consumers
-    const nlbDnsName = nlb.loadBalancerDnsName;
-    
-    // Create WebSocket API first
-    const wsApi = new apigatewayv2.WebSocketApi(this, 'VakWebSocketApi', {
-      apiName: 'vak-websocket-api',
-    });
-
-    // Create HTTP integrations for WebSocket API routes
-    // Note: WebSocket APIs support HTTP integration type (not AWS) for HTTP backends
-    const connectIntegration = new apigatewayv2.CfnIntegration(this, 'ConnectIntegration', {
-      apiId: wsApi.apiId,
-      integrationType: 'HTTP',
-      integrationUri: `http://${nlbDnsName}/connect`,
-      integrationMethod: 'POST',
-      requestTemplates: {
-        'application/json': JSON.stringify({
-          connectionId: '$context.connectionId',
-          body: '$input.body',
+    // IAM policy for clients to connect to ALB
+    // Clients will sign WebSocket upgrade requests with AWS credentials
+    // The server will validate these signatures
+    const albAccessPolicy = new iam.PolicyDocument({
+      statements: [
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ['elasticloadbalancing:DescribeLoadBalancers'],
+          resources: ['*'],
         }),
-      },
+      ],
     });
 
-    const disconnectIntegration = new apigatewayv2.CfnIntegration(this, 'DisconnectIntegration', {
-      apiId: wsApi.apiId,
-      integrationType: 'HTTP',
-      integrationUri: `http://${nlbDnsName}/disconnect`,
-      integrationMethod: 'POST',
-      requestTemplates: {
-        'application/json': JSON.stringify({
-          connectionId: '$context.connectionId',
-          body: '$input.body',
-        }),
-      },
-    });
-
-    const defaultIntegration = new apigatewayv2.CfnIntegration(this, 'DefaultIntegration', {
-      apiId: wsApi.apiId,
-      integrationType: 'HTTP',
-      integrationUri: `http://${nlbDnsName}/default`,
-      integrationMethod: 'POST',
-      requestTemplates: {
-        'application/json': JSON.stringify({
-          connectionId: '$context.connectionId',
-          body: '$input.body',
-        }),
-      },
-    });
-
-    // Create routes using CfnRoute to reference the HTTP integrations
-    // Note: IAM authorization can only be applied to $connect route
-    new apigatewayv2.CfnRoute(this, 'ConnectRoute', {
-      apiId: wsApi.apiId,
-      routeKey: '$connect',
-      target: `integrations/${connectIntegration.ref}`,
-      authorizationType: 'AWS_IAM',
-    });
-
-    new apigatewayv2.CfnRoute(this, 'DisconnectRoute', {
-      apiId: wsApi.apiId,
-      routeKey: '$disconnect',
-      target: `integrations/${disconnectIntegration.ref}`,
-    });
-
-    new apigatewayv2.CfnRoute(this, 'DefaultRoute', {
-      apiId: wsApi.apiId,
-      routeKey: '$default',
-      target: `integrations/${defaultIntegration.ref}`,
-    });
-
-    // WebSocket Stage (needed for endpoint URL)
-    const wsStage = new apigatewayv2.WebSocketStage(this, 'VakWebSocketStage', {
-      webSocketApi: wsApi,
-      stageName: 'prod',
-      autoDeploy: true,
-    });
-
-    // Update container environment with WS_API_ENDPOINT and API_GATEWAY_API_ID
-    container.addEnvironment('WS_API_ENDPOINT', 
-      `https://${wsApi.apiId}.execute-api.${this.region}.amazonaws.com/${wsStage.stageName}`
-    );
-    container.addEnvironment('API_GATEWAY_API_ID', wsApi.apiId);
+    // Update container environment - no longer using API Gateway
+    // Server will handle WebSocket connections directly
+    container.addEnvironment('LOCAL_MODE', 'false');
+    container.addEnvironment('ALB_DNS', alb.loadBalancerDnsName);
 
     // Outputs
     new cdk.CfnOutput(this, 'WebSocketUrl', {
-      value: wsApi.apiEndpoint,
-      description: 'WebSocket API endpoint URL',
+      value: `ws://${alb.loadBalancerDnsName}/ws`,
+      description: 'WebSocket endpoint URL (direct to ALB)',
       exportName: 'VakWebSocketUrl',
     });
 
-    new cdk.CfnOutput(this, 'NlbDns', {
-      value: nlb.loadBalancerDnsName,
-      description: 'Network Load Balancer DNS name',
-      exportName: 'VakNlbDns',
+    new cdk.CfnOutput(this, 'AlbDns', {
+      value: alb.loadBalancerDnsName,
+      description: 'Application Load Balancer DNS name',
+      exportName: 'VakAlbDns',
     });
 
-    new cdk.CfnOutput(this, 'VpcEndpointServiceName', {
-      value: vpcEndpointService.vpcEndpointServiceName,
-      description: 'VPC Endpoint Service name for NLB',
-      exportName: 'VakVpcEndpointServiceName',
-    });
-
-    new cdk.CfnOutput(this, 'WsApiEndpoint', {
-      value: `https://${wsApi.apiId}.execute-api.${this.region}.amazonaws.com/${wsStage.stageName}`,
-      description: 'WebSocket API HTTP endpoint for ApiGatewayManagementApi',
-      exportName: 'VakWsApiEndpoint',
+    new cdk.CfnOutput(this, 'AlbArn', {
+      value: alb.loadBalancerArn,
+      description: 'Application Load Balancer ARN (for IAM policies)',
+      exportName: 'VakAlbArn',
     });
 
     new cdk.CfnOutput(this, 'DynamoDbTableName', {
