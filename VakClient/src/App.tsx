@@ -40,11 +40,18 @@ const TTS_OPTIONS: Array<{ value: PollyTtsEngine; label: string }> = [
   { value: 'standard', label: 'Polly Standard' },
 ];
 
+type EndpointType = 'local' | 'alb' | 'custom';
+
 function App() {
   // Default to localhost WebSocket for local development
   // For ALB, use: ws://ALB_DNS/ws
   const defaultWsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:8080/ws';
   const [wsUrl, setWsUrl] = useState<string>(defaultWsUrl);
+  const [endpointType, setEndpointType] = useState<EndpointType>(
+    defaultWsUrl.includes('localhost') ? 'local' : 'custom'
+  );
+  const [albDns, setAlbDns] = useState<string>('');
+  const [useHttps, setUseHttps] = useState<boolean>(false);
   const [connected, setConnected] = useState(false);
   const [systemMessages, setSystemMessages] = useState<SystemMessageEntry[]>([]);
   const [textInput, setTextInput] = useState('');
@@ -1157,17 +1164,232 @@ function App() {
         <h1>🗣️ Vak Voice Assistant</h1>
 
         <div className="connection-section">
-          <div className="input-group">
-            <input
-              type="text"
-              placeholder="WebSocket URL (ws://alb-dns/ws or wss://...)"
-              value={wsUrl}
-              onChange={(e) => setWsUrl(e.target.value)}
+          {/* Endpoint Type Selection */}
+          <div style={{ 
+            marginBottom: '15px',
+            display: 'flex',
+            gap: '10px',
+            flexWrap: 'wrap',
+            alignItems: 'center'
+          }}>
+            <label style={{ fontSize: '14px', fontWeight: '500', color: '#374151' }}>
+              Endpoint:
+            </label>
+            <button
+              onClick={() => {
+                setEndpointType('local');
+                setWsUrl('ws://localhost:8080/ws');
+              }}
               disabled={connected}
-              className="ws-input"
-            />
+              style={{
+                padding: '8px 16px',
+                fontSize: '14px',
+                borderRadius: '6px',
+                border: '1px solid #d1d5db',
+                backgroundColor: endpointType === 'local' ? '#3b82f6' : '#ffffff',
+                color: endpointType === 'local' ? '#ffffff' : '#374151',
+                cursor: connected ? 'not-allowed' : 'pointer',
+                opacity: connected ? 0.6 : 1,
+                transition: 'all 0.2s'
+              }}
+            >
+              🏠 Local (localhost:8080)
+            </button>
+            <button
+              onClick={() => {
+                setEndpointType('alb');
+                if (albDns) {
+                  const protocol = useHttps ? 'wss' : 'ws';
+                  setWsUrl(`${protocol}://${albDns}/ws`);
+                }
+              }}
+              disabled={connected}
+              style={{
+                padding: '8px 16px',
+                fontSize: '14px',
+                borderRadius: '6px',
+                border: '1px solid #d1d5db',
+                backgroundColor: endpointType === 'alb' ? '#3b82f6' : '#ffffff',
+                color: endpointType === 'alb' ? '#ffffff' : '#374151',
+                cursor: connected ? 'not-allowed' : 'pointer',
+                opacity: connected ? 0.6 : 1,
+                transition: 'all 0.2s'
+              }}
+            >
+              ☁️ ALB
+            </button>
+            <button
+              onClick={() => {
+                setEndpointType('custom');
+              }}
+              disabled={connected}
+              style={{
+                padding: '8px 16px',
+                fontSize: '14px',
+                borderRadius: '6px',
+                border: '1px solid #d1d5db',
+                backgroundColor: endpointType === 'custom' ? '#3b82f6' : '#ffffff',
+                color: endpointType === 'custom' ? '#ffffff' : '#374151',
+                cursor: connected ? 'not-allowed' : 'pointer',
+                opacity: connected ? 0.6 : 1,
+                transition: 'all 0.2s'
+              }}
+            >
+              ✏️ Custom URL
+            </button>
+          </div>
+
+          {/* Local Endpoint Info */}
+          {endpointType === 'local' && (
+            <div style={{ 
+              marginBottom: '15px',
+              fontSize: '12px',
+              color: '#6b7280',
+              fontFamily: 'monospace',
+              padding: '6px',
+              backgroundColor: '#f9fafb',
+              borderRadius: '4px',
+              border: '1px solid #e5e7eb'
+            }}>
+              📡 Will connect to: {wsUrl}
+            </div>
+          )}
+
+          {/* ALB DNS Input (shown when ALB is selected) */}
+          {endpointType === 'alb' && (
+            <div style={{ marginBottom: '15px' }}>
+              <div style={{ 
+                display: 'flex', 
+                alignItems: 'center', 
+                gap: '10px',
+                marginBottom: '5px'
+              }}>
+                <label style={{ 
+                  fontSize: '14px', 
+                  fontWeight: '500', 
+                  color: '#374151'
+                }}>
+                  ALB DNS Name:
+                </label>
+                <label style={{ 
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                  fontSize: '13px',
+                  color: '#6b7280',
+                  cursor: connected ? 'not-allowed' : 'pointer'
+                }}>
+                  <input
+                    type="checkbox"
+                    checked={useHttps}
+                    onChange={(e) => {
+                      setUseHttps(e.target.checked);
+                      if (albDns) {
+                        const protocol = e.target.checked ? 'wss' : 'ws';
+                        setWsUrl(`${protocol}://${albDns}/ws`);
+                      }
+                    }}
+                    disabled={connected}
+                    style={{ cursor: connected ? 'not-allowed' : 'pointer' }}
+                  />
+                  Use HTTPS (wss://)
+                </label>
+              </div>
+              <input
+                type="text"
+                placeholder="e.g., vak-alb-123456789.us-west-2.elb.amazonaws.com"
+                value={albDns}
+                onChange={(e) => {
+                  const dns = e.target.value.trim();
+                  setAlbDns(dns);
+                  if (dns) {
+                    const protocol = useHttps ? 'wss' : 'ws';
+                    setWsUrl(`${protocol}://${dns}/ws`);
+                  }
+                }}
+                disabled={connected}
+                style={{
+                  width: '100%',
+                  padding: '10px',
+                  fontSize: '14px',
+                  borderRadius: '6px',
+                  border: '1px solid #d1d5db',
+                  backgroundColor: connected ? '#f3f4f6' : '#ffffff'
+                }}
+              />
+              {albDns && (
+                <div style={{ 
+                  marginTop: '8px',
+                  fontSize: '12px',
+                  color: '#6b7280',
+                  fontFamily: 'monospace',
+                  padding: '6px',
+                  backgroundColor: '#f9fafb',
+                  borderRadius: '4px',
+                  border: '1px solid #e5e7eb'
+                }}>
+                  📡 Will connect to: {useHttps ? 'wss' : 'ws'}://{albDns}/ws
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Custom URL Input (shown when custom is selected) */}
+          {endpointType === 'custom' && (
+            <div style={{ marginBottom: '15px' }}>
+              <label style={{ 
+                display: 'block', 
+                fontSize: '14px', 
+                fontWeight: '500', 
+                color: '#374151',
+                marginBottom: '5px'
+              }}>
+                WebSocket URL:
+              </label>
+              <input
+                type="text"
+                placeholder="ws://host:port/ws or wss://host:port/ws"
+                value={wsUrl}
+                onChange={(e) => setWsUrl(e.target.value)}
+                disabled={connected}
+                style={{
+                  width: '100%',
+                  padding: '10px',
+                  fontSize: '14px',
+                  borderRadius: '6px',
+                  border: '1px solid #d1d5db',
+                  backgroundColor: connected ? '#f3f4f6' : '#ffffff'
+                }}
+              />
+              {wsUrl && (
+                <div style={{ 
+                  marginTop: '8px',
+                  fontSize: '12px',
+                  color: '#6b7280',
+                  fontFamily: 'monospace',
+                  padding: '6px',
+                  backgroundColor: '#f9fafb',
+                  borderRadius: '4px',
+                  border: '1px solid #e5e7eb'
+                }}>
+                  📡 Will connect to: {wsUrl}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Connection Button */}
+          <div className="input-group">
             {!connected ? (
-              <button onClick={connectWebSocket} className="btn btn-primary">
+              <button 
+                onClick={connectWebSocket} 
+                className="btn btn-primary"
+                disabled={endpointType === 'alb' && !albDns.trim()}
+                style={{
+                  opacity: (endpointType === 'alb' && !albDns.trim()) ? 0.5 : 1,
+                  cursor: (endpointType === 'alb' && !albDns.trim()) ? 'not-allowed' : 'pointer'
+                }}
+              >
                 🔌 Connect
               </button>
             ) : (
