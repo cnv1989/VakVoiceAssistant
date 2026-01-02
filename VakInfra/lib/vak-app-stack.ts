@@ -16,7 +16,7 @@ export class VakAppStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: VakAppStackProps) {
     super(scope, id, props);
 
-    const { vpc, ecrRepo } = props.networkStack;
+    const { vpc, deepgramEcrRepo } = props.networkStack;
 
     // DynamoDB table for sessions
     const sessionsTable = new dynamodb.Table(this, 'SessionsTable', {
@@ -48,80 +48,56 @@ export class VakAppStack extends cdk.Stack {
       ],
     });
 
-    // Task role with permissions for Bedrock, Transcribe, Polly, S3, DynamoDB
+    // Task role - minimal permissions for Deepgram Voice Agents
+    // Deepgram uses API key authentication, not AWS services
     const taskRole = new iam.Role(this, 'TaskRole', {
       assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
     });
 
-    taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: [
-          'bedrock:InvokeModel',
-          'bedrock:InvokeModelWithResponseStream',
-        ],
-        resources: ['*'],
-      })
-    );
-
-    taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: [
-          'transcribe:StartStreamTranscription',
-        ],
-        resources: ['*'],
-      })
-    );
-
-    taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: [
-          'polly:SynthesizeSpeech',
-        ],
-        resources: ['*'],
-      })
-    );
-
-    taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: [
-          'execute-api:ManageConnections',
-        ],
-        resources: ['*'],
-      })
-    );
-
-    artifactsBucket.grantReadWrite(taskRole);
-    sessionsTable.grantReadWriteData(taskRole);
+    // No AWS service permissions needed - Deepgram uses external API
+    // Keep S3 and DynamoDB grants if needed for other purposes, otherwise remove
+    // artifactsBucket.grantReadWrite(taskRole);
+    // sessionsTable.grantReadWriteData(taskRole);
 
     // ECS Task Definition
     // Valid Fargate CPU/Memory combinations: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-cpu-memory-error.html
     const taskDefinition = new ecs.FargateTaskDefinition(this, 'VakTaskDefinition', {
-      memoryLimitMiB: 2048,  // 2 GB
-      cpu: 1024,              // 1 vCPU (valid combination with 2048 MB)
+      memoryLimitMiB: 1024,  // 1 GB
+      cpu: 512,              // 0.5 vCPU (valid combination with 1024 MB)
       executionRole: taskExecutionRole,
       taskRole: taskRole,
     });
 
-    // Container definition using ECR image
+    // Container definition using Deepgram ECR image
     // Image must be built and pushed to ECR manually before deployment
-    // Use the ECR repository from the network stack
-    const container = taskDefinition.addContainer('VakServer', {
-      image: ecs.ContainerImage.fromEcrRepository(ecrRepo, 'latest'),
-      cpu: 1024,  // 1 vCPU (matching task definition CPU allocation)
+    // Use the Deepgram ECR repository from the network stack
+    const container = taskDefinition.addContainer('VakDeepGram', {
+      image: ecs.ContainerImage.fromEcrRepository(deepgramEcrRepo, 'latest'),
+      cpu: 512,  // 0.5 vCPU (matching task definition CPU allocation)
       logging: ecs.LogDrivers.awsLogs({
-        streamPrefix: 'vak-server',
+        streamPrefix: 'vak-deepgram',
       }),
       environment: {
-        REGION: this.region,
-        BUCKET: artifactsBucket.bucketName,
-        DDB_TABLE: sessionsTable.tableName,
-        MODEL_ID: 'anthropic.claude-3-haiku-20240307-v1:0',
-        POLLY_VOICE: 'Joanna',
+        HOST: '0.0.0.0',
+        PORT: '8080',
+        LOG_LEVEL: 'info',
+        // Deepgram configuration
+        DEEPGRAM_AGENT_LANGUAGE: 'en',
+        DEEPGRAM_LISTENING_MODEL: 'flux-general-en',
+        DEEPGRAM_LISTENING_VERSION: 'v2',
+        DEEPGRAM_THINKING_PROVIDER: 'google',
+        DEEPGRAM_THINKING_MODEL: 'gemini-2.5-flash',
+        DEEPGRAM_SPEAKING_PROVIDER: 'eleven_labs',
+        DEEPGRAM_SPEAKING_MODEL_ID: 'eleven_multilingual_v2',
+        DEEPGRAM_SPEAKING_VOICE_ID: 'cgSgspJ2msm6clMCkdW9',
+        DEEPGRAM_INPUT_SAMPLE_RATE: '48000',
+        DEEPGRAM_OUTPUT_SAMPLE_RATE: '24000',
       },
+      // Note: DEEPGRAM_API_KEY is required and should be provided via Secrets Manager
+      // Example:
+      // secrets: {
+      //   DEEPGRAM_API_KEY: ecs.Secret.fromSecretsManager(secret, 'DEEPGRAM_API_KEY'),
+      // }
       healthCheck: {
         command: [
           'CMD-SHELL',
@@ -164,7 +140,7 @@ export class VakAppStack extends cdk.Stack {
     // For Fargate tasks with awsvpc network mode, targetType must be 'ip'
     const targetGroup = new elbv2.ApplicationTargetGroup(this, 'VakTargetGroup', {
       vpc,
-      port: 8080,
+      port: 8080, 
       protocol: elbv2.ApplicationProtocol.HTTP,
       targetType: elbv2.TargetType.IP, // Required for Fargate with awsvpc network mode
       healthCheck: {

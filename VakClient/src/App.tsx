@@ -2,13 +2,14 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import './App.css';
 
 interface Message {
-  t: 'llm-token' | 'tts' | 'transcript' | 'partial-transcript' | 'error' | 'recording-started' | 'recording-stopped' | 'processing-audio' | 'ready-to-listen' | 'message-id';
+  t: 'llm-token' | 'llm-response' | 'tts' | 'transcript' | 'partial-transcript' | 'error' | 'recording-started' | 'recording-stopped' | 'processing-audio' | 'ready-to-listen' | 'message-id' | 'welcome' | 'settings-applied' | 'deepgram-ready' | 'deepgram-disconnected' | 'user-started-speaking' | 'agent-started-speaking';
   token?: string;
   audio?: string;
   text?: string;
   message?: string;
   isPartial?: boolean;
   messageId?: string; // Server-generated message ID for pairing client messages with AI replies
+  connectionId?: string;
 }
 
 interface MessagePair {
@@ -43,9 +44,9 @@ const TTS_OPTIONS: Array<{ value: PollyTtsEngine; label: string }> = [
 type EndpointType = 'local' | 'alb' | 'custom';
 
 function App() {
-  // Default to localhost WebSocket for local development
+  // Default to Deepgram server WebSocket for local development
   // For ALB, use: ws://ALB_DNS/ws
-  const defaultWsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:8080/ws';
+  const defaultWsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:8081/ws';
   const [wsUrl, setWsUrl] = useState<string>(defaultWsUrl);
   const [endpointType, setEndpointType] = useState<EndpointType>(
     defaultWsUrl.includes('localhost') ? 'local' : 'custom'
@@ -101,7 +102,8 @@ function App() {
     // Initialize audio context on user interaction (required for autoplay policies)
     const initAudioContext = async () => {
       if (!audioContextRef.current) {
-        audioContextRef.current = new AudioContext({ sampleRate: 16000 });
+        // Use 48kHz sample rate for Deepgram Voice Agents compatibility
+        audioContextRef.current = new AudioContext({ sampleRate: 48000 });
         // Resume if suspended (browser autoplay policy)
         if (audioContextRef.current.state === 'suspended') {
           await audioContextRef.current.resume();
@@ -194,13 +196,20 @@ function App() {
         }
 
         try {
-          const data: Message = JSON.parse(event.data);
+          const data: any = JSON.parse(event.data);
+          // Deepgram server sends {type: "...", ...} but client expects {t: "...", ...}
+          // Normalize the message format
+          const normalizedData: Message = {
+            ...data,
+            t: data.type || data.t || 'error',
+          };
+          
           // Use messageId from data, don't fallback to current recording ID
           // This ensures each message pair is updated independently
-          const messageId = data.messageId;
+          const messageId = normalizedData.messageId;
           
           // Handle message-id type separately (TypeScript type narrowing)
-          if (data.t === 'message-id') {
+          if (normalizedData.t === 'message-id') {
             // Server sent a new message ID - create or update message pair
             if (data.messageId) {
               const newMessageId = data.messageId;
@@ -255,7 +264,7 @@ function App() {
             return; // Early return for message-id type
           }
 
-          if (data.t === 'llm-token' && data.token) {
+          if (normalizedData.t === 'llm-token' && normalizedData.token) {
             // Update AI reply for this message ID
             if (messageId) {
               console.log(`💬 [LLM-TOKEN] Received token for messageId: ${messageId}`);
@@ -272,14 +281,14 @@ function App() {
                   return [...prev, {
                     id: messageId,
                     clientMessage: '',
-                    aiReply: data.token || '',
+                    aiReply: normalizedData.token || '',
                     status: 'processing'
                   }];
                 }
                 return prev.map(pair => {
                   if (pair.id === messageId) {
                     console.log(`💬 [LLM-TOKEN] Updating pair ${messageId}, current reply length: ${pair.aiReply.length}, adding token`);
-                    return { ...pair, aiReply: pair.aiReply + data.token, status: 'processing' };
+                    return { ...pair, aiReply: pair.aiReply + normalizedData.token, status: 'processing' };
                   }
                   return pair;
                 });
@@ -287,42 +296,42 @@ function App() {
             } else {
               console.warn('⚠️ Received llm-token without messageId');
             }
-          } else if (data.t === 'tts' && data.audio) {
+          } else if (normalizedData.t === 'tts' && normalizedData.audio) {
             // Queue TTS audio by message ID - must have messageId
             if (messageId) {
-              await queueTTSAudio(messageId, data.audio);
+              await queueTTSAudio(messageId, normalizedData.audio);
             } else {
               console.warn('⚠️ Received TTS audio without messageId, cannot queue properly');
               // Fallback: play immediately if no message ID (shouldn't happen)
-              await playAudioChunk(data.audio);
+              await playAudioChunk(normalizedData.audio);
             }
-          } else if (data.t === 'partial-transcript' && data.text) {
+          } else if (normalizedData.t === 'partial-transcript' && normalizedData.text) {
             // Update live transcription display
-            setCurrentTranscript(data.text);
+            setCurrentTranscript(normalizedData.text);
             // Use server-generated messageId (required - no fallback)
-            if (data.messageId) {
-              console.log(`📝 [PARTIAL-TRANSCRIPT] Received for messageId: ${data.messageId}, text: "${data.text}"`);
+            if (normalizedData.messageId) {
+              console.log(`📝 [PARTIAL-TRANSCRIPT] Received for messageId: ${normalizedData.messageId}, text: "${normalizedData.text}"`);
               
               setMessagePairs(prev => {
                 console.log(`📝 [PARTIAL-TRANSCRIPT] Current message pairs:`, prev.map(p => ({ id: p.id, clientMsg: p.clientMessage.substring(0, 20) })));
                 
-                const pairExists = prev.some(pair => pair.id === data.messageId);
-                console.log(`📝 [PARTIAL-TRANSCRIPT] Pair with ID ${data.messageId} exists: ${pairExists}`);
+                const pairExists = prev.some(pair => pair.id === normalizedData.messageId);
+                console.log(`📝 [PARTIAL-TRANSCRIPT] Pair with ID ${normalizedData.messageId} exists: ${pairExists}`);
                 
                 if (!pairExists) {
                   // Create new pair if it doesn't exist (shouldn't happen, but handle gracefully)
-                  console.warn(`⚠️ [PARTIAL-TRANSCRIPT] Received partial-transcript for unknown messageId: ${data.messageId}, creating new pair`);
+                  console.warn(`⚠️ [PARTIAL-TRANSCRIPT] Received partial-transcript for unknown messageId: ${normalizedData.messageId}, creating new pair`);
                   return [...prev, {
-                    id: data.messageId!,
-                    clientMessage: data.text || '',
+                    id: normalizedData.messageId!,
+                    clientMessage: normalizedData.text || '',
                     aiReply: '',
                     status: 'transcribing'
                   }];
                 }
                 return prev.map(pair => {
-                  if (pair.id === data.messageId) {
-                    console.log(`📝 [PARTIAL-TRANSCRIPT] Updating pair ${data.messageId} with text: "${data.text}"`);
-                    return { ...pair, clientMessage: data.text || '', status: 'transcribing' };
+                  if (pair.id === normalizedData.messageId) {
+                    console.log(`📝 [PARTIAL-TRANSCRIPT] Updating pair ${normalizedData.messageId} with text: "${normalizedData.text}"`);
+                    return { ...pair, clientMessage: normalizedData.text || '', status: 'transcribing' };
                   }
                   return pair;
                 });
@@ -330,35 +339,35 @@ function App() {
             } else {
               console.warn('⚠️ Received partial-transcript without messageId from server');
             }
-          } else if (data.t === 'transcript' && data.text) {
+          } else if (normalizedData.t === 'transcript' && normalizedData.text) {
             // Final transcript received - use server-generated messageId for pairing
-            const transcriptText = data.text;
+            const transcriptText = normalizedData.text;
             setCurrentTranscript(''); // Clear partial transcript
             addSystemMessage(`📝 Transcript: ${transcriptText}`);
             
             // Use server-generated messageId (required - no fallback)
-            if (data.messageId) {
-              console.log(`✅ [TRANSCRIPT] Received final transcript for messageId: ${data.messageId}, text: "${transcriptText}"`);
+            if (normalizedData.messageId) {
+              console.log(`✅ [TRANSCRIPT] Received final transcript for messageId: ${normalizedData.messageId}, text: "${transcriptText}"`);
               
               setMessagePairs(prev => {
                 console.log(`✅ [TRANSCRIPT] Current message pairs:`, prev.map(p => ({ id: p.id, clientMsg: p.clientMessage.substring(0, 30) })));
                 
-                const pairExists = prev.some(pair => pair.id === data.messageId);
-                console.log(`✅ [TRANSCRIPT] Pair with ID ${data.messageId} exists: ${pairExists}`);
+                const pairExists = prev.some(pair => pair.id === normalizedData.messageId);
+                console.log(`✅ [TRANSCRIPT] Pair with ID ${normalizedData.messageId} exists: ${pairExists}`);
                 
                 if (!pairExists) {
                   // Create new pair if it doesn't exist (shouldn't happen, but handle gracefully)
-                  console.warn(`⚠️ [TRANSCRIPT] Received transcript for unknown messageId: ${data.messageId}, creating new pair`);
+                  console.warn(`⚠️ [TRANSCRIPT] Received transcript for unknown messageId: ${normalizedData.messageId}, creating new pair`);
                   return [...prev, {
-                    id: data.messageId!,
+                    id: normalizedData.messageId!,
                     clientMessage: transcriptText,
                     aiReply: '',
                     status: 'processing'
                   }];
                 }
                 return prev.map(pair => {
-                  if (pair.id === data.messageId) {
-                    console.log(`✅ [TRANSCRIPT] Updating pair ${data.messageId} with final text: "${transcriptText}"`);
+                  if (pair.id === normalizedData.messageId) {
+                    console.log(`✅ [TRANSCRIPT] Updating pair ${normalizedData.messageId} with final text: "${transcriptText}"`);
                     return { ...pair, clientMessage: transcriptText, status: 'processing' };
                   }
                   return pair;
@@ -367,8 +376,8 @@ function App() {
             } else {
               console.warn('⚠️ Received transcript without messageId from server');
             }
-          } else if (data.t === 'error') {
-            addSystemMessage(`⚠️ Error: ${data.message ?? 'Unknown error'}`);
+          } else if (normalizedData.t === 'error') {
+            addSystemMessage(`⚠️ Error: ${normalizedData.message ?? 'Unknown error'}`);
             // Update message pair status on error
             if (messageId) {
               setMessagePairs(prev => prev.map(pair => 
@@ -377,16 +386,16 @@ function App() {
                   : pair
               ));
             }
-          } else if (data.t === 'recording-started') {
+          } else if (normalizedData.t === 'recording-started') {
             console.log('Recording session started on server');
-          } else if (data.t === 'recording-stopped') {
+          } else if (normalizedData.t === 'recording-stopped') {
             console.log('Recording session stopped on server');
             messageIdRef.current = null;
-          } else if (data.t === 'processing-audio') {
+          } else if (normalizedData.t === 'processing-audio') {
             setIsProcessing(true);
             addSystemMessage('🤖 Processing audio...');
             // Use server-generated messageId if provided, otherwise use current ref
-            const processingMessageId = data.messageId || messageIdRef.current;
+            const processingMessageId = normalizedData.messageId || messageIdRef.current;
             if (processingMessageId) {
               setMessagePairs(prev => prev.map(pair => 
                 pair.id === processingMessageId 
@@ -394,12 +403,12 @@ function App() {
                   : pair
               ));
             }
-          } else if (data.t === 'ready-to-listen') {
+          } else if (normalizedData.t === 'ready-to-listen') {
             setIsProcessing(false);
             setCurrentTranscript(''); // Clear any partial transcript
             addSystemMessage('👂 Ready to listen');
             // Use server-generated messageId if provided, otherwise use current ref
-            const readyMessageId = data.messageId || messageIdRef.current;
+            const readyMessageId = normalizedData.messageId || messageIdRef.current;
             if (readyMessageId) {
               setMessagePairs(prev => prev.map(pair => 
                 pair.id === readyMessageId 
@@ -408,6 +417,30 @@ function App() {
               ));
             }
             // Don't clear messageIdRef here - server will send new message-id when new session starts
+          } else if (normalizedData.t === 'welcome') {
+            addSystemMessage(`👋 ${normalizedData.message || 'Welcome to Deepgram Voice Agent'}`);
+          } else if (normalizedData.t === 'settings-applied') {
+            addSystemMessage('⚙️ Settings applied');
+          } else if (normalizedData.t === 'deepgram-ready') {
+            addSystemMessage('✅ Deepgram Voice Agent ready');
+          } else if (normalizedData.t === 'deepgram-disconnected') {
+            addSystemMessage('🔌 Deepgram disconnected');
+            setIsProcessing(false);
+            setIsAgentSpeaking(false);
+          } else if (normalizedData.t === 'user-started-speaking') {
+            addSystemMessage('👤 User started speaking');
+          } else if (normalizedData.t === 'agent-started-speaking') {
+            setIsAgentSpeaking(true);
+            addSystemMessage('🔊 Agent started speaking');
+          } else if (normalizedData.t === 'llm-response') {
+            // Handle complete LLM response (already handled by llm-token, but keep for completeness)
+            if (normalizedData.messageId && normalizedData.text) {
+              setMessagePairs(prev => prev.map(pair => 
+                pair.id === normalizedData.messageId 
+                  ? { ...pair, aiReply: normalizedData.text || '', status: 'processing' }
+                  : pair
+              ));
+            }
           }
         } catch (error) {
           console.error('Error parsing message:', error);
@@ -482,9 +515,9 @@ function App() {
       streamRef.current = stream;
 
       // Initialize audio context for recording and playback
-      // Use 16kHz sample rate (AWS Transcribe supports 8000, 16000, 24000, 48000 Hz for PCM)
+      // Use 48kHz sample rate (Deepgram Voice Agents requires 48kHz input)
       if (!audioContextRef.current) {
-        audioContextRef.current = new AudioContext({ sampleRate: 16000 });
+        audioContextRef.current = new AudioContext({ sampleRate: 48000 });
         console.log('Created new AudioContext, state:', audioContextRef.current.state, 'sampleRate:', audioContextRef.current.sampleRate);
       }
 
@@ -530,7 +563,7 @@ function App() {
       recordingSourceRef.current = recordingSource;
       
       // Create ScriptProcessorNode to capture raw PCM audio
-      // Buffer size: 4096 samples (gives us ~256ms chunks at 16kHz)
+      // Buffer size: 4096 samples (gives us ~85ms chunks at 48kHz)
       const bufferSize = 4096;
       const scriptProcessor = audioContextRef.current.createScriptProcessor(bufferSize, 1, 1);
       scriptProcessorRef.current = scriptProcessor;
@@ -586,7 +619,7 @@ function App() {
       recordingSource.connect(scriptProcessor);
       scriptProcessor.connect(audioContextRef.current.destination); // Connect to output to avoid errors
       
-      console.log('✅ PCM16 audio capture started (16kHz, 16-bit signed integers)');
+      console.log('✅ PCM16 audio capture started (48kHz, 16-bit signed integers)');
       
       // Start periodic monitoring to ensure continuous streaming
       startStreamingMonitor();
@@ -817,7 +850,8 @@ function App() {
       }
       
       // Create a WAV file for playback (PCM16 in WAV container)
-      const sampleRate = 16000;
+      // Use 48kHz sample rate to match recording
+      const sampleRate = 48000;
       const numChannels = 1;
       const bitsPerSample = 16;
       const wavHeader = createWavHeader(totalLength, sampleRate, numChannels, bitsPerSample);
@@ -948,7 +982,8 @@ function App() {
     }
 
     if (!audioContextRef.current) {
-      audioContextRef.current = new AudioContext({ sampleRate: 16000 });
+      // TTS audio from Deepgram is 24kHz, but we'll use 48kHz context for compatibility
+      audioContextRef.current = new AudioContext({ sampleRate: 48000 });
     }
 
     // Resume audio context if suspended (required for browser autoplay policies)
@@ -958,7 +993,10 @@ function App() {
 
     isPlayingAudioRef.current = true;
     setIsAgentSpeaking(true);
-    const sampleRate = audioContextRef.current.sampleRate;
+    // Deepgram TTS outputs at 24kHz, but AudioContext is 48kHz
+    // We'll resample by adjusting the buffer sample rate
+    const ttsSampleRate = 24000; // Deepgram TTS output sample rate
+    const audioContextSampleRate = audioContextRef.current.sampleRate;
     const currentTime = audioContextRef.current.currentTime;
 
     // If no chunks are scheduled yet, start from current time
@@ -981,11 +1019,13 @@ function App() {
         }
         
         // PCM16 is 16-bit signed integers, little-endian
+        // Deepgram TTS outputs at 24kHz, so calculate sample count based on that
         const sampleCount = uint8Array.length / 2;
+        // Create buffer at TTS sample rate (24kHz), AudioContext will handle resampling
         const audioBuffer = audioContextRef.current.createBuffer(
           1,
           sampleCount,
-          sampleRate
+          ttsSampleRate
         );
 
         // Convert PCM16 (little-endian) to Float32
@@ -1178,7 +1218,7 @@ function App() {
             <button
               onClick={() => {
                 setEndpointType('local');
-                setWsUrl('ws://localhost:8080/ws');
+                setWsUrl('ws://localhost:8081/ws');
               }}
               disabled={connected}
               style={{
@@ -1193,7 +1233,7 @@ function App() {
                 transition: 'all 0.2s'
               }}
             >
-              🏠 Local (localhost:8080)
+              🏠 Local Deepgram (localhost:8081)
             </button>
             <button
               onClick={() => {
@@ -1408,28 +1448,7 @@ function App() {
                 : '🔴 Disconnected'}
             </span>
           </div>
-          <div className="tts-settings">
-            <label htmlFor="tts-engine-select" className="tts-label">
-              Voice Engine
-            </label>
-            <select
-              id="tts-engine-select"
-              className="tts-select"
-              value={selectedTtsEngine}
-              onChange={(event) => {
-                const newEngine = event.target.value as typeof TTS_OPTIONS[number]['value'];
-                setSelectedTtsEngine(newEngine);
-                sendTtsPreference(newEngine);
-              }}
-              disabled={wsRef.current?.readyState === WebSocket.CONNECTING}
-            >
-              {TTS_OPTIONS.map(option => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </div>
+          {/* TTS Engine selection removed - Deepgram Voice Agents handles TTS automatically */}
         </div>
 
         <div className="conversation-section">

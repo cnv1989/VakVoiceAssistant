@@ -8,6 +8,7 @@ export interface VakNetworkStackProps extends cdk.StackProps {}
 export class VakNetworkStack extends cdk.Stack {
   public readonly vpc: ec2.Vpc;
   public readonly ecrRepo: ecr.IRepository;
+  public readonly deepgramEcrRepo: ecr.IRepository;
 
   constructor(scope: Construct, id: string, props?: VakNetworkStackProps) {
     super(scope, id, props);
@@ -39,6 +40,14 @@ export class VakNetworkStack extends cdk.Stack {
       'vak-server'
     );
 
+    // ECR repository for VakDeepGram image
+    // Import existing repository (created when we pushed the image manually)
+    this.deepgramEcrRepo = ecr.Repository.fromRepositoryName(
+      this,
+      'VakDeepGramRepo',
+      'vak-deepgram'
+    );
+
     // Outputs
     new cdk.CfnOutput(this, 'VpcId', {
       value: this.vpc.vpcId,
@@ -62,6 +71,12 @@ export class VakNetworkStack extends cdk.Stack {
       value: this.ecrRepo.repositoryUri,
       description: 'ECR repository URI for VakServer image',
       exportName: 'VakEcrRepoUri',
+    });
+
+    new cdk.CfnOutput(this, 'DeepgramEcrRepoUri', {
+      value: this.deepgramEcrRepo.repositoryUri,
+      description: 'ECR repository URI for VakDeepGram image',
+      exportName: 'VakDeepgramEcrRepoUri',
     });
   }
 }
