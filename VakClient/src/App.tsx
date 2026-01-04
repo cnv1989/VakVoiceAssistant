@@ -45,14 +45,15 @@ type EndpointType = 'local' | 'alb' | 'custom';
 
 function App() {
   // Default to Deepgram server WebSocket for local development
-  // For ALB, use: ws://ALB_DNS/ws
-  const defaultWsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:8081/ws';
+  // For ALB, use: wss://vak.tutzi.ai/ws
+  const defaultAlbDns = 'vak.tutzi.ai';
+  const defaultWsUrl = import.meta.env.VITE_WS_URL || `wss://${defaultAlbDns}/ws`;
   const [wsUrl, setWsUrl] = useState<string>(defaultWsUrl);
   const [endpointType, setEndpointType] = useState<EndpointType>(
-    defaultWsUrl.includes('localhost') ? 'local' : 'custom'
+    defaultWsUrl.includes('localhost') ? 'local' : 
+    defaultWsUrl.includes('tutzi.ai') || defaultWsUrl.includes('elb.amazonaws.com') ? 'alb' : 'custom'
   );
-  const [albDns, setAlbDns] = useState<string>('');
-  const [useHttps, setUseHttps] = useState<boolean>(false);
+  const [albDns, setAlbDns] = useState<string>(defaultAlbDns);
   const [connected, setConnected] = useState(false);
   const [systemMessages, setSystemMessages] = useState<SystemMessageEntry[]>([]);
   const [textInput, setTextInput] = useState('');
@@ -65,7 +66,7 @@ function App() {
   const [recordedAudioUrl, setRecordedAudioUrl] = useState<string | null>(null); // URL for recorded audio playback
   const [isPlayingRecording, setIsPlayingRecording] = useState<boolean>(false);
   const [messagePairs, setMessagePairs] = useState<MessagePair[]>([]); // Track message pairs (client + AI)
-  const [selectedTtsEngine, setSelectedTtsEngine] = useState<PollyTtsEngine>('generative');
+  const [selectedTtsEngine] = useState<PollyTtsEngine>('generative');
 
   const wsRef = useRef<WebSocket | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -184,9 +185,14 @@ function App() {
       ws.onopen = () => {
         setConnected(true);
         setConnectionStatus('Connected');
-        console.log('WebSocket connected');
+        console.log('WebSocket connected successfully');
         addSystemMessage('✅ Connected to assistant');
-        sendTtsPreference(selectedTtsEngine, { skipLog: true });
+        // Send initial message to start recording
+        try {
+          ws.send(JSON.stringify({ action: 'start-recording' }));
+        } catch (error) {
+          console.error('Error sending start-recording:', error);
+        }
       };
 
       ws.onmessage = async (event) => {
@@ -450,14 +456,39 @@ function App() {
       ws.onerror = (error) => {
         console.error('WebSocket error:', error);
         setConnectionStatus('Error');
-        addSystemMessage('⚠️ WebSocket error encountered');
+        const errorMsg = `⚠️ WebSocket error: ${error.type || 'Connection failed'}`;
+        addSystemMessage(errorMsg);
+        console.error('WebSocket error details:', {
+          type: error.type,
+          target: error.target,
+          url: wsUrl
+        });
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         setConnected(false);
         setConnectionStatus('Disconnected');
-        console.log('WebSocket disconnected');
-        addSystemMessage('🔌 Connection closed');
+        console.log('WebSocket disconnected', {
+          code: event.code,
+          reason: event.reason,
+          wasClean: event.wasClean
+        });
+        
+        // Provide specific error messages for common close codes
+        let closeMessage = '🔌 Connection closed';
+        if (event.code === 1006) {
+          closeMessage = '🔌 Connection closed abnormally (code: 1006) - Server may have rejected the connection or network issue';
+        } else if (event.code === 1002) {
+          closeMessage = '🔌 Connection closed (code: 1002) - Protocol error';
+        } else if (event.code === 1008) {
+          closeMessage = `🔌 Connection closed (code: 1008) - Policy violation${event.reason ? `: ${event.reason}` : ''}`;
+        } else if (event.code === 1011) {
+          closeMessage = `🔌 Connection closed (code: 1011) - Server error${event.reason ? `: ${event.reason}` : ''}`;
+        } else if (event.code !== 1000 && event.code !== 1001) {
+          closeMessage = `🔌 Connection closed (code: ${event.code}${event.reason ? `, reason: ${event.reason}` : ''})`;
+        }
+        
+        addSystemMessage(closeMessage);
       };
     } catch (error) {
       console.error('Failed to connect:', error);
@@ -996,7 +1027,6 @@ function App() {
     // Deepgram TTS outputs at 24kHz, but AudioContext is 48kHz
     // We'll resample by adjusting the buffer sample rate
     const ttsSampleRate = 24000; // Deepgram TTS output sample rate
-    const audioContextSampleRate = audioContextRef.current.sampleRate;
     const currentTime = audioContextRef.current.currentTime;
 
     // If no chunks are scheduled yet, start from current time
@@ -1239,8 +1269,7 @@ function App() {
               onClick={() => {
                 setEndpointType('alb');
                 if (albDns) {
-                  const protocol = useHttps ? 'wss' : 'ws';
-                  setWsUrl(`${protocol}://${albDns}/ws`);
+                  setWsUrl(`wss://${albDns}/ws`);
                 }
               }}
               disabled={connected}
@@ -1317,22 +1346,15 @@ function App() {
                   gap: '5px',
                   fontSize: '13px',
                   color: '#6b7280',
-                  cursor: connected ? 'not-allowed' : 'pointer'
+                  cursor: 'not-allowed'
                 }}>
                   <input
                     type="checkbox"
-                    checked={useHttps}
-                    onChange={(e) => {
-                      setUseHttps(e.target.checked);
-                      if (albDns) {
-                        const protocol = e.target.checked ? 'wss' : 'ws';
-                        setWsUrl(`${protocol}://${albDns}/ws`);
-                      }
-                    }}
-                    disabled={connected}
-                    style={{ cursor: connected ? 'not-allowed' : 'pointer' }}
+                    checked={true}
+                    disabled={true}
+                    style={{ cursor: 'not-allowed' }}
                   />
-                  Use HTTPS (wss://)
+                  Use HTTPS (wss://) - Enabled
                 </label>
               </div>
               <input
@@ -1343,8 +1365,7 @@ function App() {
                   const dns = e.target.value.trim();
                   setAlbDns(dns);
                   if (dns) {
-                    const protocol = useHttps ? 'wss' : 'ws';
-                    setWsUrl(`${protocol}://${dns}/ws`);
+                    setWsUrl(`wss://${dns}/ws`);
                   }
                 }}
                 disabled={connected}
@@ -1368,7 +1389,7 @@ function App() {
                   borderRadius: '4px',
                   border: '1px solid #e5e7eb'
                 }}>
-                  📡 Will connect to: {useHttps ? 'wss' : 'ws'}://{albDns}/ws
+                  📡 Will connect to: wss://{albDns}/ws
                 </div>
               )}
             </div>

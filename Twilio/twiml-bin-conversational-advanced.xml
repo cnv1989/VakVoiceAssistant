@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="alice" language="en-US">
+        Connecting you to your AI assistant.
+    </Say>
+    <Start>
+        <Stream url="wss://vak.tutzi.ai/twilio" track="both_tracks" />
+    </Start>
+    <Pause length="1800" />
+    <Say voice="alice" language="en-US">
+        Thank you for calling. Have a great day!
+    </Say>
+</Response>

@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket Connection Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+        }
+        .connected { background-color: #d4edda; color: #155724; }
+        .disconnected { background-color: #f8d7da; color: #721c24; }
+        .connecting { background-color: #fff3cd; color: #856404; }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        #messages {
+            border: 1px solid #ccc;
+            padding: 10px;
+            height: 300px;
+            overflow-y: auto;
+            background-color: #f9f9f9;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .message {
+            margin: 5px 0;
+            padding: 5px;
+            border-left: 3px solid #007bff;
+        }
+        .error {
+            border-left-color: #dc3545;
+            color: #dc3545;
+        }
+        .success {
+            border-left-color: #28a745;
+            color: #28a745;
+        }
+    </style>
+</head>
+<body>
+    <h1>WebSocket Connection Test</h1>
+    
+    <div>
+        <label>WebSocket URL:</label>
+        <input type="text" id="wsUrl" value="wss://vak.tutzi.ai/ws" style="width: 400px; padding: 5px;">
+    </div>
+    
+    <div style="margin: 20px 0;">
+        <button onclick="connect()">Connect</button>
+        <button onclick="disconnect()">Disconnect</button>
+        <button onclick="sendTest()">Send Test Message</button>
+        <button onclick="clearMessages()">Clear</button>
+    </div>
+    
+    <div id="status" class="status disconnected">Disconnected</div>
+    
+    <h3>Messages:</h3>
+    <div id="messages"></div>
+    
+    <script>
+        let ws = null;
+        const wsUrlInput = document.getElementById('wsUrl');
+        const statusDiv = document.getElementById('status');
+        const messagesDiv = document.getElementById('messages');
+        
+        function addMessage(type, message) {
+            const div = document.createElement('div');
+            div.className = `message ${type}`;
+            div.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            messagesDiv.appendChild(div);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        
+        function updateStatus(status, message) {
+            statusDiv.className = `status ${status}`;
+            statusDiv.textContent = message;
+        }
+        
+        function connect() {
+            const url = wsUrlInput.value.trim();
+            if (!url) {
+                alert('Please enter a WebSocket URL');
+                return;
+            }
+            
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                addMessage('error', 'Already connected');
+                return;
+            }
+            
+            updateStatus('connecting', 'Connecting...');
+            addMessage('info', `Connecting to ${url}...`);
+            
+            try {
+                ws = new WebSocket(url);
+                
+                ws.onopen = () => {
+                    updateStatus('connected', 'Connected ✅');
+                    addMessage('success', 'WebSocket connection opened');
+                    
+                    // Send a test message
+                    setTimeout(() => {
+                        sendTest();
+                    }, 500);
+                };
+                
+                ws.onmessage = (event) => {
+                    addMessage('success', `Received: ${event.data}`);
+                    try {
+                        const data = JSON.parse(event.data);
+                        addMessage('info', `Parsed JSON: ${JSON.stringify(data, null, 2)}`);
+                    } catch (e) {
+                        // Not JSON, that's okay
+                    }
+                };
+                
+                ws.onerror = (error) => {
+                    updateStatus('disconnected', 'Error ❌');
+                    addMessage('error', `WebSocket error: ${error.message || 'Unknown error'}`);
+                    console.error('WebSocket error:', error);
+                };
+                
+                ws.onclose = (event) => {
+                    updateStatus('disconnected', 'Disconnected');
+                    addMessage('info', `Connection closed. Code: ${event.code}, Reason: ${event.reason || 'None'}`);
+                    
+                    // Provide helpful error messages
+                    if (event.code === 1006) {
+                        addMessage('error', 'Connection closed abnormally (1006). Possible causes: Server rejected connection, network issue, or timeout.');
+                    } else if (event.code === 1002) {
+                        addMessage('error', 'Protocol error (1002). Check if HTTP/2 is disabled on ALB.');
+                    } else if (event.code === 1008) {
+                        addMessage('error', `Policy violation (1008): ${event.reason || 'Server rejected connection'}`);
+                    }
+                };
+            } catch (error) {
+                updateStatus('disconnected', 'Error ❌');
+                addMessage('error', `Failed to create WebSocket: ${error.message}`);
+            }
+        }
+        
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+        
+        function sendTest() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                addMessage('error', 'Not connected. Please connect first.');
+                return;
+            }
+            
+            const testMessage = {
+                action: 'start-recording'
+            };
+            
+            addMessage('info', `Sending: ${JSON.stringify(testMessage)}`);
+            ws.send(JSON.stringify(testMessage));
+        }
+        
+        function clearMessages() {
+            messagesDiv.innerHTML = '';
+        }
+        
+        // Auto-connect on load (optional)
+        // connect();
+    </script>
+</body>
+</html>
