@@ -10,12 +10,12 @@ class Settings(BaseSettings):
     
     # Deepgram Configuration
     deepgram_api_key: str
-    deepgram_project_id: Optional[str] = None
+    deepgram_project_id: str = None
     # Optional: If not provided, agent will be created dynamically via API
     deepgram_agent_id: Optional[str] = None
     
     # Twilio Configuration
-    twilio_auth_token: Optional[str] = "203d5f5968243a3b4bc09da73e7b998c"  # Required for signature verification
+    twilio_auth_token: str = None  # Required for signature verification
     
     # Server Configuration
     host: str = "0.0.0.0"
@@ -50,7 +50,7 @@ You are a barber shop assistant helping customers with questions about store hou
 -Speak clearly and naturally in a conversational tone.
 -Keep responses concise—answer only what the customer is asking. Do not provide extra information unless specifically requested.
 -If unclear, ask for clarification briefly.
--If asked about something outside your scope (store hours, prices, scheduling), politely redirect: "I can help you with our hours, prices, or booking an appointment."
+-If asked about something unrelated or outside your scope, respond: "I cannot help you with that, however I can help you with our store hours, prices for different services, or scheduling appointments."
 
 #What You Help With
 -Store hours: Provide current operating hours when asked.

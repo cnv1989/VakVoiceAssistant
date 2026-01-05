@@ -6,19 +6,34 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { Construct } from 'constructs';
 import { VakNetworkStack } from './vak-network-stack';
 
 export interface VakAppStackProps extends cdk.StackProps {
   networkStack: VakNetworkStack;
   /**
-   * Optional Deepgram API key.
-   * If not provided, must be set via DEEPGRAM_API_KEY environment variable.
+   * Optional Deepgram API key secret ARN from AWS Secrets Manager.
+   * Secret should be stored as plaintext in Secrets Manager.
+   * If not provided, falls back to deepgramApiKey prop or empty string.
+   * Example: 'arn:aws:secretsmanager:us-west-2:123456789012:secret:vak/deepgram-api-key-xxxxx'
+   */
+  deepgramApiKeySecretArn?: string;
+  /**
+   * Optional Deepgram API key (deprecated, use deepgramApiKeySecretArn instead).
+   * Kept for backward compatibility.
    */
   deepgramApiKey?: string;
   /**
-   * Optional Twilio auth token.
-   * If not provided, defaults to a hardcoded value or TWILIO_AUTH_TOKEN environment variable.
+   * Optional Twilio auth token secret ARN from AWS Secrets Manager.
+   * Secret should be stored as plaintext in Secrets Manager.
+   * If not provided, falls back to twilioAuthToken prop or hardcoded value.
+   * Example: 'arn:aws:secretsmanager:us-west-2:123456789012:secret:vak/twilio-auth-token-xxxxx'
+   */
+  twilioAuthTokenSecretArn?: string;
+  /**
+   * Optional Twilio auth token (deprecated, use twilioAuthTokenSecretArn instead).
+   * Kept for backward compatibility.
    */
   twilioAuthToken?: string;
   /**
@@ -72,6 +87,30 @@ export class VakAppStack extends cdk.Stack {
       ],
     });
 
+    // Create secret references from ARNs (if provided)
+    let deepgramSecret: secretsmanager.ISecret | undefined;
+    let twilioSecret: secretsmanager.ISecret | undefined;
+
+    if (props.deepgramApiKeySecretArn) {
+      deepgramSecret = secretsmanager.Secret.fromSecretCompleteArn(
+        this,
+        'DeepgramSecret',
+        props.deepgramApiKeySecretArn
+      );
+      // Grant task execution role permission to read the secret
+      deepgramSecret.grantRead(taskExecutionRole);
+    }
+
+    if (props.twilioAuthTokenSecretArn) {
+      twilioSecret = secretsmanager.Secret.fromSecretCompleteArn(
+        this,
+        'TwilioSecret',
+        props.twilioAuthTokenSecretArn
+      );
+      // Grant task execution role permission to read the secret
+      twilioSecret.grantRead(taskExecutionRole);
+    }
+
 
     // Task role - minimal permissions for Deepgram Voice Agents
     // Deepgram uses API key authentication, not AWS services
@@ -93,6 +132,15 @@ export class VakAppStack extends cdk.Stack {
       taskRole: taskRole,
     });
 
+    // Build secrets object conditionally
+    const containerSecrets: { [key: string]: ecs.Secret } = {};
+    if (deepgramSecret) {
+      containerSecrets.DEEPGRAM_API_KEY = ecs.Secret.fromSecretsManager(deepgramSecret);
+    }
+    if (twilioSecret) {
+      containerSecrets.TWILIO_AUTH_TOKEN = ecs.Secret.fromSecretsManager(twilioSecret);
+    }
+
     // Container definition using Deepgram ECR image
     // Image must be built and pushed to ECR manually before deployment
     // Use the Deepgram ECR repository from the network stack
@@ -107,7 +155,6 @@ export class VakAppStack extends cdk.Stack {
         PORT: '8080',
         LOG_LEVEL: 'info',
         // Deepgram configuration
-        DEEPGRAM_API_KEY: props.deepgramApiKey || '',
         DEEPGRAM_AGENT_LANGUAGE: 'en',
         DEEPGRAM_LISTENING_MODEL: 'flux-general-en',
         DEEPGRAM_LISTENING_VERSION: 'v2',
@@ -118,9 +165,8 @@ export class VakAppStack extends cdk.Stack {
         DEEPGRAM_SPEAKING_VOICE_ID: 'cgSgspJ2msm6clMCkdW9',
         DEEPGRAM_INPUT_SAMPLE_RATE: '48000',
         DEEPGRAM_OUTPUT_SAMPLE_RATE: '24000',
-        // Twilio configuration
-        TWILIO_AUTH_TOKEN: props.twilioAuthToken || '203d5f5968243a3b4bc09da73e7b998c',
       },
+      secrets: Object.keys(containerSecrets).length > 0 ? containerSecrets : undefined,
       healthCheck: {
         command: [
           'CMD-SHELL',
@@ -132,6 +178,16 @@ export class VakAppStack extends cdk.Stack {
         startPeriod: cdk.Duration.seconds(60), // Grace period for container startup
       },
     });
+
+    // Fallback: If secrets are not provided, use environment variables or hardcoded values
+    // This maintains backward compatibility
+    if (!deepgramSecret) {
+      container.addEnvironment('DEEPGRAM_API_KEY', props.deepgramApiKey || '');
+    }
+
+    if (!twilioSecret) {
+      container.addEnvironment('TWILIO_AUTH_TOKEN', props.twilioAuthToken || '203d5f5968243a3b4bc09da73e7b998c');
+    }
 
     container.addPortMappings({
       containerPort: 8080,

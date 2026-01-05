@@ -15,24 +15,22 @@ const networkStack = new VakNetworkStack(app, 'VakNetworkStack', {
   env,
 });
 
-// Application stack: ECS, DynamoDB, S3, API Gateway, etc.
-// Depends on network stack
-// Optional: Provide Deepgram API key
+// Hardcoded secret ARNs from AWS Secrets Manager
+const deepgramApiKeySecretArn = 'arn:aws:secretsmanager:us-west-2:844341423871:secret:vak/deepgram-api-key-l5hv2P';
+const twilioAuthTokenSecretArn = 'arn:aws:secretsmanager:us-west-2:844341423871:secret:vak/twilio-auth-token-odOYCC';
+
+// Optional: Provide Deepgram API key (deprecated, use deepgramApiKeySecretArn instead)
 // Pass via context: cdk deploy -c deepgramApiKey=your-api-key
 // Or set as environment variable: DEEPGRAM_API_KEY=your-api-key cdk deploy
 const deepgramApiKey = app.node.tryGetContext('deepgramApiKey') || process.env.DEEPGRAM_API_KEY;
 
-// Optional: Provide Twilio auth token
+// Optional: Provide Twilio auth token (deprecated, use twilioAuthTokenSecretArn instead)
 // Pass via context: cdk deploy -c twilioAuthToken=your-token
 // Or set as environment variable: TWILIO_AUTH_TOKEN=your-token cdk deploy
 const twilioAuthToken = app.node.tryGetContext('twilioAuthToken') || process.env.TWILIO_AUTH_TOKEN;
 
-// Optional: Provide ACM certificate ARN for HTTPS/WSS support
-// First create certificate in ACM (us-west-2 region):
-//   See CERTIFICATE_SETUP.md for instructions
-// Then pass it via context: cdk deploy -c certificateArn=arn:aws:acm:us-west-2:...
-// Or set it as an environment variable: CERTIFICATE_ARN=arn:aws:acm:us-west-2:... cdk deploy
-const certificateArn = app.node.tryGetContext('certificateArn') || process.env.CERTIFICATE_ARN;
+// Hardcoded ACM certificate ARN for HTTPS/WSS support
+const certificateArn = 'arn:aws:acm:us-west-2:844341423871:certificate/b290a998-200c-42b5-a2e1-66bfcda715b2';
 
 // Optional: Enable WAF protection to restrict access to Twilio IPs only
 // Set to true to enable IP allowlist (only Twilio can access)
@@ -45,7 +43,9 @@ const enableTwilioOnlyAccess = app.node.tryGetContext('enableTwilioOnlyAccess') 
 const appStack = new VakAppStack(app, 'VakAppStack', {
   env,
   networkStack,
+  deepgramApiKeySecretArn,
   deepgramApiKey,
+  twilioAuthTokenSecretArn,
   twilioAuthToken,
   certificateArn,
   enableTwilioOnlyAccess,
