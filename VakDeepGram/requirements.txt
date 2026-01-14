@@ -8,3 +8,4 @@ pydantic-settings>=2.1.0
 aiofiles==23.2.1
 aiohttp==3.9.1
 twilio>=8.0.0
+squareup>=38.0.0

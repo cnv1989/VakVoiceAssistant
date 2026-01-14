@@ -4,12 +4,14 @@ React + Vite client application for the Vak Voice Assistant.
 
 ## Features
 
-- WebSocket connection to API Gateway
+- WebSocket connection to VakDeepGram server
 - Text message input and sending
-- MediaRecorder for Ogg Opus audio streaming
+- Real-time bidirectional audio streaming (PCM16, 48kHz)
 - Real-time display of LLM streaming tokens
-- PCM audio playback using Web Audio API (16kHz)
+- PCM audio playback using Web Audio API (24kHz TTS output)
 - Connection status indicator
+- Live transcription display
+- Message pair tracking (user input + AI response)
 
 ## Setup
 
@@ -37,11 +39,11 @@ npm run preview
 
 ### Local Development
 
-1. Start the VakServer on `localhost:8080`
+1. Start the VakDeepGram server on `localhost:8080`
 2. The client defaults to `ws://localhost:8080/ws` for local development
 3. Click "Connect" to establish WebSocket connection
 4. **Text Mode**: Type a message and click "Send" or press Enter
-5. **Voice Mode**: Click "🎙️ Start Opus" to start recording, then click "Stop" when done
+5. **Voice Mode**: Click "🎙️ Start Conversation" to start recording, then click "⏹️ End Conversation" when done
 
 ### Production/AWS
 
@@ -77,7 +79,7 @@ Get this from the CDK stack output `WebSocketUrl`.
 ```
 
 **Audio:**
-Binary Ogg Opus chunks sent directly via WebSocket
+Binary PCM16 audio chunks (48kHz) sent directly via WebSocket.
 
 ### Server → Client
 
@@ -93,7 +95,9 @@ Binary Ogg Opus chunks sent directly via WebSocket
 ```json
 {
   "t": "tts",
-  "audio": "base64-encoded-pcm-data"
+  "audio": "base64-encoded-pcm16-data",
+  "messageId": "msg_123",
+  "connectionId": "ws-abc123"
 }
 ```
 
@@ -101,7 +105,43 @@ Binary Ogg Opus chunks sent directly via WebSocket
 ```json
 {
   "t": "transcript",
-  "text": "Hello world"
+  "text": "Hello world",
+  "messageId": "msg_123",
+  "role": "user"
+}
+```
+
+**Partial Transcript:**
+```json
+{
+  "t": "partial-transcript",
+  "text": "Hello",
+  "messageId": "msg_123"
+}
+```
+
+**Message ID:**
+```json
+{
+  "t": "message-id",
+  "messageId": "msg_123",
+  "connectionId": "ws-abc123"
+}
+```
+
+**Deepgram Ready:**
+```json
+{
+  "t": "deepgram-ready",
+  "connectionId": "ws-abc123"
+}
+```
+
+**Ready to Listen:**
+```json
+{
+  "t": "ready-to-listen",
+  "messageId": "msg_123"
 }
 ```
 
@@ -113,13 +153,27 @@ Binary Ogg Opus chunks sent directly via WebSocket
 }
 ```
 
+## Audio Format
+
+- **Input**: PCM16, 48kHz, mono
+- **Output**: PCM16, 24kHz, mono (from Deepgram Voice Agents)
+
 ## Browser Requirements
 
 - Modern browser with WebSocket support
-- MediaRecorder API support (Chrome, Firefox, Edge)
-- Web Audio API support
+- Web Audio API support (Chrome, Firefox, Edge, Safari)
 - Microphone permissions
+- ScriptProcessorNode support (for PCM16 audio capture)
 
 ## Development
 
-The app runs on `http://localhost:3000` by default. Hot module replacement is enabled for fast development.
+The app runs on `http://localhost:5173` by default (Vite default port). Hot module replacement is enabled for fast development.
+
+## Backend Compatibility
+
+This client is designed to work with **VakDeepGram** server, which uses Deepgram Voice Agents for:
+- Speech-to-text (STT)
+- Large language model (LLM) processing
+- Text-to-speech (TTS)
+
+The server accepts 48kHz input and returns 24kHz TTS audio.

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Run VakDeepGram server
+# Run VakDeepGram server with file watching (auto-reload)
 
 # Check if .env exists
 if [ ! -f .env ]; then
@@ -23,6 +23,12 @@ source venv/bin/activate
 echo "📥 Installing dependencies..."
 pip install -r requirements.txt
 
-# Run server
-echo "🚀 Starting VakDeepGram server..."
-python main.py
+# Run server with reload enabled (watches for file changes)
+echo "🚀 Starting VakDeepGram server with auto-reload (watching for file changes)..."
+echo "📁 Watching: *.py, *.yaml, *.yml, *.json, *.env"
+uvicorn main:app \
+    --host 0.0.0.0 \
+    --port 8080 \
+    --reload \
+    --reload-dir . \
+    --log-level info

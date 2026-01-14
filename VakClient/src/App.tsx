@@ -33,21 +33,13 @@ const STATUS_META: Record<MessagePair['status'], { icon: string; label: string; 
   complete: { icon: '✅', label: 'Complete', variant: 'complete' },
 };
 
-type PollyTtsEngine = 'standard' | 'neural' | 'generative';
-
-const TTS_OPTIONS: Array<{ value: PollyTtsEngine; label: string }> = [
-  { value: 'generative', label: 'Polly Generative' },
-  { value: 'neural', label: 'Polly Neural' },
-  { value: 'standard', label: 'Polly Standard' },
-];
-
 type EndpointType = 'local' | 'alb' | 'custom';
 
 function App() {
   // Default to Deepgram server WebSocket for local development
   // For ALB, use: wss://vak.tutzi.ai/ws
   const defaultAlbDns = 'vak.tutzi.ai';
-  const defaultWsUrl = import.meta.env.VITE_WS_URL || `wss://${defaultAlbDns}/ws`;
+  const defaultWsUrl = import.meta.env.VITE_WS_URL || `ws://localhost:8080/ws`;
   const [wsUrl, setWsUrl] = useState<string>(defaultWsUrl);
   const [endpointType, setEndpointType] = useState<EndpointType>(
     defaultWsUrl.includes('localhost') ? 'local' : 
@@ -66,7 +58,6 @@ function App() {
   const [recordedAudioUrl, setRecordedAudioUrl] = useState<string | null>(null); // URL for recorded audio playback
   const [isPlayingRecording, setIsPlayingRecording] = useState<boolean>(false);
   const [messagePairs, setMessagePairs] = useState<MessagePair[]>([]); // Track message pairs (client + AI)
-  const [selectedTtsEngine] = useState<PollyTtsEngine>('generative');
 
   const wsRef = useRef<WebSocket | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -103,18 +94,20 @@ function App() {
     // Initialize audio context on user interaction (required for autoplay policies)
     const initAudioContext = async () => {
       if (!audioContextRef.current) {
-        // Use 48kHz sample rate for Deepgram Voice Agents compatibility
+        // Use 48kHz sample rate for Deepgram Voice Agents input
         audioContextRef.current = new AudioContext({ sampleRate: 48000 });
+        console.log('🔊 [INIT] Created AudioContext, state:', audioContextRef.current.state);
         // Resume if suspended (browser autoplay policy)
         if (audioContextRef.current.state === 'suspended') {
           await audioContextRef.current.resume();
+          console.log('🔊 [INIT] Resumed AudioContext, state:', audioContextRef.current.state);
         }
       }
     };
 
     // Try to initialize on any user interaction
     const handleUserInteraction = () => {
-      initAudioContext().catch(console.error);
+      initAudioContext().catch(err => console.error('Error initializing audio context:', err));
       document.removeEventListener('click', handleUserInteraction);
       document.removeEventListener('touchstart', handleUserInteraction);
     };
@@ -140,31 +133,6 @@ function App() {
     };
   }, []);
 
-  const sendTtsPreference = useCallback(
-    (engine: PollyTtsEngine, options?: { skipLog?: boolean }) => {
-      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-        if (!options?.skipLog) {
-          const label = TTS_OPTIONS.find(option => option.value === engine)?.label ?? engine;
-          addSystemMessage(`ℹ️ Will switch to ${label} after connecting.`);
-        }
-        return;
-      }
-
-      try {
-        wsRef.current.send(JSON.stringify({ action: 'set-tts-engine', engine }));
-        if (!options?.skipLog) {
-          const label = TTS_OPTIONS.find(option => option.value === engine)?.label ?? engine;
-          addSystemMessage(`🎛️ TTS engine set to ${label}`);
-        }
-      } catch (error) {
-        console.error('Failed to send TTS preference:', error);
-        if (!options?.skipLog) {
-          addSystemMessage('⚠️ Failed to update TTS engine preference.');
-        }
-      }
-    },
-    [addSystemMessage]
-  );
 
   const connectWebSocket = async () => {
     if (!wsUrl) {
@@ -203,7 +171,7 @@ function App() {
 
         try {
           const data: any = JSON.parse(event.data);
-          // Deepgram server sends {type: "...", ...} but client expects {t: "...", ...}
+          // Server sends {type: "...", ...} but client expects {t: "...", ...}
           // Normalize the message format
           const normalizedData: Message = {
             ...data,
@@ -304,6 +272,7 @@ function App() {
             }
           } else if (normalizedData.t === 'tts' && normalizedData.audio) {
             // Queue TTS audio by message ID - must have messageId
+            console.log(`🔊 [WS] Received TTS audio, messageId: ${messageId}, audio length: ${normalizedData.audio?.length || 0}`);
             if (messageId) {
               await queueTTSAudio(messageId, normalizedData.audio);
             } else {
@@ -506,11 +475,6 @@ function App() {
     setConnectionStatus('Disconnected');
   };
 
-  useEffect(() => {
-    if (connected) {
-      sendTtsPreference(selectedTtsEngine, { skipLog: true });
-    }
-  }, [connected, selectedTtsEngine, sendTtsPreference]);
 
   const sendTextMessage = () => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
@@ -546,7 +510,7 @@ function App() {
       streamRef.current = stream;
 
       // Initialize audio context for recording and playback
-      // Use 48kHz sample rate (Deepgram Voice Agents requires 48kHz input)
+      // Use 48kHz sample rate for Deepgram Voice Agents input
       if (!audioContextRef.current) {
         audioContextRef.current = new AudioContext({ sampleRate: 48000 });
         console.log('Created new AudioContext, state:', audioContextRef.current.state, 'sampleRate:', audioContextRef.current.sampleRate);
@@ -650,7 +614,7 @@ function App() {
       recordingSource.connect(scriptProcessor);
       scriptProcessor.connect(audioContextRef.current.destination); // Connect to output to avoid errors
       
-      console.log('✅ PCM16 audio capture started (48kHz, 16-bit signed integers)');
+      console.log('✅ PCM16 audio capture started (48kHz, 16-bit signed integers, will be resampled to 24kHz by server)');
       
       // Start periodic monitoring to ensure continuous streaming
       startStreamingMonitor();
@@ -934,6 +898,8 @@ function App() {
   // Queue TTS audio by message ID for sequential playback
   const queueTTSAudio = async (messageId: string, audioBase64: string) => {
     try {
+      console.log(`🔊 [TTS] Queueing audio for messageId: ${messageId}, base64 length: ${audioBase64.length}`);
+      
       // Decode base64 audio
       const binaryString = atob(audioBase64);
       const audioData = new ArrayBuffer(binaryString.length);
@@ -942,14 +908,18 @@ function App() {
         view[i] = binaryString.charCodeAt(i);
       }
 
+      console.log(`🔊 [TTS] Decoded audio: ${audioData.byteLength} bytes`);
+
       // Find or create queue entry for this message ID
       let queueEntry = ttsQueueRef.current.find(entry => entry.messageId === messageId);
       if (!queueEntry) {
         queueEntry = { messageId, audioChunks: [] };
         ttsQueueRef.current.push(queueEntry);
+        console.log(`🔊 [TTS] Created new queue entry for messageId: ${messageId}`);
       }
       
       queueEntry.audioChunks.push(audioData);
+      console.log(`🔊 [TTS] Added chunk to queue. Total chunks for ${messageId}: ${queueEntry.audioChunks.length}`);
       
       // Update message pair status to speaking
       setMessagePairs(prev => prev.map(pair => 
@@ -960,7 +930,10 @@ function App() {
       
       // Start processing queue if not already playing
       if (!isPlayingAudioRef.current && currentPlayingMessageIdRef.current === null) {
-        processTTSQueue();
+        console.log(`🔊 [TTS] Starting TTS queue processing`);
+        processTTSQueue().catch(err => console.error('Error in processTTSQueue:', err));
+      } else {
+        console.log(`🔊 [TTS] Queue already processing (isPlaying: ${isPlayingAudioRef.current}, currentMessageId: ${currentPlayingMessageIdRef.current})`);
       }
     } catch (error) {
       console.error('Error queueing TTS audio:', error);
@@ -971,21 +944,26 @@ function App() {
   const processTTSQueue = async () => {
     // Prevent concurrent processing
     if (isPlayingAudioRef.current || currentPlayingMessageIdRef.current !== null) {
+      console.log(`🔊 [TTS-QUEUE] Already processing, skipping (isPlaying: ${isPlayingAudioRef.current}, currentMessageId: ${currentPlayingMessageIdRef.current})`);
       return;
     }
 
     // Get next message in queue
     if (ttsQueueRef.current.length === 0) {
+      console.log(`🔊 [TTS-QUEUE] No messages in queue`);
       return;
     }
 
     const queueEntry = ttsQueueRef.current[0];
     const messageId = queueEntry.messageId;
+    console.log(`🔊 [TTS-QUEUE] Processing messageId: ${messageId}, chunks: ${queueEntry.audioChunks.length}`);
     
     // Move all chunks for this message to audioQueueRef
     audioQueueRef.current.push(...queueEntry.audioChunks);
     ttsQueueRef.current.shift(); // Remove from queue
     currentPlayingMessageIdRef.current = messageId;
+    
+    console.log(`🔊 [TTS-QUEUE] Moved ${queueEntry.audioChunks.length} chunks to audio queue, total in queue: ${audioQueueRef.current.length}`);
     
     // Process audio queue
     await processAudioQueue();
@@ -994,16 +972,19 @@ function App() {
   const processAudioQueue = async () => {
     // Prevent concurrent processing
     if (isPlayingAudioRef.current) {
+      console.log(`🔊 [AUDIO-QUEUE] Already playing, skipping`);
       return;
     }
 
     if (audioQueueRef.current.length === 0) {
+      console.log(`🔊 [AUDIO-QUEUE] No chunks in queue`);
       // No more chunks for current message, move to next message
       currentPlayingMessageIdRef.current = null;
       if (ttsQueueRef.current.length > 0) {
-        processTTSQueue();
+        processTTSQueue().catch(err => console.error('Error in processTTSQueue:', err));
       } else {
         // All messages played, update status
+        console.log(`🔊 [AUDIO-QUEUE] All messages played, stopping agent speaking`);
         setIsAgentSpeaking(false);
         if (isRecording && wsRef.current?.readyState === WebSocket.OPEN) {
           wsRef.current.send(JSON.stringify({ t: 'ready-to-listen' }));
@@ -1015,12 +996,41 @@ function App() {
     if (!audioContextRef.current) {
       // TTS audio from Deepgram is 24kHz, but we'll use 48kHz context for compatibility
       audioContextRef.current = new AudioContext({ sampleRate: 48000 });
+      console.log(`🔊 [AUDIO-QUEUE] Created new AudioContext, state: ${audioContextRef.current.state}`);
     }
 
     // Resume audio context if suspended (required for browser autoplay policies)
     if (audioContextRef.current.state === 'suspended') {
-      await audioContextRef.current.resume();
+      console.log(`🔊 [AUDIO-QUEUE] Resuming suspended AudioContext`);
+      try {
+        await audioContextRef.current.resume();
+        console.log(`🔊 [AUDIO-QUEUE] AudioContext resumed, state: ${audioContextRef.current.state}`);
+      } catch (error) {
+        console.error(`🔊 [AUDIO-QUEUE] Failed to resume AudioContext:`, error);
+        // Try to create a new context if resume fails
+        try {
+          audioContextRef.current.close();
+        } catch (e) {
+          // Ignore close errors
+        }
+        audioContextRef.current = new AudioContext({ sampleRate: 48000 });
+        console.log(`🔊 [AUDIO-QUEUE] Created new AudioContext after resume failure, state: ${audioContextRef.current.state}`);
+      }
     }
+    
+    // Ensure context is running before processing
+    if (audioContextRef.current.state !== 'running') {
+      console.warn(`🔊 [AUDIO-QUEUE] AudioContext state is ${audioContextRef.current.state}, attempting to resume...`);
+      try {
+        await audioContextRef.current.resume();
+        console.log(`🔊 [AUDIO-QUEUE] AudioContext state after resume: ${audioContextRef.current.state}`);
+      } catch (error) {
+        console.error(`🔊 [AUDIO-QUEUE] Failed to resume AudioContext:`, error);
+        return; // Don't process audio if context can't be resumed
+      }
+    }
+    
+    console.log(`🔊 [AUDIO-QUEUE] Processing ${audioQueueRef.current.length} audio chunks, AudioContext state: ${audioContextRef.current.state}`);
 
     isPlayingAudioRef.current = true;
     setIsAgentSpeaking(true);
@@ -1035,8 +1045,10 @@ function App() {
     }
 
     // Schedule all queued chunks to play back-to-back
+    let chunkIndex = 0;
     while (audioQueueRef.current.length > 0) {
       const audioData = audioQueueRef.current.shift()!;
+      chunkIndex++;
       
       try {
         // Convert ArrayBuffer to Uint8Array
@@ -1044,13 +1056,15 @@ function App() {
         
         // Validate data length (must be even for 16-bit samples)
         if (uint8Array.length % 2 !== 0) {
-          console.warn('Audio data length is not even, skipping chunk');
+          console.warn(`🔊 [AUDIO-QUEUE] Audio data length is not even (${uint8Array.length}), skipping chunk`);
           continue;
         }
         
         // PCM16 is 16-bit signed integers, little-endian
         // Deepgram TTS outputs at 24kHz, so calculate sample count based on that
         const sampleCount = uint8Array.length / 2;
+        console.log(`🔊 [AUDIO-QUEUE] Processing chunk ${chunkIndex}: ${uint8Array.length} bytes, ${sampleCount} samples at ${ttsSampleRate}Hz`);
+        
         // Create buffer at TTS sample rate (24kHz), AudioContext will handle resampling
         const audioBuffer = audioContextRef.current.createBuffer(
           1,
@@ -1071,9 +1085,17 @@ function App() {
 
         // Calculate duration of this chunk
         const duration = audioBuffer.duration;
+        console.log(`🔊 [AUDIO-QUEUE] Chunk ${chunkIndex} duration: ${duration.toFixed(3)}s`);
         
         // Schedule this chunk to start when the previous one ends (seamless playback)
-        const startTime = Math.max(audioContextRef.current.currentTime, nextScheduledTimeRef.current);
+        // Ensure startTime is at least slightly in the future to avoid scheduling issues
+        const now = audioContextRef.current.currentTime;
+        const minStartTime = now + 0.01; // At least 10ms in the future
+        const startTime = Math.max(minStartTime, nextScheduledTimeRef.current);
+        
+        if (startTime < now) {
+          console.warn(`🔊 [AUDIO-QUEUE] Start time ${startTime.toFixed(3)}s is in the past (now: ${now.toFixed(3)}s), adjusting to ${minStartTime.toFixed(3)}s`);
+        }
         
         const source = audioContextRef.current.createBufferSource();
         source.buffer = audioBuffer;
@@ -1082,7 +1104,9 @@ function App() {
         // Track when audio finishes playing
         const endTime = startTime + duration;
         const isLastChunk = audioQueueRef.current.length === 0;
+        
         source.onended = () => {
+          console.log(`🔊 [AUDIO-QUEUE] Chunk ${chunkIndex} finished playing (last: ${isLastChunk})`);
           // Track the messageId for this chunk before it's cleared
           const chunkMessageId = currentPlayingMessageIdRef.current;
           
@@ -1100,18 +1124,23 @@ function App() {
               }
               currentPlayingMessageIdRef.current = null;
               // Process next message in queue
-              processTTSQueue();
+              processTTSQueue().catch(err => console.error('Error in processTTSQueue:', err));
             }, 100);
           }
         };
         
+        source.onerror = (error) => {
+          console.error(`🔊 [AUDIO-QUEUE] Error playing chunk ${chunkIndex}:`, error);
+        };
+        
         // Schedule the chunk to play at the calculated start time
+        console.log(`🔊 [AUDIO-QUEUE] Scheduling chunk ${chunkIndex} to start at ${startTime.toFixed(3)}s`);
         source.start(startTime);
         
         // Update next scheduled time for seamless concatenation
         nextScheduledTimeRef.current = startTime + duration;
       } catch (error) {
-        console.error('Error playing audio chunk:', error);
+        console.error(`🔊 [AUDIO-QUEUE] Error playing audio chunk ${chunkIndex}:`, error);
         // Continue with next chunk even if this one failed
       }
     }
@@ -1248,7 +1277,7 @@ function App() {
             <button
               onClick={() => {
                 setEndpointType('local');
-                setWsUrl('ws://localhost:8081/ws');
+                setWsUrl('ws://localhost:8080/ws');
               }}
               disabled={connected}
               style={{
@@ -1263,7 +1292,7 @@ function App() {
                 transition: 'all 0.2s'
               }}
             >
-              🏠 Local Deepgram (localhost:8081)
+              🏠 Local Deepgram (localhost:8080)
             </button>
             <button
               onClick={() => {
