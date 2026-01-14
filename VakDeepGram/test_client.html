@@ -393,10 +393,6 @@
             }
 
             // Convert PCM16 to AudioBuffer and play
-            if (!audioContext) {
-                audioContext = new AudioContext({ sampleRate: 48000 });
-            }
-
             const sampleCount = audioData.byteLength / 2;
             const audioBuffer = audioContext.createBuffer(1, sampleCount, 24000); // Deepgram outputs at 24kHz
 

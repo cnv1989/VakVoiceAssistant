@@ -110,6 +110,9 @@ async def websocket_endpoint(websocket: WebSocket):
     async def send_to_client(data: dict):
         """Helper function to send data to client"""
         try:
+            if data.get("type") == "disconnect":
+                await websocket.close(code=1000, reason=data.get("reason") or "end_call")
+                return
             await websocket.send_json(data)
         except Exception as e:
             logger.error(f"Error sending to client {connection_id}: {e}")
@@ -296,6 +299,9 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
     async def send_to_twilio(data: dict):
         """Send JSON message to Twilio"""
         try:
+            if data.get("type") == "disconnect":
+                await websocket.close(code=1000, reason=data.get("reason") or "end_call")
+                return
             await websocket.send_json(data)
         except Exception as e:
             logger.error(f"Error sending to Twilio {connection_id}: {e}")

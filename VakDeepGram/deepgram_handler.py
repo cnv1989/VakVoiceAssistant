@@ -11,6 +11,7 @@ import uuid
 from typing import Dict, Optional, Callable
 import websockets
 import config
+from agent_functions import FUNCTION_DEFINITIONS, FUNCTION_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,8 @@ class DeepgramSession:
         self.send_to_client: Optional[Callable] = None
         self.audio_buffer: list = []  # Buffer audio until session is ready
         self.use_mulaw = use_mulaw  # Track if using mulaw encoding (for Twilio)
+        self.pending_disconnect: bool = False
+        self.pending_disconnect_reason: str = ""
         
     def set_send_callback(self, callback: Callable):
         """Set the callback function to send messages to the client"""
@@ -85,7 +88,11 @@ class DeepgramManager:
                 "model": config.settings.deepgram_thinking_model or "gpt-4o-mini",
             }
         
-        think_config = {"provider": think_provider}
+        # Build think config with functions (according to Deepgram documentation)
+        think_config = {
+            "provider": think_provider,
+            "functions": FUNCTION_DEFINITIONS,
+        }
         if config.settings.deepgram_agent_prompt:
             think_config["prompt"] = config.settings.deepgram_agent_prompt
         
@@ -217,12 +224,22 @@ class DeepgramManager:
                 else:
                     # Handle binary audio data (TTS)
                     await self._handle_audio_message(session, message)
-        except websockets.exceptions.ConnectionClosed:
-            logger.info(f"STS WebSocket closed for {session.connection_id}")
+        except websockets.exceptions.ConnectionClosed as e:
+            # Connection closed - could be timeout, error, or normal closure
+            close_code = e.code if hasattr(e, 'code') else None
+            close_reason = e.reason if hasattr(e, 'reason') else None
+            
+            # 1000 = normal closure, 1001 = going away, 1005 = no status (internal)
+            # These are usually expected (timeout, client disconnect, etc.)
+            if close_code in (1000, 1001, 1005):
+                logger.info(f"🔌 STS WebSocket closed for {session.connection_id} (code: {close_code})")
+            else:
+                logger.warning(f"🔌 STS WebSocket closed unexpectedly for {session.connection_id} (code: {close_code}, reason: {close_reason})")
+            
             if session.is_active:
                 await session.send_to_client_safe({"type": "deepgram-disconnected"})
         except Exception as e:
-            logger.error(f"Error in STS receiver for {session.connection_id}: {e}")
+            logger.error(f"Error in STS receiver for {session.connection_id}: {e}", exc_info=True)
             if session.is_active:
                 await session.send_to_client_safe({
                     "type": "error",
@@ -230,6 +247,7 @@ class DeepgramManager:
                 })
         finally:
             self.sessions.pop(session.connection_id, None)
+            logger.debug(f"🧹 Cleaned up session {session.connection_id}")
     
     async def _handle_json_message(self, session: DeepgramSession, data: dict):
         """Handle JSON messages from Deepgram"""
@@ -322,14 +340,210 @@ class DeepgramManager:
                 "type": "ready-to-listen",
                 "connectionId": session.connection_id
             })
+            if session.pending_disconnect:
+                await session.send_to_client_safe({
+                    "type": "disconnect",
+                    "reason": session.pending_disconnect_reason or "end_call",
+                    "connectionId": session.connection_id,
+                })
+                await self.close_session(session.connection_id)
         
         elif msg_type == "Error":
-            error_msg = data.get("message", str(data))
-            logger.error(f"❌ Deepgram error event: {error_msg}")
-            await session.send_to_client_safe({
-                "type": "error",
-                "message": error_msg,
-            })
+            error_code = data.get("code", "")
+            error_msg = data.get("description") or data.get("message", str(data))
+            
+            # CLIENT_MESSAGE_TIMEOUT is expected when user doesn't speak for a while
+            # It's not really an error, just Deepgram closing due to inactivity
+            if error_code == "CLIENT_MESSAGE_TIMEOUT":
+                logger.info(f"⏱️ Deepgram timeout (no user speech): {error_msg}")
+                # Don't send error to client - this is normal behavior
+                # The connection will be closed, and client can reconnect if needed
+            else:
+                logger.error(f"❌ Deepgram error event: {error_msg} (code: {error_code})")
+                await session.send_to_client_safe({
+                    "type": "error",
+                    "message": error_msg,
+                })
+        
+        elif msg_type in ("FunctionCall", "FunctionCallRequest"):
+            # Handle function call request from Deepgram
+            function_call = data.get("function_call") or data.get("function") or {}
+            tool_call = {}
+            if isinstance(data.get("tool_call"), dict):
+                tool_call = data.get("tool_call", {})
+            elif isinstance(data.get("tool_calls"), list) and data.get("tool_calls"):
+                if isinstance(data["tool_calls"][0], dict):
+                    tool_call = data["tool_calls"][0]
+            if isinstance(data.get("functions"), list):
+                logger.info("🔧 Function call batch received")
+                for call in data["functions"]:
+                    if not isinstance(call, dict):
+                        continue
+                    call_name = call.get("name") or call.get("function_name") or ""
+                    call_args = call.get("arguments") or call.get("args") or {}
+                    response_id_key = "call_id"
+                    call_id = call.get("call_id") or call.get("callId")
+                    if call.get("function_call_id"):
+                        response_id_key = "function_call_id"
+                        call_id = call.get("function_call_id")
+                    elif call.get("tool_call_id"):
+                        response_id_key = "tool_call_id"
+                        call_id = call.get("tool_call_id")
+                    elif call.get("id"):
+                        call_id = call.get("id")
+                    if not call_name or not call_id:
+                        logger.warning(
+                            "⚠️ Function call entry missing name or call_id; "
+                            f"entry_keys={list(call.keys())}"
+                        )
+                        continue
+                    await self._execute_function_call(
+                        session=session,
+                        function_name=call_name,
+                        function_args=call_args,
+                        call_id=call_id,
+                        raw_args=call_args,
+                        response_id_key=response_id_key,
+                    )
+                return
+            function_name = (
+                function_call.get("name")
+                or tool_call.get("name")
+                or tool_call.get("tool_name")
+                or data.get("name")
+                or data.get("function_name")
+                or data.get("tool_name")
+                or ""
+            )
+            raw_args = (
+                function_call.get("arguments")
+                if "arguments" in function_call
+                else data.get("arguments")
+            )
+            if raw_args is None:
+                raw_args = function_call.get("args", {})
+            if raw_args is None:
+                raw_args = tool_call.get("arguments")
+            function_args = raw_args if raw_args is not None else {}
+            response_id_key = "call_id"
+            call_id = data.get("call_id")
+            if data.get("function_call_id"):
+                response_id_key = "function_call_id"
+                call_id = data.get("function_call_id")
+            elif data.get("tool_call_id"):
+                response_id_key = "tool_call_id"
+                call_id = data.get("tool_call_id")
+            elif function_call.get("call_id"):
+                call_id = function_call.get("call_id")
+            elif function_call.get("id"):
+                call_id = function_call.get("id")
+            elif tool_call.get("id"):
+                call_id = tool_call.get("id")
+            elif data.get("id"):
+                call_id = data.get("id")
+            
+            logger.info(f"🔧 Function call received: {function_name} (call_id: {call_id})")
+            if not function_name or not call_id:
+                logger.warning(
+                    "⚠️ Function call missing name or call_id; "
+                    f"keys={list(data.keys())}"
+                )
+            logger.debug(f"🔧 Function call details: {json.dumps(data, indent=2)}")
+            
+            await self._execute_function_call(
+                session=session,
+                function_name=function_name,
+                function_args=function_args,
+                call_id=call_id,
+                raw_args=raw_args,
+                response_id_key=response_id_key,
+            )
+        
+        else:
+            # Log unhandled message types for debugging
+            logger.debug(f"📨 Unhandled message type: {msg_type} for {session.connection_id}")
+            # logger.debug(f"📨 Message data: {json.dumps(data, indent=2, default=str)}")
+
+    async def _execute_function_call(
+        self,
+        session: DeepgramSession,
+        function_name: str,
+        function_args,
+        call_id: str,
+        raw_args,
+        response_id_key: str,
+    ):
+        """Execute a function call and return results to Deepgram."""
+        if not function_name or not call_id:
+            return
+
+        try:
+            if isinstance(function_args, str):
+                try:
+                    function_args = json.loads(function_args)
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "⚠️ Function arguments were not valid JSON; "
+                        "passing through as raw string"
+                    )
+                    function_args = {"raw": function_args}
+
+            logger.debug(
+                f"🔧 Executing function '{function_name}' with args: "
+                f"{json.dumps(function_args, indent=2)}"
+            )
+            function_impl = FUNCTION_MAP.get(function_name)
+            if not function_impl:
+                result = {
+                    "success": False,
+                    "function": function_name,
+                    "error": f"Unknown function: {function_name}",
+                }
+            else:
+                if function_name in ("agent_filler", "end_call"):
+                    result = await function_impl(session.sts_ws, function_args)
+                else:
+                    result = await function_impl(function_args)
+
+            logger.info(f"✅ Function '{function_name}' completed: success={result.get('success')}")
+            logger.debug(f"🔧 Function result: {json.dumps(result, indent=2, default=str)}")
+
+            result_payload = result
+            if isinstance(raw_args, str):
+                result_payload = json.dumps(result, default=str)
+
+            function_result_message = {
+                "type": "FunctionCallResponse",
+                "id": call_id,
+                "name": function_name,
+                "content": result_payload,
+            }
+
+            await session.sts_ws.send(json.dumps(function_result_message, default=str))
+            logger.debug(f"✅ Sent function result to Deepgram for call_id: {call_id}")
+
+            if function_name == "end_call":
+                session.pending_disconnect = True
+                session.pending_disconnect_reason = "end_call"
+
+        except Exception as e:
+            logger.error(f"❌ Error executing function '{function_name}': {str(e)}", exc_info=True)
+            error_result = {
+                "success": False,
+                "function": function_name,
+                "error": str(e),
+            }
+            if isinstance(raw_args, str):
+                error_result = json.dumps(error_result, default=str)
+
+            function_result_message = {
+                "type": "FunctionCallResponse",
+                "id": call_id,
+                "name": function_name,
+                "content": error_result,
+            }
+
+            await session.sts_ws.send(json.dumps(function_result_message, default=str))
     
     async def _handle_audio_message(self, session: DeepgramSession, audio_data: bytes):
         """Handle binary audio messages (TTS) from Deepgram Voice Agent"""
@@ -393,15 +607,22 @@ class DeepgramManager:
             if session.sts_ws and session.is_active:
                 # Check WebSocket state
                 if session.sts_ws.closed:
-                    logger.warn(f"⚠️ STS WebSocket closed for {session.connection_id}")
+                    logger.debug(f"⚠️ STS WebSocket closed for {session.connection_id}, marking session inactive")
+                    session.is_active = False
                     return
                 await session.sts_ws.send(audio_data)
                 logger.debug(f"✅ Sent {len(audio_data)} bytes to Deepgram for {session.connection_id}")
             else:
-                logger.warn(f"⚠️ Connection not ready for {session.connection_id} (ws={session.sts_ws is not None}, active={session.is_active})")
+                logger.debug(f"⚠️ Connection not ready for {session.connection_id} (ws={session.sts_ws is not None}, active={session.is_active})")
+        except websockets.exceptions.ConnectionClosed as e:
+            # Connection was closed (timeout, error, etc.) - this is expected
+            logger.info(f"🔌 Deepgram connection closed for {session.connection_id}: {e.code} - {e.reason or 'no reason'}")
+            session.is_active = False
+            # Don't call close_session here - let the receiver handle cleanup
         except Exception as e:
             logger.error(f"Error sending audio to Deepgram for {session.connection_id}: {e}", exc_info=True)
-            await self.close_session(session.connection_id)
+            session.is_active = False
+            # Don't call close_session here - let the receiver handle cleanup
     
     async def send_audio(self, connection_id: str, audio_data: bytes, force_send: bool = False):
         """Send audio data to Deepgram Voice Agent
