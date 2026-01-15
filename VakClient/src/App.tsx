@@ -79,6 +79,8 @@ function App() {
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null); // Audio element for playback
   const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null); // For PCM audio capture
   const recordingSourceRef = useRef<MediaStreamAudioSourceNode | null>(null); // Audio source for recording
+  const activeAudioSourcesRef = useRef<AudioBufferSourceNode[]>([]); // Track active TTS sources for barge-in
+  const ttsPlaybackSessionRef = useRef<number>(0); // Invalidate in-flight playback on barge-in
 
   const addSystemMessage = useCallback((content: string) => {
     const now = new Date();
@@ -403,6 +405,7 @@ function App() {
             setIsProcessing(false);
             setIsAgentSpeaking(false);
           } else if (normalizedData.t === 'user-started-speaking') {
+            stopTtsPlayback('barge-in');
             addSystemMessage('👤 User started speaking');
           } else if (normalizedData.t === 'agent-started-speaking') {
             setIsAgentSpeaking(true);
@@ -866,6 +869,46 @@ function App() {
     addSystemMessage('⏹️ Recording stopped');
   };
 
+  const stopTtsPlayback = (reason: 'barge-in' | 'stop') => {
+    ttsPlaybackSessionRef.current += 1;
+    if (activeAudioSourcesRef.current.length > 0) {
+      activeAudioSourcesRef.current.forEach(source => {
+        try {
+          source.onended = null;
+          source.stop(0);
+        } catch (error) {
+          console.warn('Error stopping TTS source:', error);
+        }
+        try {
+          source.disconnect();
+        } catch (error) {
+          console.warn('Error disconnecting TTS source:', error);
+        }
+      });
+      activeAudioSourcesRef.current = [];
+    }
+
+    audioQueueRef.current = [];
+    ttsQueueRef.current = [];
+    nextScheduledTimeRef.current = 0;
+    isPlayingAudioRef.current = false;
+    setIsAgentSpeaking(false);
+
+    const interruptedMessageId = currentPlayingMessageIdRef.current;
+    currentPlayingMessageIdRef.current = null;
+    if (interruptedMessageId) {
+      setMessagePairs(prev => prev.map(pair => 
+        pair.id === interruptedMessageId 
+          ? { ...pair, status: 'complete' }
+          : pair
+      ));
+    }
+
+    if (reason === 'barge-in') {
+      addSystemMessage('⛔ Barge-in: stopping agent speech');
+    }
+  };
+
   // Helper function to create WAV file header
   const createWavHeader = (dataLength: number, sampleRate: number, numChannels: number, bitsPerSample: number): Uint8Array => {
     const header = new ArrayBuffer(44);
@@ -1033,6 +1076,7 @@ function App() {
     console.log(`🔊 [AUDIO-QUEUE] Processing ${audioQueueRef.current.length} audio chunks, AudioContext state: ${audioContextRef.current.state}`);
 
     isPlayingAudioRef.current = true;
+    const playbackSessionId = (ttsPlaybackSessionRef.current += 1);
     setIsAgentSpeaking(true);
     // Deepgram TTS outputs at 24kHz, but AudioContext is 48kHz
     // We'll resample by adjusting the buffer sample rate
@@ -1047,6 +1091,10 @@ function App() {
     // Schedule all queued chunks to play back-to-back
     let chunkIndex = 0;
     while (audioQueueRef.current.length > 0) {
+      if (ttsPlaybackSessionRef.current !== playbackSessionId) {
+        console.log('🔊 [AUDIO-QUEUE] Playback session invalidated, stopping scheduling');
+        break;
+      }
       const audioData = audioQueueRef.current.shift()!;
       chunkIndex++;
       
@@ -1100,6 +1148,7 @@ function App() {
         const source = audioContextRef.current.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(audioContextRef.current.destination);
+        activeAudioSourcesRef.current.push(source);
         
         // Track when audio finishes playing
         const endTime = startTime + duration;
@@ -1107,6 +1156,7 @@ function App() {
         
         source.onended = () => {
           console.log(`🔊 [AUDIO-QUEUE] Chunk ${chunkIndex} finished playing (last: ${isLastChunk})`);
+          activeAudioSourcesRef.current = activeAudioSourcesRef.current.filter(active => active !== source);
           // Track the messageId for this chunk before it's cleared
           const chunkMessageId = currentPlayingMessageIdRef.current;
           
