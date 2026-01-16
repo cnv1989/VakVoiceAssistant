@@ -2,11 +2,13 @@ import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
+import * as elbv2Actions from 'aws-cdk-lib/aws-elasticloadbalancingv2-actions';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as cognito from 'aws-cdk-lib/aws-cognito';
 import { Construct } from 'constructs';
 import { VakNetworkStack } from './vak-network-stack';
 
@@ -49,6 +51,22 @@ export interface VakAppStackProps extends cdk.StackProps {
    * Default: false (allow all traffic)
    */
   enableTwilioOnlyAccess?: boolean;
+  /**
+   * Cognito User Pool ARN for ALB auth on /ws.
+   */
+  cognitoUserPoolArn?: string;
+  /**
+   * Cognito User Pool Client ID for ALB auth on /ws.
+   */
+  cognitoUserPoolClientId?: string;
+  /**
+   * Cognito User Pool Domain (e.g. your-domain.auth.us-west-2.amazoncognito.com).
+   */
+  cognitoUserPoolDomain?: string;
+  /**
+   * Hostname to protect with Cognito auth.
+   */
+  cognitoHost?: string;
 }
 
 export class VakAppStack extends cdk.Stack {
@@ -249,6 +267,16 @@ export class VakAppStack extends cdk.Stack {
 
     service.attachToApplicationTargetGroup(targetGroup);
 
+    const cognitoConfigured = Boolean(
+      props.cognitoUserPoolArn &&
+      props.cognitoUserPoolDomain &&
+      props.cognitoHost
+    );
+
+    if (cognitoConfigured && !props.certificateArn) {
+      throw new Error('Cognito auth on /ws requires an HTTPS listener (certificateArn is missing).');
+    }
+
     // HTTP listener on port 80 for WebSocket connections
     // Note: ALB supports WebSocket connections over HTTP
     // Keep the same logical ID 'VakListener' to update existing listener
@@ -256,6 +284,15 @@ export class VakAppStack extends cdk.Stack {
       port: 80,
       protocol: elbv2.ApplicationProtocol.HTTP,
       defaultTargetGroups: [targetGroup],
+    });
+
+    httpListener.addAction('BlockWsOverHttp', {
+      priority: 5,
+      conditions: [elbv2.ListenerCondition.pathPatterns(['/ws*'])],
+      action: elbv2.ListenerAction.fixedResponse(403, {
+        contentType: 'text/plain',
+        messageBody: 'WebSocket auth requires WSS. Use wss://<host>/ws.',
+      }),
     });
 
     // HTTPS listener on port 443 for secure WebSocket (WSS) connections
@@ -268,6 +305,63 @@ export class VakAppStack extends cdk.Stack {
         certificates: [certificate],
         defaultTargetGroups: [targetGroup],
       });
+
+      if (cognitoConfigured) {
+        const userPool = cognito.UserPool.fromUserPoolArn(
+          this,
+          'VakCognitoUserPool',
+          props.cognitoUserPoolArn!
+        );
+        let userPoolClient: cognito.IUserPoolClient;
+        if (props.cognitoUserPoolClientId) {
+          userPoolClient = cognito.UserPoolClient.fromUserPoolClientId(
+            this,
+            'VakCognitoUserPoolClient',
+            props.cognitoUserPoolClientId
+          );
+        } else {
+          const userPoolId = props.cognitoUserPoolArn!.split('/').pop();
+          if (!userPoolId) {
+            throw new Error(`Invalid Cognito user pool ARN: ${props.cognitoUserPoolArn}`);
+          }
+          const callbackUrl = `https://${props.cognitoHost}/oauth2/idpresponse`;
+          const logoutUrl = `https://${props.cognitoHost}/`;
+          const albClient = new cognito.CfnUserPoolClient(this, 'VakAlbCognitoClient', {
+            userPoolId,
+            generateSecret: true,
+            allowedOAuthFlowsUserPoolClient: true,
+            allowedOAuthFlows: ['code'],
+            allowedOAuthScopes: ['openid', 'email', 'profile'],
+            supportedIdentityProviders: ['COGNITO'],
+            callbackUrLs: [callbackUrl],
+            logoutUrLs: [logoutUrl],
+          });
+          userPoolClient = cognito.UserPoolClient.fromUserPoolClientId(
+            this,
+            'VakAlbCognitoClientRef',
+            albClient.ref
+          );
+        }
+        const userPoolDomain = cognito.UserPoolDomain.fromDomainName(
+          this,
+          'VakCognitoUserPoolDomain',
+          props.cognitoUserPoolDomain!
+        );
+
+        httpsListener.addAction('AuthenticateWs', {
+          priority: 5,
+          conditions: [
+            elbv2.ListenerCondition.pathPatterns(['/ws*']),
+            elbv2.ListenerCondition.hostHeaders([props.cognitoHost!]),
+          ],
+          action: new elbv2Actions.AuthenticateCognitoAction({
+            userPool,
+            userPoolClient,
+            userPoolDomain,
+            next: elbv2.ListenerAction.forward([targetGroup]),
+          }),
+        });
+      }
 
       // Output secure WebSocket URL
       new cdk.CfnOutput(this, 'WebSocketSecureUrl', {
