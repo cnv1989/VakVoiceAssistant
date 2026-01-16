@@ -40,11 +40,10 @@ const enableTwilioOnlyAccess = app.node.tryGetContext('enableTwilioOnlyAccess') 
                                 app.node.tryGetContext('enableTwilioOnlyAccess') === true ||
                                 process.env.ENABLE_TWILIO_ONLY_ACCESS === 'true';
 
-const cognitoUserPoolArn = 'arn:aws:cognito-idp:us-west-2:844341423871:userpool/us-west-2_9T0qoUbEe';
-const cognitoUserPoolClientId = app.node.tryGetContext('cognitoUserPoolClientId') ||
-  process.env.COGNITO_USER_POOL_CLIENT_ID;
-const cognitoUserPoolDomain = '8ee61bec01c41bfe5448.auth.us-west-2.amazoncognito.com';
-const cognitoHost = 'vak.tutzi.ai';
+const cognitoHost = app.node.tryGetContext('cognitoHost') || process.env.COGNITO_HOST || 'vak.tutzi.ai';
+const cognitoDomainPrefix = app.node.tryGetContext('cognitoDomainPrefix') ||
+  process.env.COGNITO_DOMAIN_PREFIX ||
+  'vak-auth';
 
 const appStack = new VakAppStack(app, 'VakAppStack', {
   env,
@@ -55,10 +54,8 @@ const appStack = new VakAppStack(app, 'VakAppStack', {
   twilioAuthToken,
   certificateArn,
   enableTwilioOnlyAccess,
-  cognitoUserPoolArn,
-  cognitoUserPoolClientId,
-  cognitoUserPoolDomain,
   cognitoHost,
+  cognitoDomainPrefix,
 });
 
 // Add explicit dependency

@@ -478,6 +478,30 @@ function App() {
     setConnectionStatus('Disconnected');
   };
 
+  const getAuthUrl = useCallback(() => {
+    if (!wsUrl.startsWith('wss://')) {
+      return null;
+    }
+    try {
+      const httpsUrl = wsUrl.replace(/^wss:/, 'https:');
+      const url = new URL(httpsUrl);
+      return `${url.origin}${url.pathname}`;
+    } catch (error) {
+      console.error('Invalid WebSocket URL for auth:', error);
+      return null;
+    }
+  }, [wsUrl]);
+
+  const startCognitoAuth = () => {
+    const authUrl = getAuthUrl();
+    if (!authUrl) {
+      alert('Cognito auth requires a WSS URL (wss://host/ws).');
+      return;
+    }
+    window.open(authUrl, '_blank', 'noopener');
+    addSystemMessage(`🔐 Opened auth URL: ${authUrl}`);
+  };
+
 
   const sendTextMessage = () => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
@@ -1537,6 +1561,18 @@ function App() {
                 🚫 Disconnect
               </button>
             )}
+            <button
+              onClick={startCognitoAuth}
+              className="btn btn-secondary"
+              disabled={!getAuthUrl()}
+              style={{
+                marginLeft: '10px',
+                opacity: getAuthUrl() ? 1 : 0.5,
+                cursor: getAuthUrl() ? 'pointer' : 'not-allowed'
+              }}
+            >
+              🔐 Authenticate
+            </button>
           </div>
           <div className="status">
             Status:{' '}

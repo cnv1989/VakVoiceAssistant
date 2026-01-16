@@ -52,21 +52,13 @@ export interface VakAppStackProps extends cdk.StackProps {
    */
   enableTwilioOnlyAccess?: boolean;
   /**
-   * Cognito User Pool ARN for ALB auth on /ws.
-   */
-  cognitoUserPoolArn?: string;
-  /**
-   * Cognito User Pool Client ID for ALB auth on /ws.
-   */
-  cognitoUserPoolClientId?: string;
-  /**
-   * Cognito User Pool Domain (e.g. your-domain.auth.us-west-2.amazoncognito.com).
-   */
-  cognitoUserPoolDomain?: string;
-  /**
    * Hostname to protect with Cognito auth.
    */
   cognitoHost?: string;
+  /**
+   * Cognito hosted UI domain prefix (e.g. vak-auth).
+   */
+  cognitoDomainPrefix?: string;
 }
 
 export class VakAppStack extends cdk.Stack {
@@ -267,11 +259,7 @@ export class VakAppStack extends cdk.Stack {
 
     service.attachToApplicationTargetGroup(targetGroup);
 
-    const cognitoConfigured = Boolean(
-      props.cognitoUserPoolArn &&
-      props.cognitoUserPoolDomain &&
-      props.cognitoHost
-    );
+    const cognitoConfigured = Boolean(props.cognitoHost && props.cognitoDomainPrefix);
 
     if (cognitoConfigured && !props.certificateArn) {
       throw new Error('Cognito auth on /ws requires an HTTPS listener (certificateArn is missing).');
@@ -307,46 +295,26 @@ export class VakAppStack extends cdk.Stack {
       });
 
       if (cognitoConfigured) {
-        const userPool = cognito.UserPool.fromUserPoolArn(
-          this,
-          'VakCognitoUserPool',
-          props.cognitoUserPoolArn!
-        );
-        let userPoolClient: cognito.IUserPoolClient;
-        if (props.cognitoUserPoolClientId) {
-          userPoolClient = cognito.UserPoolClient.fromUserPoolClientId(
-            this,
-            'VakCognitoUserPoolClient',
-            props.cognitoUserPoolClientId
-          );
-        } else {
-          const userPoolId = props.cognitoUserPoolArn!.split('/').pop();
-          if (!userPoolId) {
-            throw new Error(`Invalid Cognito user pool ARN: ${props.cognitoUserPoolArn}`);
-          }
-          const callbackUrl = `https://${props.cognitoHost}/oauth2/idpresponse`;
-          const logoutUrl = `https://${props.cognitoHost}/`;
-          const albClient = new cognito.CfnUserPoolClient(this, 'VakAlbCognitoClient', {
-            userPoolId,
-            generateSecret: true,
-            allowedOAuthFlowsUserPoolClient: true,
-            allowedOAuthFlows: ['code'],
-            allowedOAuthScopes: ['openid', 'email', 'profile'],
-            supportedIdentityProviders: ['COGNITO'],
-            callbackUrLs: [callbackUrl],
-            logoutUrLs: [logoutUrl],
-          });
-          userPoolClient = cognito.UserPoolClient.fromUserPoolClientId(
-            this,
-            'VakAlbCognitoClientRef',
-            albClient.ref
-          );
-        }
-        const userPoolDomain = cognito.UserPoolDomain.fromDomainName(
-          this,
-          'VakCognitoUserPoolDomain',
-          props.cognitoUserPoolDomain!
-        );
+        const userPool = new cognito.UserPool(this, 'VakUserPool', {
+          selfSignUpEnabled: true,
+          signInAliases: { email: true },
+        });
+        const callbackUrl = `https://${props.cognitoHost}/oauth2/idpresponse`;
+        const logoutUrl = `https://${props.cognitoHost}/logout`;
+        const userPoolClient = new cognito.UserPoolClient(this, 'VakUserPoolClient', {
+          userPool,
+          generateSecret: true,
+          oAuth: {
+            flows: { authorizationCodeGrant: true },
+            scopes: [cognito.OAuthScope.OPENID, cognito.OAuthScope.EMAIL, cognito.OAuthScope.PROFILE],
+            callbackUrls: [callbackUrl],
+            logoutUrls: [logoutUrl],
+          },
+          supportedIdentityProviders: [cognito.UserPoolClientIdentityProvider.COGNITO],
+        });
+        const userPoolDomain = userPool.addDomain('VakUserPoolDomain', {
+          cognitoDomain: { domainPrefix: props.cognitoDomainPrefix! },
+        });
 
         httpsListener.addAction('AuthenticateWs', {
           priority: 5,
