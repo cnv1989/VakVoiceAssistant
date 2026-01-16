@@ -296,8 +296,12 @@ export class VakAppStack extends cdk.Stack {
 
       if (cognitoConfigured) {
         const userPool = new cognito.UserPool(this, 'VakUserPool', {
-          selfSignUpEnabled: true,
+          selfSignUpEnabled: false,
           signInAliases: { email: true },
+          userInvitation: {
+            emailSubject: 'You are invited to Vak',
+            emailBody: 'Your username is {username} and temporary password is {####}.',
+          },
         });
         const callbackUrl = `https://${props.cognitoHost}/oauth2/idpresponse`;
         const logoutUrl = `https://${props.cognitoHost}/logout`;
