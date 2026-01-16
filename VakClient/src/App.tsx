@@ -33,19 +33,16 @@ const STATUS_META: Record<MessagePair['status'], { icon: string; label: string; 
   complete: { icon: '✅', label: 'Complete', variant: 'complete' },
 };
 
-type EndpointType = 'local' | 'alb' | 'custom';
+type EndpointType = 'local' | 'alb';
 
 function App() {
   // Default to Deepgram server WebSocket for local development
   // For ALB, use: wss://vak.tutzi.ai/ws
-  const defaultAlbDns = 'vak.tutzi.ai';
   const defaultWsUrl = import.meta.env.VITE_WS_URL || `ws://localhost:8080/ws`;
   const [wsUrl, setWsUrl] = useState<string>(defaultWsUrl);
   const [endpointType, setEndpointType] = useState<EndpointType>(
-    defaultWsUrl.includes('localhost') ? 'local' : 
-    defaultWsUrl.includes('tutzi.ai') || defaultWsUrl.includes('elb.amazonaws.com') ? 'alb' : 'custom'
+    defaultWsUrl.includes('localhost') ? 'local' : 'alb'
   );
-  const [albDns, setAlbDns] = useState<string>(defaultAlbDns);
   const [connected, setConnected] = useState(false);
   const [systemMessages, setSystemMessages] = useState<SystemMessageEntry[]>([]);
   const [textInput, setTextInput] = useState('');
@@ -1203,10 +1200,6 @@ function App() {
           }
         };
         
-        source.onerror = (error) => {
-          console.error(`🔊 [AUDIO-QUEUE] Error playing chunk ${chunkIndex}:`, error);
-        };
-        
         // Schedule the chunk to play at the calculated start time
         console.log(`🔊 [AUDIO-QUEUE] Scheduling chunk ${chunkIndex} to start at ${startTime.toFixed(3)}s`);
         source.start(startTime);
@@ -1371,9 +1364,7 @@ function App() {
             <button
               onClick={() => {
                 setEndpointType('alb');
-                if (albDns) {
-                  setWsUrl(`wss://${albDns}/ws`);
-                }
+                setWsUrl('wss://vak.tutzi.ai/ws');
               }}
               disabled={connected}
               style={{
@@ -1388,26 +1379,7 @@ function App() {
                 transition: 'all 0.2s'
               }}
             >
-              ☁️ ALB
-            </button>
-            <button
-              onClick={() => {
-                setEndpointType('custom');
-              }}
-              disabled={connected}
-              style={{
-                padding: '8px 16px',
-                fontSize: '14px',
-                borderRadius: '6px',
-                border: '1px solid #d1d5db',
-                backgroundColor: endpointType === 'custom' ? '#3b82f6' : '#ffffff',
-                color: endpointType === 'custom' ? '#ffffff' : '#374151',
-                cursor: connected ? 'not-allowed' : 'pointer',
-                opacity: connected ? 0.6 : 1,
-                transition: 'all 0.2s'
-              }}
-            >
-              ✏️ Custom URL
+              ☁️ vak.tutzi.ai
             </button>
           </div>
 
@@ -1427,118 +1399,18 @@ function App() {
             </div>
           )}
 
-          {/* ALB DNS Input (shown when ALB is selected) */}
           {endpointType === 'alb' && (
-            <div style={{ marginBottom: '15px' }}>
-              <div style={{ 
-                display: 'flex', 
-                alignItems: 'center', 
-                gap: '10px',
-                marginBottom: '5px'
-              }}>
-                <label style={{ 
-                  fontSize: '14px', 
-                  fontWeight: '500', 
-                  color: '#374151'
-                }}>
-                  ALB DNS Name:
-                </label>
-                <label style={{ 
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '5px',
-                  fontSize: '13px',
-                  color: '#6b7280',
-                  cursor: 'not-allowed'
-                }}>
-                  <input
-                    type="checkbox"
-                    checked={true}
-                    disabled={true}
-                    style={{ cursor: 'not-allowed' }}
-                  />
-                  Use HTTPS (wss://) - Enabled
-                </label>
-              </div>
-              <input
-                type="text"
-                placeholder="e.g., vak-alb-123456789.us-west-2.elb.amazonaws.com"
-                value={albDns}
-                onChange={(e) => {
-                  const dns = e.target.value.trim();
-                  setAlbDns(dns);
-                  if (dns) {
-                    setWsUrl(`wss://${dns}/ws`);
-                  }
-                }}
-                disabled={connected}
-                style={{
-                  width: '100%',
-                  padding: '10px',
-                  fontSize: '14px',
-                  borderRadius: '6px',
-                  border: '1px solid #d1d5db',
-                  backgroundColor: connected ? '#f3f4f6' : '#ffffff'
-                }}
-              />
-              {albDns && (
-                <div style={{ 
-                  marginTop: '8px',
-                  fontSize: '12px',
-                  color: '#6b7280',
-                  fontFamily: 'monospace',
-                  padding: '6px',
-                  backgroundColor: '#f9fafb',
-                  borderRadius: '4px',
-                  border: '1px solid #e5e7eb'
-                }}>
-                  📡 Will connect to: wss://{albDns}/ws
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Custom URL Input (shown when custom is selected) */}
-          {endpointType === 'custom' && (
-            <div style={{ marginBottom: '15px' }}>
-              <label style={{ 
-                display: 'block', 
-                fontSize: '14px', 
-                fontWeight: '500', 
-                color: '#374151',
-                marginBottom: '5px'
-              }}>
-                WebSocket URL:
-              </label>
-              <input
-                type="text"
-                placeholder="ws://host:port/ws or wss://host:port/ws"
-                value={wsUrl}
-                onChange={(e) => setWsUrl(e.target.value)}
-                disabled={connected}
-                style={{
-                  width: '100%',
-                  padding: '10px',
-                  fontSize: '14px',
-                  borderRadius: '6px',
-                  border: '1px solid #d1d5db',
-                  backgroundColor: connected ? '#f3f4f6' : '#ffffff'
-                }}
-              />
-              {wsUrl && (
-                <div style={{ 
-                  marginTop: '8px',
-                  fontSize: '12px',
-                  color: '#6b7280',
-                  fontFamily: 'monospace',
-                  padding: '6px',
-                  backgroundColor: '#f9fafb',
-                  borderRadius: '4px',
-                  border: '1px solid #e5e7eb'
-                }}>
-                  📡 Will connect to: {wsUrl}
-                </div>
-              )}
+            <div style={{ 
+              marginBottom: '15px',
+              fontSize: '12px',
+              color: '#6b7280',
+              fontFamily: 'monospace',
+              padding: '6px',
+              backgroundColor: '#f9fafb',
+              borderRadius: '4px',
+              border: '1px solid #e5e7eb'
+            }}>
+              📡 Will connect to: wss://vak.tutzi.ai/ws
             </div>
           )}
 
@@ -1548,10 +1420,9 @@ function App() {
               <button 
                 onClick={connectWebSocket} 
                 className="btn btn-primary"
-                disabled={endpointType === 'alb' && !albDns.trim()}
                 style={{
-                  opacity: (endpointType === 'alb' && !albDns.trim()) ? 0.5 : 1,
-                  cursor: (endpointType === 'alb' && !albDns.trim()) ? 'not-allowed' : 'pointer'
+                  opacity: 1,
+                  cursor: 'pointer'
                 }}
               >
                 🔌 Connect
