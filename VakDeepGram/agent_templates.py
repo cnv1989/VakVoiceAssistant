@@ -73,7 +73,7 @@ Correct pattern to follow:
 Remember: ANY phrase indicating you're about to look something up MUST be followed immediately by the appropriate tool call.
 """
 
-VOICE = "aura-2-thalia-en"
+VOICE = "aura-2-apollo-en"
 # this gets updated by the agent template
 FIRST_MESSAGE = ""
 # audio settings

@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     deepgram_speaking_provider: str = "eleven_labs"
     deepgram_speaking_model: Optional[str] = None  # Used for Deepgram TTS
     deepgram_speaking_model_id: Optional[str] = "eleven_multilingual_v2"  # Used for ElevenLabs
-    deepgram_speaking_voice_id: Optional[str] = "cgSgspJ2msm6clMCkdW9"  # Used for ElevenLabs
+    deepgram_speaking_voice_id: Optional[str] = "0mevMNFMwHxBOUTpeMGN"  # Used for ElevenLabs
     
     deepgram_input_sample_rate: int = 48000
     deepgram_output_sample_rate: int = 24000
