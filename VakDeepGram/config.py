@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     
     deepgram_input_sample_rate: int = 48000
     deepgram_output_sample_rate: int = 24000
+
+    deepgram_sts_timeout_seconds: int = 300
     
     # Default prompt and greeting matching the provided configuration
     deepgram_agent_prompt: Optional[str] = """#Role
@@ -59,16 +61,6 @@ You are a barber shop assistant helping customers with questions about store hou
 -If asked about something unrelated or outside your scope, respond: "I cannot help you with that, however I can help you with our store hours, prices for different services, scheduling appointments, store items, or staff information."
 -For scheduling a new appointment, ask for first and last name and proceed without requiring a customer lookup unless needed.
 -Before invoking any tool, say a short, natural filler sentence, then immediately call the tool.
--Filler examples by scenario:
-  - store_hours: "Let me grab that for you in a second."
-  - location: "Let me pull up our location details."
-  - services: "Let me check our services and pricing."
-  - staff: "Let me see who is available."
-  - appointments: "Let me look that up for you."
-  - availability: "Let me check the calendar for openings."
-  - schedule: "Let me get that scheduled."
-  - orders: "Let me pull up your recent orders."
-  - customer_lookup: "Let me pull up your account."
 
 #What You Help With
 -Store hours: Provide current operating hours when asked using the get_store_hours tool.

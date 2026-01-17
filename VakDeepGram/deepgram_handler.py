@@ -167,7 +167,7 @@ class DeepgramManager:
             sts_ws = await websockets.connect(
                 "wss://agent.deepgram.com/v1/agent/converse",
                 subprotocols=["token", self.api_key],
-                timeout=120,
+                timeout=config.settings.deepgram_sts_timeout_seconds,
             )
             return sts_ws
         except Exception as e:
@@ -358,8 +358,12 @@ class DeepgramManager:
             # It's not really an error, just Deepgram closing due to inactivity
             if error_code == "CLIENT_MESSAGE_TIMEOUT":
                 logger.info(f"⏱️ Deepgram timeout (no user speech): {error_msg}")
-                # Don't send error to client - this is normal behavior
-                # The connection will be closed, and client can reconnect if needed
+                await session.send_to_client_safe({
+                    "type": "disconnect",
+                    "reason": "timeout",
+                    "connectionId": session.connection_id,
+                })
+                await self.close_session(session.connection_id)
             else:
                 logger.error(f"❌ Deepgram error event: {error_msg} (code: {error_code})")
                 await session.send_to_client_safe({
