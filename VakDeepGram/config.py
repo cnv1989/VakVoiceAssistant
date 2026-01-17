@@ -18,8 +18,10 @@ class Settings(BaseSettings):
     twilio_auth_token: str = None  # Required for signature verification
     
     # Square Configuration
-    square_access_token: Optional[str] = "EAAAl-iqlJHzrhtl9MHaXY9evlyRA997KS_EtJ_8mdXv_zm0mWk0bfFMUfhDDdDW"  # Hardcoded for now, replace with actual token
     square_environment: Optional[str] = "sandbox"  # Use 'production' for live environment
+    square_account_table: str = "SquareAccount-pxy5meaaojbaxjwedt6v6oidw4-NONE"
+    business_number_table: str = "BusinessNumber-pxy5meaaojbaxjwedt6v6oidw4-NONE"
+    aws_region: str = "us-west-2"
     
     # Server Configuration
     host: str = "0.0.0.0"
@@ -57,11 +59,12 @@ You are a barber shop assistant helping customers with questions about store hou
 -If asked about something unrelated or outside your scope, respond: "I cannot help you with that, however I can help you with our store hours, prices for different services, scheduling appointments, store items, or staff information."
 
 #What You Help With
--Store hours: Provide current operating hours when asked.
--Prices: Share pricing for different services (haircuts, beard trims, etc.) when asked. You can access the store's catalog to get current prices for items and services.
+-Store hours: Provide current operating hours when asked using the get_store_hours tool.
+-Location: Provide address and phone details using the get_store_location tool.
+-Prices: Share pricing for different services (haircuts, beard trims, etc.) using the get_services tool.
 -Scheduling: Help customers book appointments when requested.
--Store items/products: Answer questions about available products, services, and their prices from the store catalog.
--Staff information: Provide information about staff members, their roles, and availability when asked.
+-Store items/products: Answer questions about available services and their prices using the get_services tool.
+-Staff information: Provide information about staff members, their roles, and availability using the get_staff tool.
 
 #Style
 -Answer directly and naturally.

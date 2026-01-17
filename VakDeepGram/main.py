@@ -13,6 +13,12 @@ from twilio.request_validator import RequestValidator
 import uvicorn
 import config
 from deepgram_handler import deepgram_manager
+from connection_store import (
+    resolve_business_context,
+    set_connection_context,
+    clear_connection_context,
+    normalize_phone_number,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -104,6 +110,16 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     connection_id = f"ws-{uuid.uuid4().hex[:12]}"
     logger.info(f"WebSocket connection established: {connection_id}")
+
+    business_number = websocket.query_params.get("businessNumber")
+    if business_number:
+        logger.info("Browser client provided businessNumber=%s for %s", business_number, connection_id)
+        context = await resolve_business_context(business_number)
+        set_connection_context(connection_id, context)
+        if not context.get("success"):
+            logger.warning("Failed to resolve business context: %s", context.get("error"))
+    else:
+        logger.info("No businessNumber provided for %s", connection_id)
     
     session = None
     
@@ -196,6 +212,7 @@ async def websocket_endpoint(websocket: WebSocket):
         # Clean up session
         if session:
             await deepgram_manager.close_session(connection_id)
+        clear_connection_context(connection_id)
         logger.info(f"Cleaned up connection: {connection_id}")
 
 
@@ -337,21 +354,11 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
         # Other message types can be logged but don't need to be sent to Twilio
         logger.debug(f"Deepgram message for Twilio: {msg_type}")
     
-    # Start Deepgram session immediately (matches sts-twilio: async with sts_connect() as sts_ws)
-    logger.info(f"Starting Deepgram session immediately for Twilio {connection_id} (mulaw mode)")
-    try:
-        session = await deepgram_manager.create_session(connection_id, use_mulaw=True)
-        session_ref["value"] = session
-        # Set callback immediately - it will wait for streamSid before sending audio
-        session.set_send_callback(send_to_deepgram_wrapper)
-        logger.info(f"Deepgram session created and callback set for {connection_id}")
-    except Exception as e:
-        logger.error(f"Failed to create Deepgram session: {e}", exc_info=True)
-        await websocket.close()
-        return
+    session_ready = asyncio.Event()
     
     async def deepgram_receiver():
         """Receive messages from Deepgram and forward to Twilio (matches sts-twilio sts_receiver)"""
+        await session_ready.wait()
         # Wait for streamSid - callback is already set, but we need streamSid before sending audio
         await streamsid_queue.get()
         logger.info(f"Deepgram receiver ready for {connection_id}, streamSid: {stream_sid_ref['value']}")
@@ -377,11 +384,96 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                 if event == "start":
                     logger.info(f"Twilio stream started: {connection_id}")
                     start_data = data.get("start", {})
+                    custom_params = start_data.get("customParameters") or start_data.get("custom_parameters") or {}
+                    custom_params_lower = {
+                        str(key).lower(): value for key, value in custom_params.items()
+                    }
                     sid = start_data.get("streamSid")
+                    to_number = (
+                        custom_params.get("Called")
+                        or custom_params.get("To")
+                        or custom_params_lower.get("called")
+                        or custom_params_lower.get("to")
+                        or start_data.get("to")
+                        or start_data.get("called")
+                        or start_data.get("To")
+                    )
+                    from_number = (
+                        custom_params.get("Caller")
+                        or custom_params.get("From")
+                        or custom_params_lower.get("caller")
+                        or custom_params_lower.get("from")
+                        or start_data.get("from")
+                        or start_data.get("From")
+                    )
+                    call_sid = (
+                        custom_params.get("CallSid")
+                        or custom_params_lower.get("callsid")
+                        or start_data.get("callSid")
+                        or start_data.get("CallSid")
+                    )
+                    service_name = (
+                        custom_params.get("Service")
+                        or custom_params_lower.get("service")
+                    )
+                    account_sid = start_data.get("accountSid") or start_data.get("AccountSid")
+                    
+                    logger.info(
+                        "Twilio start event: connectionId=%s streamSid=%s callSid=%s accountSid=%s from=%s to=%s service=%s",
+                        connection_id,
+                        sid,
+                        call_sid,
+                        account_sid,
+                        from_number,
+                        to_number,
+                        service_name,
+                    )
+                    if custom_params:
+                        logger.info("Twilio custom parameters: %s", json.dumps(custom_params, default=str))
+                    logger.debug("Twilio start event full data: %s", json.dumps(data, default=str))
+                    normalized_number = normalize_phone_number(to_number)
+                    if normalized_number:
+                        context = await resolve_business_context(normalized_number)
+                        context.update(
+                            {
+                                "called": to_number,
+                                "caller": from_number,
+                                "service": service_name,
+                                "callSid": call_sid,
+                            }
+                        )
+                        set_connection_context(connection_id, context)
+                        if not context.get("success"):
+                            logger.warning("Failed to resolve business context: %s", context.get("error"))
+                    else:
+                        logger.info("No Twilio business number available for %s", connection_id)
+                        set_connection_context(
+                            connection_id,
+                            {
+                                "success": False,
+                                "error": "Missing business number.",
+                                "called": to_number,
+                                "caller": from_number,
+                                "service": service_name,
+                                "callSid": call_sid,
+                            },
+                        )
                     if sid:
                         stream_sid_ref["value"] = sid
                         streamsid_queue.put_nowait(sid)
                         logger.info(f"Got streamSid: {sid}")
+                    if session_ref["value"] is None:
+                        logger.info(f"Starting Deepgram session for Twilio {connection_id} (mulaw mode)")
+                        try:
+                            session = await deepgram_manager.create_session(connection_id, use_mulaw=True)
+                            session_ref["value"] = session
+                            session.set_send_callback(send_to_deepgram_wrapper)
+                            session_ready.set()
+                            logger.info(f"Deepgram session created and callback set for {connection_id}")
+                        except Exception as e:
+                            logger.error(f"Failed to create Deepgram session: {e}", exc_info=True)
+                            await websocket.close()
+                            return
                 
                 elif event == "connected":
                     logger.info(f"Twilio connected: {connection_id}")
@@ -420,6 +512,7 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
     
     async def deepgram_sender():
         """Send raw mulaw audio from Twilio to Deepgram (matches sts-twilio sts_sender)"""
+        await session_ready.wait()
         # Session is already created with callback set, just start sending
         logger.info(f"Deepgram sender started for {connection_id}")
         
@@ -456,6 +549,7 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
         # Clean up session
         if session_ref["value"]:
             await deepgram_manager.close_session(connection_id)
+        clear_connection_context(connection_id)
         logger.info(f"Cleaned up Twilio connection: {connection_id}")
 
 

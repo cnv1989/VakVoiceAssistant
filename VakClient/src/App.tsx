@@ -46,6 +46,7 @@ function App() {
   const [connected, setConnected] = useState(false);
   const [systemMessages, setSystemMessages] = useState<SystemMessageEntry[]>([]);
   const [textInput, setTextInput] = useState('');
+  const [businessNumber, setBusinessNumber] = useState('+15104054454');
   const [isRecording, setIsRecording] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<string>('Disconnected');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -133,6 +134,22 @@ function App() {
   }, []);
 
 
+    const buildWebSocketUrl = useCallback((baseUrl: string) => {
+      try {
+        const scheme = baseUrl.startsWith('wss:') ? 'wss:' : 'ws:';
+        const url = new URL(baseUrl.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:'));
+        if (businessNumber.trim()) {
+          url.searchParams.set('businessNumber', businessNumber.trim());
+          console.log('📞 Using businessNumber:', businessNumber.trim());
+        }
+        url.protocol = scheme;
+        return url.toString();
+    } catch (error) {
+      console.error('Invalid WebSocket URL:', error);
+      return baseUrl;
+    }
+  }, [businessNumber]);
+
   const connectWebSocket = async () => {
     if (!wsUrl) {
       alert('Please enter WebSocket URL');
@@ -146,7 +163,7 @@ function App() {
       // Note: For IAM authentication, the server will validate signatures
       // Browser WebSocket API doesn't support custom headers, so IAM auth
       // would need to be handled via query parameters or a proxy
-      const ws = new WebSocket(wsUrl);
+      const ws = new WebSocket(buildWebSocketUrl(wsUrl));
       wsRef.current = ws;
 
       ws.onopen = () => {
@@ -1444,6 +1461,32 @@ function App() {
             >
               🔐 Authenticate
             </button>
+          </div>
+          <div style={{ marginTop: '12px' }}>
+            <label style={{ 
+              display: 'block', 
+              fontSize: '14px', 
+              fontWeight: '500', 
+              color: '#374151',
+              marginBottom: '5px'
+            }}>
+              Business Number (for testing):
+            </label>
+            <input
+              type="text"
+              placeholder="+15551234567"
+              value={businessNumber}
+              onChange={(e) => setBusinessNumber(e.target.value)}
+              disabled={connected}
+              style={{
+                width: '100%',
+                padding: '10px',
+                fontSize: '14px',
+                borderRadius: '6px',
+                border: '1px solid #d1d5db',
+                backgroundColor: connected ? '#f3f4f6' : '#ffffff'
+              }}
+            />
           </div>
           <div className="status">
             Status:{' '}

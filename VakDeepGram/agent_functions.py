@@ -8,8 +8,12 @@ from business_logic import (
     prepare_agent_filler_message,
     prepare_farewell_message,
 )
-from store_tools import get_services as get_store_services
-from store_tools import get_staff as get_store_staff
+from store_tools import (
+    get_services_from_context,
+    get_staff_from_context,
+    get_store_hours_from_context,
+    get_store_location_from_context,
+)
 
 
 async def find_customer(params):
@@ -83,32 +87,22 @@ async def end_call(websocket, params):
 
 async def get_store_hours(params):
     """Return store hours."""
-    _ = params
-    return {
-        "success": True,
-        "hours": {
-            "monday": "09:00-18:00",
-            "tuesday": "09:00-18:00",
-            "wednesday": "09:00-18:00",
-            "thursday": "09:00-18:00",
-            "friday": "09:00-18:00",
-            "saturday": "10:00-16:00",
-            "sunday": "closed",
-        },
-        "timezone": "local",
-    }
+    return get_store_hours_from_context(params)
 
 
-async def get_staff(params):
-    """Return store staff information."""
-    _ = params
-    return get_store_staff()
+async def get_store_location(params):
+    """Return store location information."""
+    return get_store_location_from_context(params)
 
 
 async def get_services(params):
     """Return store services."""
-    _ = params
-    return get_store_services()
+    return get_services_from_context(params)
+
+
+async def get_staff(params):
+    """Return store staff information."""
+    return get_staff_from_context(params)
 
 
 # Function definitions that will be sent to the Voice Agent API
@@ -298,11 +292,11 @@ FUNCTION_DEFINITIONS = [
         },
     },
     {
-        "name": "get_staff",
-        "description": """Get staff member information. Use this when customers ask:
-        - "Who works there?"
-        - "Do you have a stylist who does [service]?"
-        - "Tell me about your staff." """,
+        "name": "get_store_location",
+        "description": """Get store location details. Use this when customers ask:
+        - "Where are you located?"
+        - "What's your address?"
+        - "What's your phone number?" """,
         "parameters": {
             "type": "object",
             "properties": {},
@@ -315,6 +309,18 @@ FUNCTION_DEFINITIONS = [
         - "What services do you offer?"
         - "How much is a haircut?"
         - "Do you offer [service]?" """,
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "get_staff",
+        "description": """Get staff member information. Use this when customers ask:
+        - "Who works there?"
+        - "Do you have a stylist who does [service]?"
+        - "Tell me about your staff." """,
         "parameters": {
             "type": "object",
             "properties": {},
@@ -334,6 +340,7 @@ FUNCTION_MAP = {
     "agent_filler": agent_filler,
     "end_call": end_call,
     "get_store_hours": get_store_hours,
-    "get_staff": get_staff,
+    "get_store_location": get_store_location,
     "get_services": get_services,
+    "get_staff": get_staff,
 }

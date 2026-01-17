@@ -52,7 +52,7 @@ class DeepgramManager:
         self.sessions: Dict[str, DeepgramSession] = {}
         self.api_key = config.settings.deepgram_api_key
     
-    def _build_settings(self, use_mulaw: bool = False) -> dict:
+    def _build_settings(self, use_mulaw: bool = False, connection_id: Optional[str] = None) -> dict:
         """Build the Settings message as JSON dict
         
         Args:
@@ -93,8 +93,9 @@ class DeepgramManager:
             "provider": think_provider,
             "functions": FUNCTION_DEFINITIONS,
         }
-        if config.settings.deepgram_agent_prompt:
-            think_config["prompt"] = config.settings.deepgram_agent_prompt
+        prompt = config.settings.deepgram_agent_prompt or ""
+        if prompt:
+            think_config["prompt"] = prompt
         
         # Build speak provider
         if config.settings.deepgram_speaking_provider == "eleven_labs":
@@ -165,7 +166,8 @@ class DeepgramManager:
         try:
             sts_ws = await websockets.connect(
                 "wss://agent.deepgram.com/v1/agent/converse",
-                subprotocols=["token", self.api_key]
+                subprotocols=["token", self.api_key],
+                timeout=120,
             )
             return sts_ws
         except Exception as e:
@@ -193,7 +195,7 @@ class DeepgramManager:
         self.sessions[connection_id] = session
         
         # Build and send settings
-        settings = self._build_settings(use_mulaw=use_mulaw)
+        settings = self._build_settings(use_mulaw=use_mulaw, connection_id=connection_id)
         await sts_ws.send(json.dumps(settings))
         logger.info(f"Sent settings to Deepgram Voice Agent for {connection_id}")
         
@@ -487,6 +489,8 @@ class DeepgramManager:
                         "passing through as raw string"
                     )
                     function_args = {"raw": function_args}
+            if isinstance(function_args, dict):
+                function_args.setdefault("connection_id", session.connection_id)
 
             logger.debug(
                 f"🔧 Executing function '{function_name}' with args: "

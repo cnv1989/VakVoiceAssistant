@@ -128,10 +128,14 @@ export class VakAppStack extends cdk.Stack {
       assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
     });
 
-    // No AWS service permissions needed - Deepgram uses external API
-    // Keep S3 and DynamoDB grants if needed for other purposes, otherwise remove
-    // artifactsBucket.grantReadWrite(taskRole);
-    // sessionsTable.grantReadWriteData(taskRole);
+    // Allow ECS tasks to access DynamoDB sessions table.
+    sessionsTable.grantReadWriteData(taskRole);
+    const squareAccountTableArn = `arn:aws:dynamodb:${this.region}:${this.account}:table/SquareAccount-pxy5meaaojbaxjwedt6v6oidw4-NONE`;
+    const businessNumberTableArn = `arn:aws:dynamodb:${this.region}:${this.account}:table/BusinessNumber-pxy5meaaojbaxjwedt6v6oidw4-NONE`;
+    const squareAccountTable = dynamodb.Table.fromTableArn(this, 'SquareAccountTable', squareAccountTableArn);
+    const businessNumberTable = dynamodb.Table.fromTableArn(this, 'BusinessNumberTable', businessNumberTableArn);
+    squareAccountTable.grantReadWriteData(taskRole);
+    businessNumberTable.grantReadWriteData(taskRole);
 
     // ECS Task Definition
     // Valid Fargate CPU/Memory combinations: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-cpu-memory-error.html

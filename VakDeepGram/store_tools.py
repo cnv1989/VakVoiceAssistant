@@ -2,155 +2,157 @@
 Store Tools Configuration for Deepgram Voice Agent
 Defines function schemas and implementations for store operations
 """
-import json
 import logging
-from typing import Dict, Any
+from typing import Any, Dict
+
+from square import AsyncSquare
+try:
+    from square.environment import SquareEnvironment
+except Exception:  # pragma: no cover - optional dependency behavior
+    SquareEnvironment = None
+
+import config
+from connection_store import get_connection_context
 
 logger = logging.getLogger(__name__)
 
-# Mock data for staff
-MOCK_STAFF = [
-    {
-        "id": "staff_001",
-        "name": "Sarah Johnson",
-        "role": "Stylist",
-        "email": "sarah.johnson@store.com",
-        "phone": "+1-555-0101",
-        "specialties": ["Haircuts", "Color", "Styling"]
-    },
-    {
-        "id": "staff_002",
-        "name": "Michael Chen",
-        "role": "Senior Stylist",
-        "email": "michael.chen@store.com",
-        "phone": "+1-555-0102",
-        "specialties": ["Haircuts", "Beards", "Fades"]
-    },
-    {
-        "id": "staff_003",
-        "name": "Emily Rodriguez",
-        "role": "Color Specialist",
-        "email": "emily.rodriguez@store.com",
-        "phone": "+1-555-0103",
-        "specialties": ["Color", "Highlights", "Balayage"]
-    },
-    {
-        "id": "staff_004",
-        "name": "David Kim",
-        "role": "Massage Therapist",
-        "email": "david.kim@store.com",
-        "phone": "+1-555-0104",
-        "specialties": ["Massage", "Aromatherapy"]
+
+def _square_environment():
+    env_name = config.settings.square_environment
+    if SquareEnvironment:
+        return SquareEnvironment.SANDBOX if env_name == "sandbox" else SquareEnvironment.PRODUCTION
+    return "sandbox" if env_name == "sandbox" else "production"
+
+
+def _get_context(params: Dict[str, Any]) -> Dict[str, Any]:
+    connection_id = params.get("connection_id")
+    if not connection_id:
+        return {"success": False, "error": "connection_id is required", "context": {}}
+    context = get_connection_context(connection_id)
+    if not context:
+        return {"success": False, "error": "No connection context found.", "context": {}}
+    return {"success": True, "context": context}
+
+
+def get_store_location_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
+    context_result = _get_context(params)
+    if not context_result.get("success"):
+        return {"success": False, "error": context_result.get("error"), "location": {}}
+    location = context_result["context"].get("location") or {}
+    return {"success": True, "location": location}
+
+
+def get_store_hours_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
+    context_result = _get_context(params)
+    if not context_result.get("success"):
+        return {"success": False, "error": context_result.get("error"), "hours": []}
+    location = context_result["context"].get("location") or {}
+    business_hours = location.get("business_hours") or {}
+    periods = business_hours.get("periods") or []
+    return {"success": True, "hours": periods}
+
+
+def get_services_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
+    context_result = _get_context(params)
+    if not context_result.get("success"):
+        return {"success": False, "error": context_result.get("error"), "services": []}
+    services = context_result["context"].get("services") or []
+    formatted = []
+    for item in services:
+        item_data = item.get("item_data") or {}
+        name = item_data.get("name") or item.get("name")
+        description = item_data.get("description")
+        variations = []
+        for variation in item_data.get("variations") or []:
+            variation_data = variation.get("item_variation_data") or {}
+            price_money = variation_data.get("price_money") or {}
+            variations.append(
+                {
+                    "name": variation_data.get("name"),
+                    "price": price_money.get("amount"),
+                    "currency": price_money.get("currency"),
+                }
+            )
+        formatted.append(
+            {
+                "name": name,
+                "description": description,
+                "variations": variations,
+            }
+        )
+    return {"success": True, "services": formatted}
+
+
+def get_staff_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
+    context_result = _get_context(params)
+    if not context_result.get("success"):
+        return {"success": False, "error": context_result.get("error"), "staff": []}
+    staff = context_result["context"].get("staff") or []
+    formatted = []
+    for member in staff:
+        formatted.append(
+            {
+                "display_name": member.get("display_name"),
+                "given_name": member.get("given_name"),
+                "family_name": member.get("family_name"),
+                "job_title": member.get("job_title"),
+                "status": member.get("status"),
+            }
+        )
+    return {"success": True, "staff": formatted}
+
+async def get_store_hours_from_square(params: Dict[str, Any]) -> Dict[str, Any]:
+    connection_id = params.get("connection_id")
+    if not connection_id:
+        return {"success": False, "error": "connection_id is required"}
+
+    context = get_connection_context(connection_id)
+    access_token = context.get("accessToken") or context.get("access_token")
+    location_id = context.get("locationId")
+    if not access_token or not location_id:
+        logger.warning(
+            "Missing Square auth context for %s (locationId=%s, token=%s)",
+            connection_id,
+            location_id,
+            bool(access_token),
+        )
+        return {"success": False, "error": "Missing Square access token or location ID."}
+
+    logger.info("Fetching Square location for connection %s (locationId=%s)", connection_id, location_id)
+    client = AsyncSquare(token=access_token, environment=_square_environment())
+
+    response = await client.locations.get(location_id)
+    if hasattr(response, "is_error"):
+        if response.is_error():
+            logger.error("Square location lookup failed for %s: %s", location_id, response.errors)
+            return {"success": False, "error": response.errors}
+        payload = response.body or {}
+    elif hasattr(response, "model_dump"):
+        payload = response.model_dump()
+        if payload.get("errors"):
+            logger.error("Square location lookup failed for %s: %s", location_id, payload.get("errors"))
+            return {"success": False, "error": payload.get("errors")}
+    elif isinstance(response, dict):
+        payload = response
+        if payload.get("errors"):
+            logger.error("Square location lookup failed for %s: %s", location_id, payload.get("errors"))
+            return {"success": False, "error": payload.get("errors")}
+    else:
+        logger.error("Square location lookup returned unexpected response type: %s", type(response))
+        return {"success": False, "error": "Unexpected Square response type."}
+
+    location = payload.get("location", {})
+    logger.debug("Square location response keys: %s", list(location.keys()))
+    logger.info("Square location fetched: %s (%s)", location.get("name"), location.get("id"))
+    business_hours = location.get("business_hours", {}).get("periods", [])
+    return {
+        "success": True,
+        "location": {
+            "id": location.get("id"),
+            "name": location.get("name"),
+            "phone_number": location.get("phone_number"),
+            "timezone": location.get("timezone"),
+            "address": location.get("address"),
+            "business_hours": business_hours,
+        },
     }
-]
-
-# Mock data for services
-MOCK_SERVICES = [
-    {
-        "id": "svc_001",
-        "name": "Men's Haircut",
-        "description": "Professional men's haircut with styling",
-        "duration": 30,
-        "price": 35.00,
-        "category": "Haircuts"
-    },
-    {
-        "id": "svc_002",
-        "name": "Women's Haircut",
-        "description": "Professional women's haircut with styling",
-        "duration": 45,
-        "price": 55.00,
-        "category": "Haircuts"
-    },
-    {
-        "id": "svc_003",
-        "name": "Full Color",
-        "description": "Complete hair coloring service",
-        "duration": 120,
-        "price": 120.00,
-        "category": "Color"
-    },
-    {
-        "id": "svc_004",
-        "name": "Highlights",
-        "description": "Partial or full highlights",
-        "duration": 90,
-        "price": 95.00,
-        "category": "Color"
-    },
-    {
-        "id": "svc_005",
-        "name": "Beard Trim",
-        "description": "Professional beard trimming and styling",
-        "duration": 20,
-        "price": 25.00,
-        "category": "Grooming"
-    },
-    {
-        "id": "svc_006",
-        "name": "Therapeutic Massage",
-        "description": "60-minute therapeutic massage",
-        "duration": 60,
-        "price": 80.00,
-        "category": "Wellness"
-    },
-    {
-        "id": "svc_007",
-        "name": "Deep Conditioning Treatment",
-        "description": "Intensive hair conditioning treatment",
-        "duration": 30,
-        "price": 45.00,
-        "category": "Treatments"
-    }
-]
-
-def get_staff() -> Dict[str, Any]:
-    """
-    Get all staff members (mocked data)
-    
-    Returns:
-        Dict with 'success' bool, 'staff' list, and optional 'error' string
-    """
-    logger.debug("👥 Starting get_staff: Fetching staff members")
-    try:
-        logger.info(f"✅ Successfully fetched {len(MOCK_STAFF)} staff members")
-        logger.debug(f"👥 Staff sample: {json.dumps(MOCK_STAFF[:2], indent=2, default=str)}")
-        return {
-            'success': True,
-            'staff': MOCK_STAFF,
-            'count': len(MOCK_STAFF)
-        }
-    except Exception as e:
-        error_msg = f"Exception fetching staff: {str(e)}"
-        logger.error(f"❌ {error_msg}", exc_info=True)
-        return {
-            'success': False,
-            'error': error_msg,
-            'staff': []
-        }
-
-
-def get_services() -> Dict[str, Any]:
-    """
-    Get all services (mocked data)
-    
-    Returns:
-        Dict with 'success' bool, 'services' list, and optional 'error' string
-    """
-    logger.debug("🛎️ Starting get_services: Fetching services")
-    try:
-        logger.info(f"✅ Successfully fetched {len(MOCK_SERVICES)} services")
-        logger.debug(f"🛎️ Services sample: {json.dumps(MOCK_SERVICES[:3], indent=2, default=str)}")
-        return {
-            'success': True,
-            'services': MOCK_SERVICES,
-            'count': len(MOCK_SERVICES)
-        }
-    except Exception as e:
-        error_msg = f"Exception fetching services: {str(e)}"
-        logger.error(f"❌ {error_msg}", exc_info=True)
-        return {
-            'success': False,
-            'error': error_msg,
-            'services': []
-        }
