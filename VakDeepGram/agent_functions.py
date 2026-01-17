@@ -3,9 +3,8 @@ from business_logic import (
     get_customer,
     get_customer_appointments,
     get_customer_orders,
-    schedule_appointment,
+    schedule_appointment_with_contact,
     get_available_appointment_slots,
-    prepare_agent_filler_message,
     prepare_farewell_message,
 )
 from store_tools import (
@@ -18,10 +17,16 @@ from store_tools import (
 
 async def find_customer(params):
     """Look up a customer by phone, email, or ID."""
+    connection_id = params.get("connection_id")
     phone = params.get("phone")
     email = params.get("email")
     customer_id = params.get("customer_id")
-    result = await get_customer(phone=phone, email=email, customer_id=customer_id)
+    result = await get_customer(
+        phone=phone,
+        email=email,
+        customer_id=customer_id,
+        connection_id=connection_id,
+    )
     return result
 
 
@@ -45,12 +50,22 @@ async def get_orders(params):
 
 async def create_appointment(params):
     """Schedule a new appointment."""
-    customer_id = params.get("customer_id")
+    connection_id = params.get("connection_id")
+    first_name = params.get("first_name")
+    last_name = params.get("last_name")
     date = params.get("date")
     service = params.get("service")
-    if not all([customer_id, date, service]):
-        return {"error": "customer_id, date, and service are required"}
-    result = await schedule_appointment(customer_id, date, service)
+    phone_number = params.get("phone_number")
+    if not all([first_name, last_name, date, service]):
+        return {"error": "first_name, last_name, date, and service are required"}
+    result = await schedule_appointment_with_contact(
+        connection_id,
+        first_name,
+        last_name,
+        date,
+        service,
+        phone_number=phone_number,
+    )
     return result
 
 
@@ -64,14 +79,6 @@ async def check_availability(params):
         (datetime.fromisoformat(start_date) + timedelta(days=7)).isoformat(),
     )
     result = await get_available_appointment_slots(start_date, end_date)
-    return result
-
-
-async def agent_filler(websocket, params):
-    """
-    Handle agent filler messages while maintaining proper function call protocol.
-    """
-    result = await prepare_agent_filler_message(websocket, **params)
     return result
 
 
@@ -107,23 +114,6 @@ async def get_staff(params):
 
 # Function definitions that will be sent to the Voice Agent API
 FUNCTION_DEFINITIONS = [
-    {
-        "name": "agent_filler",
-        "description": """Use this function to provide natural conversational filler before looking up information.
-        ALWAYS call this function first with message_type='lookup' when you're about to look up customer information.
-        After calling this function, you MUST immediately follow up with the appropriate lookup function (e.g., find_customer).""",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "message_type": {
-                    "type": "string",
-                    "description": "Type of filler message to use. Use 'lookup' when about to search for information.",
-                    "enum": ["lookup", "general"],
-                }
-            },
-            "required": ["message_type"],
-        },
-    },
     {
         "name": "find_customer",
         "description": """Look up a customer's account information. Use context clues to determine what type of identifier the user is providing:
@@ -208,15 +198,24 @@ FUNCTION_DEFINITIONS = [
         - A customer wants to book a new appointment
         - A customer asks to schedule a service
         Before scheduling:
-        1. Verify customer account exists using find_customer
+        1. Ask for first name and last name
         2. Check availability using check_availability
-        3. Confirm date/time and service type with customer before booking""",
+        3. Confirm date/time and service type with customer before booking
+        Use the caller's phone number from context unless the customer provides a different number.""",
         "parameters": {
             "type": "object",
             "properties": {
-                "customer_id": {
+                "first_name": {
                     "type": "string",
-                    "description": "Customer's ID in CUSTXXXX format. Must be obtained from find_customer first.",
+                    "description": "Customer's first name.",
+                },
+                "last_name": {
+                    "type": "string",
+                    "description": "Customer's last name.",
+                },
+                "phone_number": {
+                    "type": "string",
+                    "description": "Customer phone number. If omitted, use caller number from context.",
                 },
                 "date": {
                     "type": "string",
@@ -228,7 +227,7 @@ FUNCTION_DEFINITIONS = [
                     "enum": ["Consultation", "Follow-up", "Review", "Planning"],
                 },
             },
-            "required": ["customer_id", "date", "service"],
+            "required": ["first_name", "last_name", "date", "service"],
         },
     },
     {
@@ -337,7 +336,6 @@ FUNCTION_MAP = {
     "get_orders": get_orders,
     "create_appointment": create_appointment,
     "check_availability": check_availability,
-    "agent_filler": agent_filler,
     "end_call": end_call,
     "get_store_hours": get_store_hours,
     "get_store_location": get_store_location,

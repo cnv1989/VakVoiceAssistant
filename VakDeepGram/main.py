@@ -6,6 +6,9 @@ import logging
 import uuid
 import base64
 import asyncio
+from typing import Optional
+
+from twilio.rest import Client as TwilioClient
 from urllib.parse import urlencode, parse_qs
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,11 +17,13 @@ import uvicorn
 import config
 from deepgram_handler import deepgram_manager
 from connection_store import (
+    get_connection_context,
     resolve_business_context,
     set_connection_context,
     clear_connection_context,
     normalize_phone_number,
 )
+from business_logic import prefetch_customer_by_phone
 
 # Configure logging
 logging.basicConfig(
@@ -73,6 +78,82 @@ def verify_twilio_signature(request_url: str, params: dict, signature: str) -> b
         logger.error(f"Error during Twilio signature verification: {e}", exc_info=True)
         return False
 
+
+async def _resolve_and_set_context(
+    connection_id: str,
+    business_number: str,
+    extra_context: Optional[dict] = None,
+) -> None:
+    try:
+        context = await resolve_business_context(business_number)
+    except Exception as exc:
+        logger.error(
+            "Failed to resolve business context for %s: %s",
+            connection_id,
+            exc,
+            exc_info=True,
+        )
+        context = {"success": False, "error": str(exc)}
+
+    existing_context = get_connection_context(connection_id)
+    merged_context = {**existing_context, **context}
+    if extra_context:
+        merged_context.update(extra_context)
+
+    set_connection_context(connection_id, merged_context)
+    if not merged_context.get("success"):
+        logger.warning("Failed to resolve business context: %s", merged_context.get("error"))
+
+
+async def _prefetch_and_set_customer(connection_id: str, caller_number: Optional[str]) -> None:
+    if not caller_number:
+        return
+    normalized = normalize_phone_number(caller_number)
+    try:
+        result = await prefetch_customer_by_phone(normalized or caller_number)
+    except Exception as exc:
+        logger.error(
+            "Failed to prefetch customer for %s: %s",
+            connection_id,
+            exc,
+            exc_info=True,
+        )
+        return
+
+    existing_context = get_connection_context(connection_id)
+    existing_context["prefetchedCustomer"] = result
+    set_connection_context(connection_id, existing_context)
+
+
+async def _end_twilio_call(
+    connection_id: str,
+    account_sid: Optional[str],
+    call_sid: Optional[str],
+) -> None:
+    if not account_sid or not call_sid:
+        logger.warning(
+            "Missing Twilio identifiers for %s (accountSid=%s callSid=%s)",
+            connection_id,
+            bool(account_sid),
+            bool(call_sid),
+        )
+        return
+    if not config.settings.twilio_auth_token:
+        logger.warning("Twilio auth token missing; cannot end call for %s", connection_id)
+        return
+
+    try:
+        client = TwilioClient(account_sid, config.settings.twilio_auth_token)
+        call = client.calls(call_sid).update(status="completed")
+        logger.info("Twilio call ended for %s (callSid=%s)", connection_id, call.sid)
+    except Exception as exc:
+        logger.error(
+            "Failed to end Twilio call for %s: %s",
+            connection_id,
+            exc,
+            exc_info=True,
+        )
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -114,10 +195,11 @@ async def websocket_endpoint(websocket: WebSocket):
     business_number = websocket.query_params.get("businessNumber")
     if business_number:
         logger.info("Browser client provided businessNumber=%s for %s", business_number, connection_id)
-        context = await resolve_business_context(business_number)
-        set_connection_context(connection_id, context)
-        if not context.get("success"):
-            logger.warning("Failed to resolve business context: %s", context.get("error"))
+        set_connection_context(
+            connection_id,
+            {"success": False, "pending": True, "businessNumber": business_number},
+        )
+        asyncio.create_task(_resolve_and_set_context(connection_id, business_number))
     else:
         logger.info("No businessNumber provided for %s", connection_id)
     
@@ -159,6 +241,11 @@ async def websocket_endpoint(websocket: WebSocket):
             except WebSocketDisconnect:
                 logger.info(f"WebSocket disconnected: {connection_id}")
                 break
+            except RuntimeError as exc:
+                if 'disconnect message has been received' in str(exc):
+                    logger.info("WebSocket already disconnected for %s", connection_id)
+                    break
+                raise
             
             # Handle text messages (JSON)
             if "text" in message:
@@ -198,7 +285,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 if session and session.is_active:
                     await deepgram_manager.send_audio(connection_id, audio_data)
                 else:
-                    logger.warn(f"No active session for {connection_id}, ignoring audio")
+                    logger.warning(f"No active session for {connection_id}, ignoring audio")
             
             # Handle other message types
             else:
@@ -350,6 +437,18 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                     "streamSid": stream_sid_ref["value"]
                 }
                 await send_to_twilio(clear_message)
+
+        elif msg_type == "disconnect":
+            context = get_connection_context(connection_id)
+            await _end_twilio_call(
+                connection_id,
+                context.get("accountSid"),
+                context.get("callSid"),
+            )
+            await send_to_twilio({
+                "type": "disconnect",
+                "reason": data.get("reason") or "end_call",
+            })
         
         # Other message types can be logged but don't need to be sent to Twilio
         logger.debug(f"Deepgram message for Twilio: {msg_type}")
@@ -433,18 +532,32 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                     logger.debug("Twilio start event full data: %s", json.dumps(data, default=str))
                     normalized_number = normalize_phone_number(to_number)
                     if normalized_number:
-                        context = await resolve_business_context(normalized_number)
-                        context.update(
+                        extra_context = {
+                            "called": to_number,
+                            "caller": from_number,
+                            "service": service_name,
+                            "callSid": call_sid,
+                            "accountSid": account_sid,
+                        }
+                        set_connection_context(
+                            connection_id,
                             {
-                                "called": to_number,
-                                "caller": from_number,
-                                "service": service_name,
-                                "callSid": call_sid,
-                            }
+                                "success": False,
+                                "pending": True,
+                                "businessNumber": normalized_number,
+                                **extra_context,
+                            },
                         )
-                        set_connection_context(connection_id, context)
-                        if not context.get("success"):
-                            logger.warning("Failed to resolve business context: %s", context.get("error"))
+                        asyncio.create_task(
+                            _resolve_and_set_context(
+                                connection_id,
+                                normalized_number,
+                                extra_context=extra_context,
+                            )
+                        )
+                        asyncio.create_task(
+                            _prefetch_and_set_customer(connection_id, from_number)
+                        )
                     else:
                         logger.info("No Twilio business number available for %s", connection_id)
                         set_connection_context(
