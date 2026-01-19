@@ -176,7 +176,7 @@ export class VakAppStack extends cdk.Stack {
         DEEPGRAM_THINKING_MODEL: 'gemini-2.5-flash',
         DEEPGRAM_SPEAKING_PROVIDER: 'eleven_labs',
         DEEPGRAM_SPEAKING_MODEL_ID: 'eleven_multilingual_v2',
-        DEEPGRAM_SPEAKING_VOICE_ID: 'cgSgspJ2msm6clMCkdW9',
+        DEEPGRAM_SPEAKING_VOICE_ID: '0mevMNFMwHxBOUTpeMGN',
         DEEPGRAM_INPUT_SAMPLE_RATE: '48000',
         DEEPGRAM_OUTPUT_SAMPLE_RATE: '24000',
       },

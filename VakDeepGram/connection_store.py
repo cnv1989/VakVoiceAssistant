@@ -3,6 +3,7 @@ Helpers for resolving business context from DynamoDB for Square integrations.
 """
 import asyncio
 import logging
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Optional
 
 import aioboto3
@@ -11,6 +12,10 @@ try:
     from square.environment import SquareEnvironment
 except Exception:  # pragma: no cover - optional dependency behavior
     SquareEnvironment = None
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover - py<3.9 fallback
+    ZoneInfo = None
 
 import config
 
@@ -18,6 +23,32 @@ logger = logging.getLogger(__name__)
 
 _connection_contexts: Dict[str, Dict[str, Any]] = {}
 _SERVICE_PRODUCT_TYPES = ["APPOINTMENTS_SERVICE", "LEGACY_SQUARE_ONLINE_SERVICE"]
+
+
+def _parse_square_response(response: Any) -> Dict[str, Any]:
+    if hasattr(response, "is_error"):
+        if response.is_error():
+            return {"success": False, "error": response.errors}
+        payload = response.body or {}
+    elif hasattr(response, "model_dump"):
+        payload = response.model_dump()
+        if payload.get("errors"):
+            return {"success": False, "error": payload.get("errors")}
+    elif isinstance(response, dict):
+        payload = response
+        if payload.get("errors"):
+            return {"success": False, "error": payload.get("errors")}
+    else:
+        return {"success": False, "error": f"Unexpected Square response type: {type(response)}"}
+    return {"success": True, "payload": payload}
+
+
+def _extract_square_cursor(response: Any) -> Optional[str]:
+    for attr in ("_response", "response", "__response"):
+        page = getattr(response, attr, None)
+        if page:
+            return getattr(page, "cursor", None)
+    return None
 
 
 def set_connection_context(connection_id: str, context: Dict[str, Any]) -> None:
@@ -30,6 +61,76 @@ def get_connection_context(connection_id: str) -> Dict[str, Any]:
 
 def clear_connection_context(connection_id: str) -> None:
     _connection_contexts.pop(connection_id, None)
+
+
+def get_localized_datetime_for_connection(connection_id: str) -> str:
+    """Return a localized datetime string based on the connection's location ID."""
+    context = get_connection_context(connection_id)
+    location = context.get("location") or {}
+    timezone = location.get("timezone")
+    now = datetime.now(ZoneInfo(timezone)) if timezone and ZoneInfo else datetime.now()
+    return now.strftime("%Y-%m-%d %H:%M:%S (%A, %B %d, %Y)")
+
+
+def _isoformat_utc(value: datetime) -> str:
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def _next_four_weeks_range(tz_name: Optional[str]) -> tuple[datetime, datetime]:
+    tzinfo = ZoneInfo(tz_name) if tz_name and ZoneInfo else None
+    now = datetime.now(tzinfo) if tzinfo else datetime.now(timezone.utc)
+    start = now
+    end = start + timedelta(weeks=4) - timedelta(microseconds=1000)
+    return start, end
+
+
+async def _fetch_square_bookings_for_month(
+    access_token: str,
+    location_id: str,
+    timezone_name: Optional[str],
+) -> Dict[str, Any]:
+    start_local, end_local = _next_four_weeks_range(timezone_name)
+    start_at_min = _isoformat_utc(start_local)
+    start_at_max = _isoformat_utc(end_local)
+    logger.debug(
+        "Fetching Square bookings for %s (start_at_min=%s start_at_max=%s)",
+        location_id,
+        start_at_min,
+        start_at_max,
+    )
+    client = AsyncSquare(token=access_token, environment=_square_environment())
+    bookings: list[Dict[str, Any]] = []
+    cursor = None
+    while True:
+        response = await client.bookings.list(
+            location_id=location_id,
+            start_at_min=start_at_min,
+            start_at_max=start_at_max,
+            cursor=cursor,
+            limit=200,
+        )
+        if hasattr(response, "__aiter__"):
+            async for booking in response:
+                bookings.append(booking)
+            cursor = _extract_square_cursor(response)
+            logger.debug("Square bookings iterable page retrieved (cursor=%s)", cursor)
+        else:
+            parsed = _parse_square_response(response)
+            if not parsed.get("success"):
+                return {"success": False, "error": parsed.get("error")}
+            payload = parsed.get("payload", {})
+            bookings.extend(payload.get("bookings") or [])
+            cursor = payload.get("cursor")
+            logger.debug("Square bookings page retrieved (cursor=%s)", cursor)
+        if not cursor:
+            break
+    logger.debug("Fetched %d Square bookings for %s", len(bookings), location_id)
+    return {
+        "success": True,
+        "bookings": bookings,
+        "start_at_min": start_at_min,
+        "start_at_max": start_at_max,
+    }
 
 
 def normalize_phone_number(value: str) -> Optional[str]:
@@ -189,7 +290,68 @@ def _candidate_numbers(raw_number: str) -> list[str]:
     return [digits]
 
 
-async def resolve_business_context(business_number: str) -> Dict[str, Any]:
+def _phone_digits(value: Optional[str]) -> Optional[str]:
+    normalized = normalize_phone_number(value or "")
+    if not normalized:
+        return None
+    digits = "".join(ch for ch in normalized if ch.isdigit())
+    if digits.startswith("1") and len(digits) == 11:
+        return digits[1:]
+    return digits
+
+
+async def _fetch_square_customers(access_token: str) -> Dict[str, Any]:
+    logger.info("Fetching Square customers")
+    client = AsyncSquare(token=access_token, environment=_square_environment())
+    customers: list[Dict[str, Any]] = []
+    cursor = None
+    while True:
+        response = await client.customers.list(cursor=cursor, limit=200)
+        if hasattr(response, "is_error"):
+            if response.is_error():
+                return {"success": False, "error": response.errors}
+            payload = response.body or {}
+        elif hasattr(response, "model_dump"):
+            payload = response.model_dump()
+            if payload.get("errors"):
+                return {"success": False, "error": payload.get("errors")}
+        elif isinstance(response, dict):
+            payload = response
+            if payload.get("errors"):
+                return {"success": False, "error": payload.get("errors")}
+        else:
+            return {"success": False, "error": "Unexpected Square response type."}
+
+        customers.extend(payload.get("customers") or [])
+        cursor = payload.get("cursor")
+        if not cursor:
+            break
+
+    return {"success": True, "customers": customers}
+
+
+async def fetch_square_customer_by_phone(access_token: str, phone_number: str) -> Dict[str, Any]:
+    normalized_digits = _phone_digits(phone_number)
+    if not normalized_digits:
+        return {"success": False, "error": "Invalid phone number."}
+
+    result = await _fetch_square_customers(access_token)
+    if not result.get("success"):
+        return result
+
+    for customer in result.get("customers") or []:
+        customer_phone = customer.get("phone_number") or customer.get("phoneNumber")
+        customer_digits = _phone_digits(customer_phone)
+        if customer_digits and customer_digits == normalized_digits:
+            return {"success": True, "customer": customer, "new_customer": False}
+
+    return {"success": False, "error": "Customer not found.", "new_customer": True}
+
+
+async def resolve_business_context(
+    business_number: str,
+    caller_number: Optional[str] = None,
+) -> Dict[str, Any]:
     candidates = _candidate_numbers(business_number)
     if not candidates:
         logger.warning("Business number normalization failed: %s", business_number)
@@ -255,6 +417,7 @@ async def resolve_business_context(business_number: str) -> Dict[str, Any]:
             location_id,
             location_result.get("error"),
         )
+    timezone_name = location.get("timezone") if location else None
 
     services_result = await _fetch_square_services(access_token, location_id)
     services = services_result.get("items") if services_result.get("success") else []
@@ -274,6 +437,34 @@ async def resolve_business_context(business_number: str) -> Dict[str, Any]:
             staff_result.get("error"),
         )
 
+    bookings_result = await _fetch_square_bookings_for_month(
+        access_token,
+        location_id,
+        timezone_name,
+    )
+    if not bookings_result.get("success"):
+        logger.warning(
+            "Square bookings lookup failed for locationId=%s: %s",
+            location_id,
+            bookings_result.get("error"),
+        )
+
+    prefetched_customer = None
+    if caller_number:
+        customer_result = await fetch_square_customer_by_phone(access_token, caller_number)
+        prefetched_customer = {
+            "success": customer_result.get("success", False),
+            "customer": customer_result.get("customer"),
+            "newCustomer": customer_result.get("new_customer", False),
+            "error": customer_result.get("error"),
+        }
+        if not customer_result.get("success"):
+            logger.info(
+                "No Square customer found for caller %s (new=%s)",
+                caller_number,
+                customer_result.get("new_customer"),
+            )
+
     logger.info(
         "Resolved business context for %s (locationId=%s, merchantId=%s, userId=%s)",
         matched_number,
@@ -292,4 +483,6 @@ async def resolve_business_context(business_number: str) -> Dict[str, Any]:
         "location": location,
         "services": services,
         "staff": staff,
+        "prefetchedAppointments": bookings_result,
+        "prefetchedCustomer": prefetched_customer,
     }

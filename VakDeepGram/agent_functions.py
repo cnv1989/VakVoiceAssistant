@@ -74,11 +74,15 @@ async def check_availability(params):
     start_date = params.get("start_date")
     if not start_date:
         return {"error": "start_date is required"}
-    end_date = params.get(
-        "end_date",
-        (datetime.fromisoformat(start_date) + timedelta(days=7)).isoformat(),
-    )
-    result = await get_available_appointment_slots(start_date, end_date)
+    connection_id = params.get("connection_id")
+    end_date = params.get("end_date")
+    if not end_date:
+        normalized_start = start_date.replace("Z", "+00:00")
+        try:
+            end_date = (datetime.fromisoformat(normalized_start) + timedelta(days=7)).isoformat()
+        except ValueError:
+            end_date = None
+    result = await get_available_appointment_slots(start_date, end_date, connection_id=connection_id)
     return result
 
 
@@ -198,9 +202,10 @@ FUNCTION_DEFINITIONS = [
         - A customer wants to book a new appointment
         - A customer asks to schedule a service
         Before scheduling:
-        1. Ask for first name and last name
+        1. Ask for a preferred day/date or whether they want week availability
         2. Check availability using check_availability
-        3. Confirm date/time and service type with customer before booking
+        3. Confirm date/time and service type with the customer
+        4. Collect first and last name and confirm spelling before booking
         Use the caller's phone number from context unless the customer provides a different number.""",
         "parameters": {
             "type": "object",
@@ -237,17 +242,18 @@ FUNCTION_DEFINITIONS = [
         - Before scheduling a new appointment
         - A customer asks 'When can I come in?' or 'What times are available?'
         After checking availability, present options to the customer in a natural way, like:
-        'I have openings on [date] at [time] or [date] at [time]. Which works better for you?'""",
+        'I have openings on [date] at [time] or [date] at [time]. Which works better for you?'
+        If the availability response includes ranges, summarize them as ranges instead of listing every slot.""",
         "parameters": {
             "type": "object",
             "properties": {
                 "start_date": {
                     "type": "string",
-                    "description": "Start date in ISO format (YYYY-MM-DDTHH:MM:SS). Usually today's date for immediate availability checks.",
+                    "description": "Start date in ISO format (YYYY-MM-DDTHH:MM:SS.sssZ) or a relative date enum like TODAY, TOMORROW, YESTERDAY, THIS_WEEK, NEXT_WEEK, LAST_WEEK, THIS_WEEKEND, NEXT_WEEKEND, THIS_MONTH, NEXT_MONTH, LAST_MONTH, NEXT_7_DAYS, NEXT_14_DAYS, NEXT_30_DAYS.",
                 },
                 "end_date": {
                     "type": "string",
-                    "description": "End date in ISO format. Optional - defaults to 7 days after start_date. Use for specific date range requests.",
+                    "description": "End date in ISO format (YYYY-MM-DDTHH:MM:SS.sssZ) or relative date enum. Optional - defaults to a range based on start_date.",
                 },
             },
             "required": ["start_date"],

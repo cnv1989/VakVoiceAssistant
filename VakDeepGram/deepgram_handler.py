@@ -12,6 +12,7 @@ from typing import Dict, Optional, Callable
 import websockets
 import config
 from agent_functions import FUNCTION_DEFINITIONS, FUNCTION_MAP
+from connection_store import get_localized_datetime_for_connection
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,9 @@ class DeepgramManager:
             "functions": FUNCTION_DEFINITIONS,
         }
         prompt = config.settings.deepgram_agent_prompt or ""
+        if connection_id:
+            localized_datetime = get_localized_datetime_for_connection(connection_id)
+            prompt = f"Current date and time is {localized_datetime} (local time).\n{prompt}"
         if prompt:
             think_config["prompt"] = prompt
         
@@ -102,7 +106,7 @@ class DeepgramManager:
             speak_provider = {
                 "type": "eleven_labs",
                 "model_id": config.settings.deepgram_speaking_model_id or "eleven_multilingual_v2",
-                "voice_id": config.settings.deepgram_speaking_voice_id or "cgSgspJ2msm6clMCkdW9",
+                "voice_id": config.settings.deepgram_speaking_voice_id or "0mevMNFMwHxBOUTpeMGN",
             }
         else:
             speak_provider = {
