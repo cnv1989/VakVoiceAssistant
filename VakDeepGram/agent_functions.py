@@ -329,7 +329,7 @@ FUNCTION_DEFINITIONS = [
         - Before scheduling a new appointment
         - A customer asks 'When can I come in?' or 'What times are available?'
         After checking availability, present options to the customer in a natural way, like:
-        'I have openings on [date] at [time] or [date] at [time]. Which works better for you?'
+        'I have openings on [date] at [time] or [date] at [time]. Which works better for you? (Spell times in words, e.g., "two am", "one thirty pm".)'
         If the availability response includes ranges, summarize them as ranges instead of listing every slot.
         If available_staff is provided and the customer is open to any staff, confirm which available staff works for them.""",
         "parameters": {

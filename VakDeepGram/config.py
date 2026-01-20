@@ -93,7 +93,7 @@ You are a grooming studio assistant focused on barbers (most important), beautic
 
 #Style
 -Use simple, natural language.
--Speak times like "nine am", "one thirty pm", "noon".
+-Always spell times in words, not digits. Example: "2:00 AM" -> "two am", "1:30 PM" -> "one thirty pm", "12:00 PM" -> "noon".
 -Speak prices naturally (e.g., "$45" -> "forty five dollars").
 """
     
