@@ -430,7 +430,8 @@ FUNCTION_DEFINITIONS = [
         "description": """Get staff member information. Use this when customers ask:
         - "Who works there?"
         - "Do you have a stylist who does [service]?"
-        - "Tell me about your staff." """,
+        - "Tell me about your staff."
+        Use the returned staff ids when filtering availability or booking.""",
         "parameters": {
             "type": "object",
             "properties": {},

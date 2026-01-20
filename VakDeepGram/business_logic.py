@@ -341,10 +341,10 @@ def _resolve_available_staff(context: Dict[str, Any], availabilities: list[Any])
     return available_staff
 
 
-def _resolve_staff_ids(context: Dict[str, Any], requested: list[str]) -> list[str]:
+def _resolve_staff_ids(context: Dict[str, Any], requested: list[Any]) -> tuple[list[str], list[str]]:
     staff = context.get("staff") or []
     if not requested:
-        return []
+        return [], []
     staff_by_id = {}
     staff_by_name = {}
     for member in staff:
@@ -359,17 +359,27 @@ def _resolve_staff_ids(context: Dict[str, Any], requested: list[str]) -> list[st
         staff_by_id[member_id] = member_id
 
     resolved: list[str] = []
+    unmatched: list[str] = []
     for value in requested:
         if not value:
             continue
-        candidate = value.strip()
+        candidate = None
+        if isinstance(value, dict):
+            candidate = value.get("id") or value.get("display_name")
+        elif isinstance(value, str):
+            candidate = value
+        if not candidate:
+            continue
+        candidate = candidate.strip()
         if candidate in staff_by_id:
             resolved.append(candidate)
             continue
         staff_id = staff_by_name.get(candidate.lower())
         if staff_id:
             resolved.append(staff_id)
-    return resolved
+            continue
+        unmatched.append(candidate)
+    return resolved, unmatched
 
 
 def _format_availability_response(availabilities: list[Any], tzinfo) -> Dict[str, Any]:
@@ -893,10 +903,19 @@ async def get_available_appointment_slots(
         start_at_local.isoformat(timespec="seconds"),
         end_at_local.isoformat(timespec="seconds"),
     )
-    resolved_staff_ids = _resolve_staff_ids(context, staff_ids or [])
-    if staff_ids and not resolved_staff_ids:
-        logger.warning("No matching staff IDs for provided staff_ids=%s", staff_ids)
-        return {"success": False, "error": "No matching staff found for the requested staff."}
+    resolved_staff_ids, unmatched_staff = _resolve_staff_ids(context, staff_ids or [])
+    if staff_ids and (not resolved_staff_ids or unmatched_staff):
+        logger.warning(
+            "Staff resolution mismatch (requested=%s resolved=%s unmatched=%s)",
+            staff_ids,
+            resolved_staff_ids,
+            unmatched_staff,
+        )
+        return {
+            "success": False,
+            "error": "Requested staff not found. Please confirm the staff member name.",
+            "unmatched_staff": unmatched_staff,
+        }
 
     filter_payload = {
         "start_at_range": {"start_at": start_at, "end_at": end_at},

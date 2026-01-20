@@ -98,6 +98,7 @@ def get_staff_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
     for member in staff:
         formatted.append(
             {
+                "id": member.get("id"),
                 "display_name": member.get("display_name"),
                 "given_name": member.get("given_name"),
                 "family_name": member.get("family_name"),
