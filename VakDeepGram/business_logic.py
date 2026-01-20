@@ -205,6 +205,7 @@ async def create_customer(
             "success": True,
             "customer": lookup.get("customer"),
             "duplicate": True,
+            "message": "Customer already exists. Confirm before using existing record.",
         }
 
     client = AsyncSquare(token=access_token, environment=_square_environment())
@@ -338,6 +339,37 @@ def _resolve_available_staff(context: Dict[str, Any], availabilities: list[Any])
             }
         )
     return available_staff
+
+
+def _resolve_staff_ids(context: Dict[str, Any], requested: list[str]) -> list[str]:
+    staff = context.get("staff") or []
+    if not requested:
+        return []
+    staff_by_id = {}
+    staff_by_name = {}
+    for member in staff:
+        member_id = member.get("id")
+        if not member_id:
+            continue
+        display_name = member.get("display_name") or " ".join(
+            part for part in [member.get("given_name"), member.get("family_name")] if part
+        ).strip()
+        if display_name:
+            staff_by_name[display_name.lower()] = member_id
+        staff_by_id[member_id] = member_id
+
+    resolved: list[str] = []
+    for value in requested:
+        if not value:
+            continue
+        candidate = value.strip()
+        if candidate in staff_by_id:
+            resolved.append(candidate)
+            continue
+        staff_id = staff_by_name.get(candidate.lower())
+        if staff_id:
+            resolved.append(staff_id)
+    return resolved
 
 
 def _format_availability_response(availabilities: list[Any], tzinfo) -> Dict[str, Any]:
@@ -861,6 +893,11 @@ async def get_available_appointment_slots(
         start_at_local.isoformat(timespec="seconds"),
         end_at_local.isoformat(timespec="seconds"),
     )
+    resolved_staff_ids = _resolve_staff_ids(context, staff_ids or [])
+    if staff_ids and not resolved_staff_ids:
+        logger.warning("No matching staff IDs for provided staff_ids=%s", staff_ids)
+        return {"success": False, "error": "No matching staff found for the requested staff."}
+
     filter_payload = {
         "start_at_range": {"start_at": start_at, "end_at": end_at},
         "location_id": location_id,
@@ -868,10 +905,10 @@ async def get_available_appointment_slots(
     service_variation_id = _select_service_variation_id(context)
     if service_variation_id:
         filter_payload["segment_filters"] = [{"service_variation_id": service_variation_id}]
-    if staff_ids:
+    if resolved_staff_ids:
         if "segment_filters" not in filter_payload:
             filter_payload["segment_filters"] = [{}]
-        filter_payload["segment_filters"][0]["team_member_id_filter"] = {"any": staff_ids}
+        filter_payload["segment_filters"][0]["team_member_id_filter"] = {"any": resolved_staff_ids}
 
     logger.debug(
         "Square search_availability request (location_id=%s start_at=%s end_at=%s service_variation_id=%s)",
@@ -893,8 +930,8 @@ async def get_available_appointment_slots(
     availabilities = parsed.get("payload", {}).get("availabilities") or []
     availability = _format_availability_response(availabilities, tzinfo)
     available_staff = _resolve_available_staff(context, availabilities)
-    if staff_ids:
-        staff_id_set = set(staff_ids)
+    if resolved_staff_ids:
+        staff_id_set = set(resolved_staff_ids)
         available_staff = [member for member in available_staff if member.get("id") in staff_id_set]
     logger.debug(
         "Availability formatted (mode=%s slots=%d ranges=%d)",

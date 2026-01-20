@@ -346,7 +346,7 @@ FUNCTION_DEFINITIONS = [
                 "staff_ids": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Optional list of preferred staff IDs to filter availability.",
+                    "description": "Optional list of preferred staff IDs or staff display names; will be resolved to IDs before filtering availability.",
                 },
             },
             "required": ["start_date"],
