@@ -250,7 +250,7 @@ def _availability_start_at(availability: Any) -> Optional[str]:
 def _resolve_location_timezone(context: Dict[str, Any]) -> Optional[str]:
     logger.debug("business_logic._resolve_location_timezone called")
     location = context.get("location") or {}
-    timezone_name = location.get("timezone")
+    timezone_name = location.get("timezone") or context.get("timezone")
     return timezone_name
 
 
@@ -311,6 +311,39 @@ def _availability_team_member_ids(availability: Any) -> list[str]:
         if member_id:
             team_member_ids.append(member_id)
     return team_member_ids
+
+
+def _availability_start_dt(availability: Any, tzinfo) -> Optional[datetime]:
+    start_at = _availability_start_at(availability)
+    if not start_at:
+        return None
+    normalized_start = _normalize_iso(start_at)
+    try:
+        start_dt = datetime.fromisoformat(normalized_start)
+    except ValueError:
+        return None
+    if tzinfo:
+        start_dt = start_dt.astimezone(tzinfo)
+    return start_dt
+
+
+def _availability_supports_start(
+    availability: Any,
+    target_start: datetime,
+    duration_minutes: Optional[int],
+    tzinfo,
+    tolerance_minutes: int,
+) -> bool:
+    start_dt = _availability_start_dt(availability, tzinfo)
+    if not start_dt:
+        return False
+    duration = _availability_duration_minutes(availability) or duration_minutes
+    if duration:
+        end_dt = start_dt + timedelta(minutes=duration)
+        requested_end = target_start + timedelta(minutes=duration)
+        return start_dt <= target_start <= end_dt and requested_end <= end_dt
+    delta = abs((start_dt - target_start).total_seconds())
+    return delta <= tolerance_minutes * 60
 
 
 def _resolve_available_staff(context: Dict[str, Any], availabilities: list[Any]) -> list[Dict[str, Any]]:
@@ -380,6 +413,33 @@ def _resolve_staff_ids(context: Dict[str, Any], requested: list[Any]) -> tuple[l
             continue
         unmatched.append(candidate)
     return resolved, unmatched
+
+
+def _staff_display_name(context: Dict[str, Any], staff_id: Optional[str]) -> Optional[str]:
+    if not staff_id:
+        return None
+    for member in context.get("staff") or []:
+        if member.get("id") == staff_id:
+            display_name = member.get("display_name") or " ".join(
+                part for part in [member.get("given_name"), member.get("family_name")] if part
+            ).strip()
+            return display_name or staff_id
+    return staff_id
+
+
+def _availability_window_minutes(
+    service_name: Optional[str],
+    duration_minutes: Optional[int],
+) -> int:
+    mapping = config.settings.booking_availability_window_by_service or {}
+    if service_name and mapping:
+        normalized = service_name.strip().lower()
+        for key in sorted(mapping.keys(), key=len, reverse=True):
+            if key.lower() in normalized:
+                return int(mapping[key])
+    if duration_minutes:
+        return int(duration_minutes)
+    return int(config.settings.booking_availability_window_minutes or 30)
 
 
 def _format_availability_response(availabilities: list[Any], tzinfo) -> Dict[str, Any]:
@@ -648,16 +708,7 @@ async def get_customer(
             if result.get("new_customer"):
                 return {"success": False, "error": "Customer not found.", "new_customer": True}
 
-    return {
-        "success": True,
-        "customer": {
-            "customer_id": customer_id or "CUST0001",
-            "phone": phone or "+15551234567",
-            "email": email or "customer@example.com",
-            "name": "Alex Customer",
-        },
-        "new_customer": False,
-    }
+    return {"success": False, "error": "Customer not found."}
 
 
 async def get_customer_appointments(customer_id: str) -> Dict[str, Any]:
@@ -753,7 +804,13 @@ async def schedule_appointment_with_contact(
     client = AsyncSquare(token=access_token, environment=_square_environment())
     timezone = _resolve_location_timezone(context)
     tzinfo = ZoneInfo(timezone) if timezone and ZoneInfo else None
-    start_at = _normalize_booking_start_at(date, tzinfo)
+    start_dt = _parse_datetime(date)
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.replace(tzinfo=tzinfo or timezone.utc)
+    elif tzinfo:
+        start_dt = start_dt.astimezone(tzinfo)
+    effective_tzinfo = tzinfo or start_dt.tzinfo
+    start_at = _isoformat_utc(start_dt)
 
     resolved_customer_id = customer_id
     if not resolved_customer_id and caller_phone:
@@ -781,6 +838,59 @@ async def schedule_appointment_with_contact(
     if not service_variation_id:
         return {"success": False, "error": "Service not available for booking."}
 
+    tolerance_minutes = _availability_window_minutes(service, duration_minutes)
+    availability_start = start_dt - timedelta(minutes=tolerance_minutes)
+    availability_end = start_dt + timedelta(minutes=tolerance_minutes + (duration_minutes or 0))
+    availability_filter = {
+        "start_at_range": {
+            "start_at": _isoformat_utc(availability_start),
+            "end_at": _isoformat_utc(availability_end),
+        },
+        "location_id": location_id,
+    }
+    availability_filter["segment_filters"] = [{"service_variation_id": service_variation_id}]
+    availability_response = await client.bookings.search_availability(
+        query={"filter": availability_filter}
+    )
+    availability_parsed = _parse_square_response(availability_response)
+    if not availability_parsed.get("success"):
+        return {"success": False, "error": availability_parsed.get("error")}
+
+    availabilities = availability_parsed.get("payload", {}).get("availabilities") or []
+    matching_availabilities = [
+        availability
+        for availability in availabilities
+        if _availability_supports_start(
+            availability,
+            start_dt,
+            duration_minutes,
+            effective_tzinfo,
+            tolerance_minutes,
+        )
+    ]
+    available_staff_ids: list[str] = []
+    for availability in matching_availabilities:
+        available_staff_ids.extend(_availability_team_member_ids(availability))
+    available_staff_id_set = {member_id for member_id in available_staff_ids if member_id}
+
+    if staff_id:
+        if staff_id not in available_staff_id_set:
+            return {
+                "success": False,
+                "error": "Selected staff is not available around the requested time.",
+            }
+    else:
+        for member in context.get("staff") or []:
+            member_id = member.get("id")
+            if member_id in available_staff_id_set and member.get("status") == "ACTIVE":
+                staff_id = member_id
+                break
+        if not staff_id and available_staff_id_set:
+            staff_id = sorted(available_staff_id_set)[0]
+        if not staff_id:
+            return {"success": False, "error": "No staff availability around the requested time."}
+
+    staff_name = _staff_display_name(context, staff_id)
     appointment_segment = {
         "service_variation_id": service_variation_id,
     }
@@ -788,8 +898,6 @@ async def schedule_appointment_with_contact(
         appointment_segment["service_variation_version"] = service_version
     if duration_minutes:
         appointment_segment["duration_minutes"] = duration_minutes
-    if not staff_id:
-        return {"success": False, "error": "staff_id is required for booking."}
     appointment_segment["team_member_id"] = staff_id
 
     booking_payload = {
@@ -813,6 +921,8 @@ async def schedule_appointment_with_contact(
             "customer_id": resolved_customer_id,
             "date": booking.get("start_at") or start_at,
             "service": service,
+            "staff_id": staff_id,
+            "staff_name": staff_name,
             "status": booking.get("status") or "confirmed",
         },
     }
@@ -852,14 +962,16 @@ async def forward_call_to_location(connection_id: Optional[str]) -> Dict[str, An
 async def get_available_appointment_slots(
     start_date: str,
     end_date: Optional[str],
+    service: str,
     connection_id: Optional[str] = None,
     staff_ids: Optional[list[str]] = None,
 ) -> Dict[str, Any]:
     """Fetch availability from Square search_availability."""
     logger.debug(
-        "business_logic.get_available_appointment_slots called (start_date=%s end_date=%s connection_id=%s)",
+        "business_logic.get_available_appointment_slots called (start_date=%s end_date=%s service=%s connection_id=%s)",
         start_date,
         end_date,
+        service,
         connection_id,
     )
     logger.debug(
@@ -917,13 +1029,15 @@ async def get_available_appointment_slots(
             "unmatched_staff": unmatched_staff,
         }
 
+    service_variation_id, _, _ = _match_service_variation(context, service)
+    if not service_variation_id:
+        return {"success": False, "error": "Service not available for booking."}
+
     filter_payload = {
         "start_at_range": {"start_at": start_at, "end_at": end_at},
         "location_id": location_id,
     }
-    service_variation_id = _select_service_variation_id(context)
-    if service_variation_id:
-        filter_payload["segment_filters"] = [{"service_variation_id": service_variation_id}]
+    filter_payload["segment_filters"] = [{"service_variation_id": service_variation_id}]
     if resolved_staff_ids:
         if "segment_filters" not in filter_payload:
             filter_payload["segment_filters"] = [{}]

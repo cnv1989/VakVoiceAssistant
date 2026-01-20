@@ -12,7 +12,7 @@ from typing import Dict, Optional, Callable
 import websockets
 import config
 from agent_functions import FUNCTION_DEFINITIONS, FUNCTION_MAP
-from connection_store import get_localized_datetime_for_connection
+from connection_store import get_localized_datetime_for_connection, get_connection_context
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +171,33 @@ class DeepgramManager:
             json.dumps(settings, indent=2, default=str),
         )
         return settings
+
+    async def _wait_for_location_timezone(
+        self,
+        connection_id: str,
+        timeout_seconds: float = 2.0,
+        poll_interval: float = 0.05,
+    ) -> None:
+        """Wait briefly for location timezone to arrive in the connection context."""
+        context = get_connection_context(connection_id)
+        if not context:
+            return
+        timezone_name = (context.get("location") or {}).get("timezone") or context.get("timezone")
+        if timezone_name:
+            return
+        if not (context.get("businessNumber") or context.get("locationId")):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout_seconds
+        while loop.time() < deadline:
+            await asyncio.sleep(poll_interval)
+            context = get_connection_context(connection_id)
+            timezone_name = (context.get("location") or {}).get("timezone") or context.get("timezone")
+            if timezone_name:
+                return
     
     async def _sts_connect(self):
         """Create STS WebSocket connection"""
@@ -210,6 +237,8 @@ class DeepgramManager:
         session = DeepgramSession(connection_id, sts_ws, event_loop, use_mulaw=use_mulaw)
         self.sessions[connection_id] = session
         
+        await self._wait_for_location_timezone(connection_id)
+
         # Build and send settings
         settings = self._build_settings(use_mulaw=use_mulaw, connection_id=connection_id)
         await sts_ws.send(json.dumps(settings))

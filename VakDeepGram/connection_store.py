@@ -58,6 +58,14 @@ def set_connection_context(connection_id: str, context: Dict[str, Any]) -> None:
     _connection_contexts[connection_id] = context
 
 
+def update_connection_context(connection_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+    logger.debug("connection_store.update_connection_context called (connection_id=%s)", connection_id)
+    existing = _connection_contexts.get(connection_id, {})
+    merged = {**existing, **updates}
+    _connection_contexts[connection_id] = merged
+    return merged
+
+
 def get_connection_context(connection_id: str) -> Dict[str, Any]:
     logger.debug("connection_store.get_connection_context called (connection_id=%s)", connection_id)
     return _connection_contexts.get(connection_id, {})
@@ -73,8 +81,8 @@ def get_localized_datetime_for_connection(connection_id: str) -> str:
     logger.debug("connection_store.get_localized_datetime_for_connection called (connection_id=%s)", connection_id)
     context = get_connection_context(connection_id)
     location = context.get("location") or {}
-    timezone = location.get("timezone")
-    now = datetime.now(ZoneInfo(timezone)) if timezone and ZoneInfo else datetime.now()
+    timezone_name = location.get("timezone") or context.get("timezone")
+    now = datetime.now(ZoneInfo(timezone_name)) if timezone_name and ZoneInfo else datetime.now()
     return now.strftime("%Y-%m-%d %H:%M:%S (%A, %B %d, %Y)")
 
 

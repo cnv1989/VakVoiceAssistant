@@ -16,6 +16,7 @@ from store_tools import (
     get_store_hours_from_context,
     get_store_location_from_context,
 )
+from connection_store import update_connection_context
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,9 @@ async def check_availability(params):
     start_date = params.get("start_date")
     if not start_date:
         return {"error": "start_date is required"}
+    service = params.get("service")
+    if not service:
+        return {"error": "service is required"}
     connection_id = params.get("connection_id")
     end_date = params.get("end_date")
     staff_ids = params.get("staff_ids")
@@ -118,10 +122,72 @@ async def check_availability(params):
     result = await get_available_appointment_slots(
         start_date,
         end_date,
+        service,
         connection_id=connection_id,
         staff_ids=staff_ids,
     )
     return result
+
+
+async def select_service(params):
+    """Store the selected service in the connection context."""
+    logger.debug("agent_functions.select_service called (keys=%s)", list(params.keys()))
+    connection_id = params.get("connection_id")
+    service = params.get("service")
+    if not connection_id or not service:
+        return {"error": "connection_id and service are required"}
+    context = update_connection_context(connection_id, {"selected_service": service})
+    return {"success": True, "selected_service": context.get("selected_service")}
+
+
+async def selected_staff(params):
+    """Store the selected staff in the connection context."""
+    logger.debug("agent_functions.selected_staff called (keys=%s)", list(params.keys()))
+    connection_id = params.get("connection_id")
+    staff = params.get("staff")
+    staff_id = params.get("staff_id")
+    staff_name = params.get("staff_name")
+    if not connection_id or not (staff or staff_id or staff_name):
+        return {"error": "connection_id and staff are required"}
+    updates = {}
+    if staff:
+        updates["selected_staff"] = staff
+    if staff_id:
+        updates["selected_staff_id"] = staff_id
+    if staff_name:
+        updates["selected_staff_name"] = staff_name
+    context = update_connection_context(connection_id, updates)
+    return {
+        "success": True,
+        "selected_staff": context.get("selected_staff"),
+        "selected_staff_id": context.get("selected_staff_id"),
+        "selected_staff_name": context.get("selected_staff_name"),
+    }
+
+
+async def selected_appointment_date_and_time(params):
+    """Store the selected appointment date/time in the connection context."""
+    logger.debug(
+        "agent_functions.selected_appointment_date_and_time called (keys=%s)",
+        list(params.keys()),
+    )
+    connection_id = params.get("connection_id")
+    appointment_datetime = params.get("appointment_datetime")
+    if not connection_id or not appointment_datetime:
+        return {"error": "connection_id and appointment_datetime are required"}
+    context = update_connection_context(
+        connection_id,
+        {"selected_appointment_date_and_time": appointment_datetime},
+    )
+    return {
+        "success": True,
+        "selected_appointment_date_and_time": context.get("selected_appointment_date_and_time"),
+    }
+
+
+async def select_appointment_date_and_time(params):
+    """Alias for selected_appointment_date_and_time."""
+    return await selected_appointment_date_and_time(params)
 
 
 async def end_call(websocket, params):
@@ -348,8 +414,62 @@ FUNCTION_DEFINITIONS = [
                     "items": {"type": "string"},
                     "description": "Optional list of preferred staff IDs or staff display names; will be resolved to IDs before filtering availability.",
                 },
+                "service": {
+                    "type": "string",
+                    "description": "Service requested by the customer. Required to resolve service_variation_id before checking availability.",
+                },
             },
-            "required": ["start_date"],
+            "required": ["start_date", "service"],
+        },
+    },
+    {
+        "name": "select_service",
+        "description": "Save the customer's selected service in the connection context.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "connection_id": {"type": "string"},
+                "service": {"type": "string"},
+            },
+            "required": ["connection_id", "service"],
+        },
+    },
+    {
+        "name": "selected_staff",
+        "description": "Save the customer's selected staff in the connection context.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "connection_id": {"type": "string"},
+                "staff": {"type": "string"},
+                "staff_id": {"type": "string"},
+                "staff_name": {"type": "string"},
+            },
+            "required": ["connection_id"],
+        },
+    },
+    {
+        "name": "selected_appointment_date_and_time",
+        "description": "Save the selected appointment date and time in the connection context.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "connection_id": {"type": "string"},
+                "appointment_datetime": {"type": "string"},
+            },
+            "required": ["connection_id", "appointment_datetime"],
+        },
+    },
+    {
+        "name": "select_appointment_date_and_time",
+        "description": "Save the selected appointment date and time in the connection context.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "connection_id": {"type": "string"},
+                "appointment_datetime": {"type": "string"},
+            },
+            "required": ["connection_id", "appointment_datetime"],
         },
     },
     {
@@ -455,4 +575,8 @@ FUNCTION_MAP = {
     "get_store_location": get_store_location,
     "get_services": get_services,
     "get_staff": get_staff,
+    "select_service": select_service,
+    "selected_staff": selected_staff,
+    "selected_appointment_date_and_time": selected_appointment_date_and_time,
+    "select_appointment_date_and_time": select_appointment_date_and_time,
 }

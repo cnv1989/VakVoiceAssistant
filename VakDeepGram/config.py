@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     deepgram_output_sample_rate: int = 24000
 
     deepgram_sts_timeout_seconds: int = 300
+
+    booking_availability_window_minutes: int = 30
+    booking_availability_window_by_service: dict[str, int] = {}
     
     # Default prompt and greeting matching the provided configuration
     deepgram_agent_prompt: Optional[str] = """#Role
@@ -57,6 +60,7 @@ You are a grooming studio assistant focused on barbers (most important), beautic
 -Be warm, concise, and professional. Answer only what is asked.
 -Never share internal reasoning or tool details with customers.
 -Ask one question at a time for appointment flows.
+-Before checking availability for a new booking, ask if they have a preferred staff member or are open to anyone.
 -If the customer is open to any staff, check availability and confirm which available staff works for them.
 -If the customer prefers specific staff, filter availability by those staff members and confirm who is available.
 -If a customer mentions a weekday (e.g., "Monday", "next Monday"), infer the date using the current time and confirm it before proceeding.
