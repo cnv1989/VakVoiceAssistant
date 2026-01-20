@@ -47,6 +47,7 @@ def verify_twilio_signature(request_url: str, params: dict, signature: str) -> b
     Returns:
         True if signature is valid, False otherwise
     """
+    logger.debug("verify_twilio_signature called (url=%s)", request_url)
     logger.debug(f"=== Twilio Signature Verification Debug ===")
     logger.debug(f"Request URL: {request_url}")
     logger.debug(f"Query params received: {params}")
@@ -84,6 +85,11 @@ async def _resolve_and_set_context(
     business_number: str,
     extra_context: Optional[dict] = None,
 ) -> None:
+    logger.debug(
+        "_resolve_and_set_context called (connection_id=%s business_number=%s)",
+        connection_id,
+        business_number,
+    )
     try:
         caller_number = extra_context.get("caller") if extra_context else None
         context = await resolve_business_context(business_number, caller_number=caller_number)
@@ -107,6 +113,11 @@ async def _resolve_and_set_context(
 
 
 async def _prefetch_and_set_customer(connection_id: str, caller_number: Optional[str]) -> None:
+    logger.debug(
+        "_prefetch_and_set_customer called (connection_id=%s caller_number=%s)",
+        connection_id,
+        caller_number,
+    )
     if not caller_number:
         return
     existing_context = get_connection_context(connection_id)
@@ -137,6 +148,12 @@ async def _end_twilio_call(
     account_sid: Optional[str],
     call_sid: Optional[str],
 ) -> None:
+    logger.debug(
+        "_end_twilio_call called (connection_id=%s account_sid=%s call_sid=%s)",
+        connection_id,
+        bool(account_sid),
+        bool(call_sid),
+    )
     if not account_sid or not call_sid:
         logger.warning(
             "Missing Twilio identifiers for %s (accountSid=%s callSid=%s)",
@@ -174,6 +191,7 @@ app.add_middleware(
 @app.get("/")
 async def root():
     """Root endpoint with basic info"""
+    logger.debug("root endpoint called")
     return {
         "service": "VakDeepGram",
         "version": "1.0.0",
@@ -186,6 +204,7 @@ async def root():
 @app.get("/health")
 async def health():
     """Health check endpoint"""
+    logger.debug("health endpoint called")
     return {"status": "ok"}
 
 
@@ -195,18 +214,31 @@ async def websocket_endpoint(websocket: WebSocket):
     
     Starts Deepgram session immediately on connection for bidirectional audio streaming.
     """
+    logger.debug("websocket_endpoint called")
     await websocket.accept()
     connection_id = f"ws-{uuid.uuid4().hex[:12]}"
     logger.info(f"WebSocket connection established: {connection_id}")
 
     business_number = websocket.query_params.get("businessNumber")
+    customer_phone = websocket.query_params.get("customerPhone")
     if business_number:
         logger.info("Browser client provided businessNumber=%s for %s", business_number, connection_id)
         set_connection_context(
             connection_id,
-            {"success": False, "pending": True, "businessNumber": business_number},
+            {
+                "success": False,
+                "pending": True,
+                "businessNumber": business_number,
+                "caller": customer_phone,
+            },
         )
-        asyncio.create_task(_resolve_and_set_context(connection_id, business_number))
+        asyncio.create_task(
+            _resolve_and_set_context(
+                connection_id,
+                business_number,
+                extra_context={"caller": customer_phone} if customer_phone else None,
+            )
+        )
     else:
         logger.info("No businessNumber provided for %s", connection_id)
     
@@ -323,6 +355,7 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
     - Handles Twilio message format: {"event": "start/media/stop", ...}
     - Verifies Twilio signature before accepting connection
     """
+    logger.debug("twilio_websocket_endpoint called")
     # Get query parameters and signature from headers before accepting
     logger.info(f"=== Incoming Twilio WebSocket Connection ===")
     logger.info(f"Client: {websocket.client}")

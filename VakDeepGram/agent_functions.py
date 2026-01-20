@@ -1,11 +1,14 @@
 from datetime import datetime, timedelta
+import logging
 from business_logic import (
     get_customer,
     get_customer_appointments,
     get_customer_orders,
+    create_customer as create_customer_record,
     schedule_appointment_with_contact,
     get_available_appointment_slots,
     prepare_farewell_message,
+    forward_call_to_location,
 )
 from store_tools import (
     get_services_from_context,
@@ -14,9 +17,12 @@ from store_tools import (
     get_store_location_from_context,
 )
 
+logger = logging.getLogger(__name__)
+
 
 async def find_customer(params):
     """Look up a customer by phone, email, or ID."""
+    logger.debug("agent_functions.find_customer called (keys=%s)", list(params.keys()))
     connection_id = params.get("connection_id")
     phone = params.get("phone")
     email = params.get("email")
@@ -32,6 +38,7 @@ async def find_customer(params):
 
 async def get_appointments(params):
     """Get appointments for a customer."""
+    logger.debug("agent_functions.get_appointments called (keys=%s)", list(params.keys()))
     customer_id = params.get("customer_id")
     if not customer_id:
         return {"error": "customer_id is required"}
@@ -41,6 +48,7 @@ async def get_appointments(params):
 
 async def get_orders(params):
     """Get orders for a customer."""
+    logger.debug("agent_functions.get_orders called (keys=%s)", list(params.keys()))
     customer_id = params.get("customer_id")
     if not customer_id:
         return {"error": "customer_id is required"}
@@ -48,16 +56,37 @@ async def get_orders(params):
     return result
 
 
+async def create_customer(params):
+    """Create a new customer record."""
+    logger.debug("agent_functions.create_customer called (keys=%s)", list(params.keys()))
+    connection_id = params.get("connection_id")
+    first_name = params.get("first_name")
+    last_name = params.get("last_name")
+    phone_number = params.get("phone_number")
+    if not all([first_name, last_name]):
+        return {"error": "first_name and last_name are required"}
+    result = await create_customer_record(
+        connection_id,
+        first_name,
+        last_name,
+        phone_number=phone_number,
+    )
+    return result
+
+
 async def create_appointment(params):
     """Schedule a new appointment."""
+    logger.debug("agent_functions.create_appointment called (keys=%s)", list(params.keys()))
     connection_id = params.get("connection_id")
     first_name = params.get("first_name")
     last_name = params.get("last_name")
     date = params.get("date")
     service = params.get("service")
     phone_number = params.get("phone_number")
-    if not all([first_name, last_name, date, service]):
-        return {"error": "first_name, last_name, date, and service are required"}
+    customer_id = params.get("customer_id")
+    staff_id = params.get("staff_id")
+    if not all([first_name, last_name, date, service, customer_id, staff_id]):
+        return {"error": "first_name, last_name, date, service, customer_id, and staff_id are required"}
     result = await schedule_appointment_with_contact(
         connection_id,
         first_name,
@@ -65,24 +94,33 @@ async def create_appointment(params):
         date,
         service,
         phone_number=phone_number,
+        customer_id=customer_id,
+        staff_id=staff_id,
     )
     return result
 
 
 async def check_availability(params):
     """Check available appointment slots."""
+    logger.debug("agent_functions.check_availability called (keys=%s)", list(params.keys()))
     start_date = params.get("start_date")
     if not start_date:
         return {"error": "start_date is required"}
     connection_id = params.get("connection_id")
     end_date = params.get("end_date")
+    staff_ids = params.get("staff_ids")
     if not end_date:
         normalized_start = start_date.replace("Z", "+00:00")
         try:
             end_date = (datetime.fromisoformat(normalized_start) + timedelta(days=7)).isoformat()
         except ValueError:
             end_date = None
-    result = await get_available_appointment_slots(start_date, end_date, connection_id=connection_id)
+    result = await get_available_appointment_slots(
+        start_date,
+        end_date,
+        connection_id=connection_id,
+        staff_ids=staff_ids,
+    )
     return result
 
 
@@ -90,29 +128,42 @@ async def end_call(websocket, params):
     """
     End the conversation and close the connection.
     """
+    logger.debug("agent_functions.end_call called (keys=%s)", list(params.keys()))
     farewell_type = params.get("farewell_type", "general")
     message = params.get("message", "Alright, have a nice day.")
     result = await prepare_farewell_message(websocket, farewell_type, message=message)
     return result
 
 
+async def transfer_to_staff(params):
+    """Forward the caller to the business location phone number."""
+    logger.debug("agent_functions.transfer_to_staff called (keys=%s)", list(params.keys()))
+    connection_id = params.get("connection_id")
+    result = await forward_call_to_location(connection_id)
+    return result
+
+
 async def get_store_hours(params):
     """Return store hours."""
+    logger.debug("agent_functions.get_store_hours called (keys=%s)", list(params.keys()))
     return get_store_hours_from_context(params)
 
 
 async def get_store_location(params):
     """Return store location information."""
+    logger.debug("agent_functions.get_store_location called (keys=%s)", list(params.keys()))
     return get_store_location_from_context(params)
 
 
 async def get_services(params):
     """Return store services."""
+    logger.debug("agent_functions.get_services called (keys=%s)", list(params.keys()))
     return get_services_from_context(params)
 
 
 async def get_staff(params):
     """Return store staff information."""
+    logger.debug("agent_functions.get_staff called (keys=%s)", list(params.keys()))
     return get_staff_from_context(params)
 
 
@@ -120,7 +171,9 @@ async def get_staff(params):
 FUNCTION_DEFINITIONS = [
     {
         "name": "find_customer",
-        "description": """Look up a customer's account information. Use context clues to determine what type of identifier the user is providing:
+        "description": """Look up a customer's account information.
+        Use this before appointments or order lookups when you need a customer ID.
+        Use context clues to determine what type of identifier the user is providing:
         Customer ID formats:
         - Numbers only (e.g., '169', '42') -> Format as 'CUST0169', 'CUST0042'
         - With prefix (e.g., 'CUST169', 'customer 42') -> Format as 'CUST0169', 'CUST0042'
@@ -162,7 +215,7 @@ FUNCTION_DEFINITIONS = [
     },
     {
         "name": "get_appointments",
-        "description": """Retrieve all appointments for a customer. Use this function when:
+        "description": """Retrieve all appointments for a customer. Use this when:
         - A customer asks about their upcoming appointments
         - A customer wants to know their appointment schedule
         - A customer asks 'When is my next appointment?'
@@ -180,7 +233,7 @@ FUNCTION_DEFINITIONS = [
     },
     {
         "name": "get_orders",
-        "description": """Retrieve order history for a customer. Use this function when:
+        "description": """Retrieve order history for a customer. Use this when:
         - A customer asks about their orders
         - A customer wants to check order status
         - A customer asks questions like 'Where is my order?' or 'What did I order?'
@@ -197,8 +250,34 @@ FUNCTION_DEFINITIONS = [
         },
     },
     {
+        "name": "create_customer",
+        "description": """Create a new customer in Square.
+        Use when the customer is new and you need a customer_id before booking.
+        - The caller is a new customer and you need to create their account
+        - You have confirmed first and last name, and optionally phone number
+        If phone_number is omitted, use the caller number from context.""",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "first_name": {
+                    "type": "string",
+                    "description": "Customer's first name.",
+                },
+                "last_name": {
+                    "type": "string",
+                    "description": "Customer's last name.",
+                },
+                "phone_number": {
+                    "type": "string",
+                    "description": "Customer phone number. If omitted, use caller number from context.",
+                },
+            },
+            "required": ["first_name", "last_name"],
+        },
+    },
+    {
         "name": "create_appointment",
-        "description": """Schedule a new appointment for a customer. Use this function when:
+        "description": """Schedule a new appointment for a customer. Use this when:
         - A customer wants to book a new appointment
         - A customer asks to schedule a service
         Before scheduling:
@@ -206,6 +285,7 @@ FUNCTION_DEFINITIONS = [
         2. Check availability using check_availability
         3. Confirm date/time and service type with the customer
         4. Collect first and last name and confirm spelling before booking
+        5. If the customer exists, pass their customer_id; if not, create the customer first.
         Use the caller's phone number from context unless the customer provides a different number.""",
         "parameters": {
             "type": "object",
@@ -222,38 +302,51 @@ FUNCTION_DEFINITIONS = [
                     "type": "string",
                     "description": "Customer phone number. If omitted, use caller number from context.",
                 },
+                "customer_id": {
+                    "type": "string",
+                    "description": "Square customer ID. Required for booking.",
+                },
+                "staff_id": {
+                    "type": "string",
+                    "description": "Square team member ID for the appointment. Required for booking.",
+                },
                 "date": {
                     "type": "string",
                     "description": "Appointment date and time in ISO format (YYYY-MM-DDTHH:MM:SS). Must be a time slot confirmed as available.",
                 },
                 "service": {
                     "type": "string",
-                    "description": "Type of service requested. Must be one of the following: Consultation, Follow-up, Review, or Planning",
-                    "enum": ["Consultation", "Follow-up", "Review", "Planning"],
+                    "description": "Type of service requested. Always validate against get_services results and clarify if needed.",
                 },
             },
-            "required": ["first_name", "last_name", "date", "service"],
+            "required": ["first_name", "last_name", "customer_id", "staff_id", "date", "service"],
         },
     },
     {
         "name": "check_availability",
-        "description": """Check available appointment slots within a date range. Use this function when:
+        "description": """Check available appointment slots within a date range. Use this when:
         - A customer wants to know available appointment times
         - Before scheduling a new appointment
         - A customer asks 'When can I come in?' or 'What times are available?'
         After checking availability, present options to the customer in a natural way, like:
         'I have openings on [date] at [time] or [date] at [time]. Which works better for you?'
-        If the availability response includes ranges, summarize them as ranges instead of listing every slot.""",
+        If the availability response includes ranges, summarize them as ranges instead of listing every slot.
+        If available_staff is provided and the customer is open to any staff, confirm which available staff works for them.""",
         "parameters": {
             "type": "object",
             "properties": {
                 "start_date": {
                     "type": "string",
-                    "description": "Start date in ISO format (YYYY-MM-DDTHH:MM:SS.sssZ) or a relative date enum like TODAY, TOMORROW, YESTERDAY, THIS_WEEK, NEXT_WEEK, LAST_WEEK, THIS_WEEKEND, NEXT_WEEKEND, THIS_MONTH, NEXT_MONTH, LAST_MONTH, NEXT_7_DAYS, NEXT_14_DAYS, NEXT_30_DAYS.",
+                    "description": "Start date in ISO format (YYYY-MM-DDTHH:MM:SS.sssZ), a relative date enum like TODAY or NEXT_WEEK, or a weekday name like Monday/next Monday. Confirm inferred weekday dates with the customer.",
                 },
                 "end_date": {
                     "type": "string",
                     "description": "End date in ISO format (YYYY-MM-DDTHH:MM:SS.sssZ) or relative date enum. Optional - defaults to a range based on start_date.",
+                },
+                "staff_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional list of preferred staff IDs to filter availability.",
                 },
             },
             "required": ["start_date"],
@@ -261,7 +354,7 @@ FUNCTION_DEFINITIONS = [
     },
     {
         "name": "end_call",
-        "description": """End the conversation and close the connection. Call this function when:
+        "description": """End the conversation and close the connection. Call this when:
         - User says goodbye, thank you, etc.
         - User indicates they're done ("that's all I need", "I'm all set", etc.)
         - User wants to end the conversation
@@ -282,6 +375,18 @@ FUNCTION_DEFINITIONS = [
                 }
             },
             "required": ["farewell_type"],
+        },
+    },
+    {
+        "name": "transfer_to_staff",
+        "description": """Transfer the caller to speak with a staff member. Use this when:
+        - The customer asks to talk to someone
+        - The customer requests a human or staff member
+        The call will be forwarded to the store phone number.""",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
         },
     },
     {
@@ -340,9 +445,11 @@ FUNCTION_MAP = {
     "find_customer": find_customer,
     "get_appointments": get_appointments,
     "get_orders": get_orders,
+    "create_customer": create_customer,
     "create_appointment": create_appointment,
     "check_availability": check_availability,
     "end_call": end_call,
+    "transfer_to_staff": transfer_to_staff,
     "get_store_hours": get_store_hours,
     "get_store_location": get_store_location,
     "get_services": get_services,

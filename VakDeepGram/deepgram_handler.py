@@ -21,6 +21,7 @@ class DeepgramSession:
     """Represents an active Deepgram Voice Agent session"""
     
     def __init__(self, connection_id: str, sts_ws, event_loop, use_mulaw: bool = False):
+        logger.debug("DeepgramSession.__init__ called (connection_id=%s use_mulaw=%s)", connection_id, use_mulaw)
         self.connection_id = connection_id
         self.sts_ws = sts_ws  # The STS WebSocket connection
         self.event_loop = event_loop
@@ -35,10 +36,12 @@ class DeepgramSession:
         
     def set_send_callback(self, callback: Callable):
         """Set the callback function to send messages to the client"""
+        logger.debug("DeepgramSession.set_send_callback called (connection_id=%s)", self.connection_id)
         self.send_to_client = callback
     
     async def send_to_client_safe(self, data: dict):
         """Safely send data to client if callback is set"""
+        logger.debug("DeepgramSession.send_to_client_safe called (connection_id=%s type=%s)", self.connection_id, data.get("type"))
         if self.send_to_client:
             try:
                 await self.send_to_client(data)
@@ -50,6 +53,7 @@ class DeepgramManager:
     """Manages Deepgram Voice Agent sessions using STS WebSocket"""
     
     def __init__(self):
+        logger.debug("DeepgramManager.__init__ called")
         self.sessions: Dict[str, DeepgramSession] = {}
         self.api_key = config.settings.deepgram_api_key
     
@@ -60,6 +64,7 @@ class DeepgramManager:
             use_mulaw: If True, configure for mulaw (8kHz) - used for Twilio
                       If False, configure for linear16 (48kHz) - used for browser
         """
+        logger.debug("DeepgramManager._build_settings called (connection_id=%s use_mulaw=%s)", connection_id, use_mulaw)
         # Build listen provider
         listen_provider = {
             "type": "deepgram",
@@ -160,10 +165,16 @@ class DeepgramManager:
                 "agent": agent_config,
             }
         
+        logger.debug(
+            "DeepgramManager._build_settings payload (connection_id=%s settings=%s)",
+            connection_id,
+            json.dumps(settings, indent=2, default=str),
+        )
         return settings
     
     async def _sts_connect(self):
         """Create STS WebSocket connection"""
+        logger.debug("DeepgramManager._sts_connect called")
         if not self.api_key:
             raise ValueError("DEEPGRAM_API_KEY must be set")
         
@@ -180,6 +191,7 @@ class DeepgramManager:
     
     async def create_session(self, connection_id: str, use_mulaw: bool = False) -> DeepgramSession:
         """Create a new Deepgram Voice Agent session using STS"""
+        logger.debug("DeepgramManager.create_session called (connection_id=%s use_mulaw=%s)", connection_id, use_mulaw)
         # Clean up any existing session
         await self.close_session(connection_id)
         
@@ -217,6 +229,7 @@ class DeepgramManager:
     
     async def _sts_receiver(self, session: DeepgramSession):
         """Handle messages from Deepgram STS WebSocket"""
+        logger.debug("DeepgramManager._sts_receiver called (connection_id=%s)", session.connection_id)
         try:
             async for message in session.sts_ws:
                 if isinstance(message, str):
@@ -257,6 +270,7 @@ class DeepgramManager:
     
     async def _handle_json_message(self, session: DeepgramSession, data: dict):
         """Handle JSON messages from Deepgram"""
+        logger.debug("DeepgramManager._handle_json_message called (connection_id=%s type=%s)", session.connection_id, data.get("type"))
         if not session.is_active:
             return
         
@@ -484,6 +498,12 @@ class DeepgramManager:
         response_id_key: str,
     ):
         """Execute a function call and return results to Deepgram."""
+        logger.debug(
+            "DeepgramManager._execute_function_call called (connection_id=%s name=%s call_id=%s)",
+            session.connection_id,
+            function_name,
+            call_id,
+        )
         if not function_name or not call_id:
             return
 
@@ -518,7 +538,11 @@ class DeepgramManager:
                     result = await function_impl(function_args)
 
             logger.info(f"✅ Function '{function_name}' completed: success={result.get('success')}")
-            logger.debug(f"🔧 Function result: {json.dumps(result, indent=2, default=str)}")
+            logger.debug(
+                "🔧 Function result (name=%s): %s",
+                function_name,
+                json.dumps(result, indent=2, default=str),
+            )
 
             result_payload = result
             if isinstance(raw_args, str):
@@ -531,12 +555,21 @@ class DeepgramManager:
                 "content": result_payload,
             }
 
+            logger.debug(
+                "Deepgram function response payload (call_id=%s): %s",
+                call_id,
+                json.dumps(function_result_message, indent=2, default=str),
+            )
             await session.sts_ws.send(json.dumps(function_result_message, default=str))
             logger.debug(f"✅ Sent function result to Deepgram for call_id: {call_id}")
 
             if function_name == "end_call":
                 session.pending_disconnect = True
                 session.pending_disconnect_reason = "end_call"
+            elif function_name == "transfer_to_staff":
+                if result.get("success"):
+                    session.pending_disconnect = True
+                    session.pending_disconnect_reason = "transfer_to_staff"
 
         except Exception as e:
             logger.error(f"❌ Error executing function '{function_name}': {str(e)}", exc_info=True)
@@ -559,6 +592,7 @@ class DeepgramManager:
     
     async def _handle_audio_message(self, session: DeepgramSession, audio_data: bytes):
         """Handle binary audio messages (TTS) from Deepgram Voice Agent"""
+        logger.debug("DeepgramManager._handle_audio_message called (connection_id=%s bytes=%d)", session.connection_id, len(audio_data))
         if len(audio_data) > 0:
             # Always encode as base64 for the callback (JSON-compatible)
             # The callback will decode and handle appropriately
@@ -579,6 +613,7 @@ class DeepgramManager:
     
     async def _on_settings_applied(self, session: DeepgramSession):
         """Handle SettingsApplied event - flush buffered audio"""
+        logger.debug("DeepgramManager._on_settings_applied called (connection_id=%s)", session.connection_id)
         await session.send_to_client_safe({
             "type": "settings-applied",
             "connectionId": session.connection_id
@@ -594,10 +629,12 @@ class DeepgramManager:
     
     def get_session(self, connection_id: str) -> Optional[DeepgramSession]:
         """Get an existing session by connection ID"""
+        logger.debug("DeepgramManager.get_session called (connection_id=%s)", connection_id)
         return self.sessions.get(connection_id)
     
     async def close_session(self, connection_id: str):
         """Close and clean up a session"""
+        logger.debug("DeepgramManager.close_session called (connection_id=%s)", connection_id)
         session = self.sessions.get(connection_id)
         if session:
             session.is_active = False
@@ -615,6 +652,7 @@ class DeepgramManager:
     
     async def _send_audio_to_deepgram(self, session: DeepgramSession, audio_data: bytes):
         """Send audio data to Deepgram Voice Agent"""
+        logger.debug("DeepgramManager._send_audio_to_deepgram called (connection_id=%s bytes=%d)", session.connection_id, len(audio_data))
         try:
             if session.sts_ws and session.is_active:
                 # Check WebSocket state
@@ -650,6 +688,7 @@ class DeepgramManager:
         If the session is not ready yet and force_send=False, audio will be buffered and sent
         once the SettingsApplied event is received.
         """
+        logger.debug("DeepgramManager.send_audio called (connection_id=%s bytes=%d force_send=%s)", connection_id, len(audio_data), force_send)
         session = self.get_session(connection_id)
         if not session or not session.is_active:
             logger.warn(f"⚠️ No active Deepgram session for {connection_id}, ignoring audio")

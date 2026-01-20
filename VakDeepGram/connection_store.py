@@ -26,6 +26,7 @@ _SERVICE_PRODUCT_TYPES = ["APPOINTMENTS_SERVICE", "LEGACY_SQUARE_ONLINE_SERVICE"
 
 
 def _parse_square_response(response: Any) -> Dict[str, Any]:
+    logger.debug("connection_store._parse_square_response called (type=%s)", type(response))
     if hasattr(response, "is_error"):
         if response.is_error():
             return {"success": False, "error": response.errors}
@@ -44,6 +45,7 @@ def _parse_square_response(response: Any) -> Dict[str, Any]:
 
 
 def _extract_square_cursor(response: Any) -> Optional[str]:
+    logger.debug("connection_store._extract_square_cursor called (type=%s)", type(response))
     for attr in ("_response", "response", "__response"):
         page = getattr(response, attr, None)
         if page:
@@ -52,19 +54,23 @@ def _extract_square_cursor(response: Any) -> Optional[str]:
 
 
 def set_connection_context(connection_id: str, context: Dict[str, Any]) -> None:
+    logger.debug("connection_store.set_connection_context called (connection_id=%s)", connection_id)
     _connection_contexts[connection_id] = context
 
 
 def get_connection_context(connection_id: str) -> Dict[str, Any]:
+    logger.debug("connection_store.get_connection_context called (connection_id=%s)", connection_id)
     return _connection_contexts.get(connection_id, {})
 
 
 def clear_connection_context(connection_id: str) -> None:
+    logger.debug("connection_store.clear_connection_context called (connection_id=%s)", connection_id)
     _connection_contexts.pop(connection_id, None)
 
 
 def get_localized_datetime_for_connection(connection_id: str) -> str:
     """Return a localized datetime string based on the connection's location ID."""
+    logger.debug("connection_store.get_localized_datetime_for_connection called (connection_id=%s)", connection_id)
     context = get_connection_context(connection_id)
     location = context.get("location") or {}
     timezone = location.get("timezone")
@@ -73,10 +79,12 @@ def get_localized_datetime_for_connection(connection_id: str) -> str:
 
 
 def _isoformat_utc(value: datetime) -> str:
+    logger.debug("connection_store._isoformat_utc called (value=%s)", value)
     return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
 def _next_four_weeks_range(tz_name: Optional[str]) -> tuple[datetime, datetime]:
+    logger.debug("connection_store._next_four_weeks_range called (tz=%s)", tz_name)
     tzinfo = ZoneInfo(tz_name) if tz_name and ZoneInfo else None
     now = datetime.now(tzinfo) if tzinfo else datetime.now(timezone.utc)
     start = now
@@ -89,6 +97,11 @@ async def _fetch_square_bookings_for_month(
     location_id: str,
     timezone_name: Optional[str],
 ) -> Dict[str, Any]:
+    logger.debug(
+        "connection_store._fetch_square_bookings_for_month called (location_id=%s tz=%s)",
+        location_id,
+        timezone_name,
+    )
     start_local, end_local = _next_four_weeks_range(timezone_name)
     start_at_min = _isoformat_utc(start_local)
     start_at_max = _isoformat_utc(end_local)
@@ -134,6 +147,7 @@ async def _fetch_square_bookings_for_month(
 
 
 def normalize_phone_number(value: str) -> Optional[str]:
+    logger.debug("connection_store.normalize_phone_number called (value=%s)", value)
     if not value:
         return None
     digits = "".join(ch for ch in value if ch.isdigit())
@@ -156,6 +170,7 @@ def normalize_phone_number(value: str) -> Optional[str]:
 
 
 def _square_environment():
+    logger.debug("connection_store._square_environment called")
     env_name = config.settings.square_environment
     if SquareEnvironment:
         return SquareEnvironment.SANDBOX if env_name == "sandbox" else SquareEnvironment.PRODUCTION
@@ -163,6 +178,7 @@ def _square_environment():
 
 
 async def _fetch_business_number_record(phone_number: str) -> Optional[Dict[str, Any]]:
+    logger.debug("connection_store._fetch_business_number_record called (phone=%s)", phone_number)
     logger.info("Fetching BusinessNumber record for %s", phone_number)
     session = aioboto3.Session()
     async with session.resource("dynamodb", region_name=config.settings.aws_region) as dynamodb:
@@ -174,6 +190,11 @@ async def _fetch_business_number_record(phone_number: str) -> Optional[Dict[str,
 
 
 async def _fetch_square_account_record(user_id: str, merchant_id: str) -> Optional[Dict[str, Any]]:
+    logger.debug(
+        "connection_store._fetch_square_account_record called (user_id=%s merchant_id=%s)",
+        user_id,
+        merchant_id,
+    )
     logger.info("Fetching SquareAccount record for userId=%s merchantId=%s", user_id, merchant_id)
     session = aioboto3.Session()
     async with session.resource("dynamodb", region_name=config.settings.aws_region) as dynamodb:
@@ -185,6 +206,7 @@ async def _fetch_square_account_record(user_id: str, merchant_id: str) -> Option
 
 
 async def _fetch_square_location(access_token: str, location_id: str) -> Dict[str, Any]:
+    logger.debug("connection_store._fetch_square_location called (location_id=%s)", location_id)
     logger.info("Fetching Square location %s", location_id)
     client = AsyncSquare(token=access_token, environment=_square_environment())
     response = await client.locations.get(location_id)
@@ -206,6 +228,7 @@ async def _fetch_square_location(access_token: str, location_id: str) -> Dict[st
 
 
 async def _fetch_square_services(access_token: str, location_id: str) -> Dict[str, Any]:
+    logger.debug("connection_store._fetch_square_services called (location_id=%s)", location_id)
     logger.info("Fetching Square services for locationId=%s", location_id)
     client = AsyncSquare(token=access_token, environment=_square_environment())
     items: list[Dict[str, Any]] = []
@@ -240,6 +263,7 @@ async def _fetch_square_services(access_token: str, location_id: str) -> Dict[st
 
 
 async def _fetch_square_staff(access_token: str, location_id: str) -> Dict[str, Any]:
+    logger.debug("connection_store._fetch_square_staff called (location_id=%s)", location_id)
     try:
         from square.types.search_team_members_query import SearchTeamMembersQuery
         from square.types.search_team_members_filter import SearchTeamMembersFilter
@@ -279,6 +303,7 @@ async def _fetch_square_staff(access_token: str, location_id: str) -> Dict[str, 
 
 
 def _candidate_numbers(raw_number: str) -> list[str]:
+    logger.debug("connection_store._candidate_numbers called (raw=%s)", raw_number)
     normalized = normalize_phone_number(raw_number)
     if not normalized:
         return []
@@ -291,6 +316,7 @@ def _candidate_numbers(raw_number: str) -> list[str]:
 
 
 def _phone_digits(value: Optional[str]) -> Optional[str]:
+    logger.debug("connection_store._phone_digits called (value=%s)", value)
     normalized = normalize_phone_number(value or "")
     if not normalized:
         return None
@@ -301,12 +327,13 @@ def _phone_digits(value: Optional[str]) -> Optional[str]:
 
 
 async def _fetch_square_customers(access_token: str) -> Dict[str, Any]:
+    logger.debug("connection_store._fetch_square_customers called")
     logger.info("Fetching Square customers")
     client = AsyncSquare(token=access_token, environment=_square_environment())
     customers: list[Dict[str, Any]] = []
     cursor = None
     while True:
-        response = await client.customers.list(cursor=cursor, limit=200)
+        response = await client.customers.list(cursor=cursor, limit=100)
         if hasattr(response, "is_error"):
             if response.is_error():
                 return {"success": False, "error": response.errors}
@@ -331,6 +358,7 @@ async def _fetch_square_customers(access_token: str) -> Dict[str, Any]:
 
 
 async def fetch_square_customer_by_phone(access_token: str, phone_number: str) -> Dict[str, Any]:
+    logger.debug("connection_store.fetch_square_customer_by_phone called (phone=%s)", phone_number)
     normalized_digits = _phone_digits(phone_number)
     if not normalized_digits:
         return {"success": False, "error": "Invalid phone number."}
@@ -352,6 +380,11 @@ async def resolve_business_context(
     business_number: str,
     caller_number: Optional[str] = None,
 ) -> Dict[str, Any]:
+    logger.debug(
+        "connection_store.resolve_business_context called (business_number=%s caller_number=%s)",
+        business_number,
+        caller_number,
+    )
     candidates = _candidate_numbers(business_number)
     if not candidates:
         logger.warning("Business number normalization failed: %s", business_number)

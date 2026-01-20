@@ -47,6 +47,7 @@ function App() {
   const [systemMessages, setSystemMessages] = useState<SystemMessageEntry[]>([]);
   const [textInput, setTextInput] = useState('');
   const [businessNumber, setBusinessNumber] = useState('+15104054454');
+  const [customerPhone, setCustomerPhone] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<string>('Disconnected');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -142,13 +143,17 @@ function App() {
           url.searchParams.set('businessNumber', businessNumber.trim());
           console.log('📞 Using businessNumber:', businessNumber.trim());
         }
+        if (customerPhone.trim()) {
+          url.searchParams.set('customerPhone', customerPhone.trim());
+          console.log('📞 Using customerPhone:', customerPhone.trim());
+        }
         url.protocol = scheme;
         return url.toString();
     } catch (error) {
       console.error('Invalid WebSocket URL:', error);
       return baseUrl;
     }
-  }, [businessNumber]);
+  }, [businessNumber, customerPhone]);
 
   const connectWebSocket = async () => {
     if (!wsUrl) {
@@ -1477,6 +1482,32 @@ function App() {
               placeholder="+15551234567"
               value={businessNumber}
               onChange={(e) => setBusinessNumber(e.target.value)}
+              disabled={connected}
+              style={{
+                width: '100%',
+                padding: '10px',
+                fontSize: '14px',
+                borderRadius: '6px',
+                border: '1px solid #d1d5db',
+                backgroundColor: connected ? '#f3f4f6' : '#ffffff'
+              }}
+            />
+          </div>
+          <div style={{ marginTop: '12px' }}>
+            <label style={{ 
+              display: 'block', 
+              fontSize: '14px', 
+              fontWeight: '500', 
+              color: '#374151',
+              marginBottom: '5px'
+            }}>
+              Customer Phone (for booking):
+            </label>
+            <input
+              type="text"
+              placeholder="+15551234567"
+              value={customerPhone}
+              onChange={(e) => setCustomerPhone(e.target.value)}
               disabled={connected}
               style={{
                 width: '100%',
