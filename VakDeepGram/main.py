@@ -10,10 +10,11 @@ from typing import Optional
 
 from twilio.rest import Client as TwilioClient
 from urllib.parse import urlencode, parse_qs
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from twilio.request_validator import RequestValidator
 import uvicorn
+import boto3
 import config
 from deepgram_handler import deepgram_manager
 from connection_store import (
@@ -34,6 +35,11 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="VakDeepGram", version="1.0.0")
 
+bedrock_client = boto3.client(
+    "bedrock-runtime",
+    region_name=config.settings.aws_region,
+)
+
 
 def verify_twilio_signature(request_url: str, params: dict, signature: str) -> bool:
     """
@@ -47,7 +53,7 @@ def verify_twilio_signature(request_url: str, params: dict, signature: str) -> b
     Returns:
         True if signature is valid, False otherwise
     """
-    logger.debug("verify_twilio_signature called (url=%s)", request_url)
+    logger.info("verify_twilio_signature called (url=%s)", request_url)
     logger.debug(f"=== Twilio Signature Verification Debug ===")
     logger.debug(f"Request URL: {request_url}")
     logger.debug(f"Query params received: {params}")
@@ -71,8 +77,8 @@ def verify_twilio_signature(request_url: str, params: dict, signature: str) -> b
         # The validator.validate() method handles all the HMAC-SHA1 computation internally
         is_valid = validator.validate(request_url, params, signature)
         
-        logger.debug(f"Twilio RequestValidator result: {is_valid}")
-        logger.debug(f"=== Verification result: {is_valid} ===")
+        logger.info(f"Twilio RequestValidator result: {is_valid}")
+        logger.info(f"=== Verification result: {is_valid} ===")
         
         return is_valid
     except Exception as e:
@@ -191,21 +197,80 @@ app.add_middleware(
 @app.get("/")
 async def root():
     """Root endpoint with basic info"""
-    logger.debug("root endpoint called")
+    logger.info("root endpoint called")
     return {
         "service": "VakDeepGram",
         "version": "1.0.0",
         "status": "running",
         "websocket_endpoint": "/ws",
-        "twilio_endpoint": "/twilio"
+        "twilio_endpoint": "/twilio",
+        "chat_endpoint": "/chat",
     }
 
 
 @app.get("/health")
 async def health():
     """Health check endpoint"""
-    logger.debug("health endpoint called")
+    logger.info("health endpoint called")
     return {"status": "ok"}
+
+
+@app.post("/chat")
+async def chat(request: Request):
+    """Simple chat endpoint for browser testing."""
+    logger.info("chat endpoint called")
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body.")
+    message = payload.get("message") or payload.get("text")
+    if not message or not isinstance(message, str):
+        raise HTTPException(status_code=400, detail="message is required.")
+
+    system_prompt = payload.get("system_prompt") or config.settings.deepgram_agent_prompt or ""
+    model_id = payload.get("model_id") or config.settings.bedrock_model_id
+    max_tokens = payload.get("max_tokens") or config.settings.bedrock_max_tokens
+    temperature = payload.get("temperature") or config.settings.bedrock_temperature
+    try:
+        max_tokens = int(max_tokens)
+        temperature = float(temperature)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid max_tokens or temperature.")
+
+    logger.info("Invoking Bedrock chat (model=%s message_chars=%d)", model_id, len(message))
+    request_body = {
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "system": system_prompt,
+        "messages": [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": message}],
+            }
+        ],
+    }
+    try:
+        response = bedrock_client.invoke_model(
+            modelId=model_id,
+            body=json.dumps(request_body),
+            contentType="application/json",
+            accept="application/json",
+        )
+    except Exception as exc:
+        logger.error("Bedrock invoke failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=502, detail="Bedrock request failed.")
+
+    body = response.get("body")
+    raw = body.read() if hasattr(body, "read") else body
+    data = json.loads(raw)
+    content = data.get("content") or []
+    reply = "".join(
+        part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") == "text"
+    )
+    if not reply:
+        reply = data.get("completion") or ""
+    return {"reply": reply, "model_id": model_id}
 
 
 @app.websocket("/ws")
@@ -214,7 +279,7 @@ async def websocket_endpoint(websocket: WebSocket):
     
     Starts Deepgram session immediately on connection for bidirectional audio streaming.
     """
-    logger.debug("websocket_endpoint called")
+    logger.info("websocket_endpoint called")
     await websocket.accept()
     connection_id = f"ws-{uuid.uuid4().hex[:12]}"
     logger.info(f"WebSocket connection established: {connection_id}")
@@ -355,7 +420,7 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
     - Handles Twilio message format: {"event": "start/media/stop", ...}
     - Verifies Twilio signature before accepting connection
     """
-    logger.debug("twilio_websocket_endpoint called")
+    logger.info("twilio_websocket_endpoint called")
     # Get query parameters and signature from headers before accepting
     logger.info(f"=== Incoming Twilio WebSocket Connection ===")
     logger.info(f"Client: {websocket.client}")

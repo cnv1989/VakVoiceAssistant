@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 def _square_environment():
-    logger.debug("store_tools._square_environment called")
+    logger.info("store_tools._square_environment called")
     env_name = config.settings.square_environment
     if SquareEnvironment:
         return SquareEnvironment.SANDBOX if env_name == "sandbox" else SquareEnvironment.PRODUCTION
@@ -26,7 +26,7 @@ def _square_environment():
 
 
 def _get_context(params: Dict[str, Any]) -> Dict[str, Any]:
-    logger.debug("store_tools._get_context called (keys=%s)", list(params.keys()))
+    logger.info("store_tools._get_context called (keys=%s)", list(params.keys()))
     connection_id = params.get("connection_id")
     if not connection_id:
         return {"success": False, "error": "connection_id is required", "context": {}}
@@ -37,7 +37,7 @@ def _get_context(params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def get_store_location_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
-    logger.debug("store_tools.get_store_location_from_context called")
+    logger.info("store_tools.get_store_location_from_context called")
     context_result = _get_context(params)
     if not context_result.get("success"):
         return {"success": False, "error": context_result.get("error"), "location": {}}
@@ -46,7 +46,7 @@ def get_store_location_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def get_store_hours_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
-    logger.debug("store_tools.get_store_hours_from_context called")
+    logger.info("store_tools.get_store_hours_from_context called")
     context_result = _get_context(params)
     if not context_result.get("success"):
         return {"success": False, "error": context_result.get("error"), "hours": []}
@@ -57,7 +57,7 @@ def get_store_hours_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def get_services_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
-    logger.debug("store_tools.get_services_from_context called")
+    logger.info("store_tools.get_services_from_context called")
     context_result = _get_context(params)
     if not context_result.get("success"):
         return {"success": False, "error": context_result.get("error"), "services": []}
@@ -89,7 +89,7 @@ def get_services_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def get_staff_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
-    logger.debug("store_tools.get_staff_from_context called")
+    logger.info("store_tools.get_staff_from_context called")
     context_result = _get_context(params)
     if not context_result.get("success"):
         return {"success": False, "error": context_result.get("error"), "staff": []}
@@ -109,7 +109,7 @@ def get_staff_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
     return {"success": True, "staff": formatted}
 
 async def get_store_hours_from_square(params: Dict[str, Any]) -> Dict[str, Any]:
-    logger.debug("store_tools.get_store_hours_from_square called (keys=%s)", list(params.keys()))
+    logger.info("store_tools.get_store_hours_from_square called (keys=%s)", list(params.keys()))
     connection_id = params.get("connection_id")
     if not connection_id:
         return {"success": False, "error": "connection_id is required"}
@@ -150,7 +150,7 @@ async def get_store_hours_from_square(params: Dict[str, Any]) -> Dict[str, Any]:
         return {"success": False, "error": "Unexpected Square response type."}
 
     location = payload.get("location", {})
-    logger.debug("Square location response keys: %s", list(location.keys()))
+    logger.info("Square location response keys: %s", list(location.keys()))
     logger.info("Square location fetched: %s (%s)", location.get("name"), location.get("id"))
     business_hours = location.get("business_hours", {}).get("periods", [])
     return {

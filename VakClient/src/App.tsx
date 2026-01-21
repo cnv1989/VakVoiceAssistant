@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import Layout from './Layout';
 import './App.css';
 
 interface Message {
@@ -45,7 +46,6 @@ function App() {
   );
   const [connected, setConnected] = useState(false);
   const [systemMessages, setSystemMessages] = useState<SystemMessageEntry[]>([]);
-  const [textInput, setTextInput] = useState('');
   const [businessNumber, setBusinessNumber] = useState('+15104054454');
   const [customerPhone, setCustomerPhone] = useState('');
   const [isRecording, setIsRecording] = useState(false);
@@ -519,26 +519,6 @@ function App() {
     }
     window.open(authUrl, '_blank', 'noopener');
     addSystemMessage(`🔐 Opened auth URL: ${authUrl}`);
-  };
-
-
-  const sendTextMessage = () => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      alert('Not connected to WebSocket');
-      return;
-    }
-
-    if (!textInput.trim()) {
-      return;
-    }
-
-    wsRef.current.send(JSON.stringify({
-      action: 'message',
-      text: textInput,
-    }));
-
-    setTextInput('');
-    addSystemMessage(`🗣️ You: ${textInput}`);
   };
 
 
@@ -1347,9 +1327,9 @@ function App() {
   };
 
   return (
-    <div className="app">
-      <div className="container">
-        <h1>🗣️ Vak Voice Assistant</h1>
+    <Layout currentPage="voice">
+      <div className="app">
+        <div className="container">
 
         <div className="connection-section">
           {/* Endpoint Type Selection */}
@@ -1624,27 +1604,6 @@ function App() {
           </div>
         )}
 
-        <div className="input-section">
-          <div className="input-group">
-            <input
-              type="text"
-              placeholder="Type a message..."
-              value={textInput}
-              onChange={(e) => setTextInput(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && sendTextMessage()}
-              disabled={!connected}
-              className="text-input"
-            />
-            <button
-              onClick={sendTextMessage}
-              disabled={!connected || !textInput.trim()}
-              className="btn btn-primary"
-            >
-              📤 Send
-            </button>
-          </div>
-        </div>
-
         <div className="audio-section">
           {!isRecording ? (
             <button
@@ -1845,6 +1804,7 @@ function App() {
         </div>
       </div>
     </div>
+    </Layout>
   );
 }
 

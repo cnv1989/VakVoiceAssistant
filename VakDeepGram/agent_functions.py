@@ -6,6 +6,7 @@ from business_logic import (
     get_customer_orders,
     create_customer as create_customer_record,
     schedule_appointment_with_contact,
+    update_appointment,
     get_available_appointment_slots,
     prepare_farewell_message,
     forward_call_to_location,
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 async def find_customer(params):
     """Look up a customer by phone, email, or ID."""
-    logger.debug("agent_functions.find_customer called (keys=%s)", list(params.keys()))
+    logger.info("agent_functions.find_customer called (keys=%s)", list(params.keys()))
     connection_id = params.get("connection_id")
     phone = params.get("phone")
     email = params.get("email")
@@ -39,17 +40,20 @@ async def find_customer(params):
 
 async def get_appointments(params):
     """Get appointments for a customer."""
-    logger.debug("agent_functions.get_appointments called (keys=%s)", list(params.keys()))
+    logger.info("agent_functions.get_appointments called (keys=%s)", list(params.keys()))
     customer_id = params.get("customer_id")
+    connection_id = params.get("connection_id")
     if not customer_id:
         return {"error": "customer_id is required"}
-    result = await get_customer_appointments(customer_id)
+    if not connection_id:
+        return {"error": "connection_id is required"}
+    result = await get_customer_appointments(customer_id, connection_id=connection_id)
     return result
 
 
 async def get_orders(params):
     """Get orders for a customer."""
-    logger.debug("agent_functions.get_orders called (keys=%s)", list(params.keys()))
+    logger.info("agent_functions.get_orders called (keys=%s)", list(params.keys()))
     customer_id = params.get("customer_id")
     if not customer_id:
         return {"error": "customer_id is required"}
@@ -59,7 +63,7 @@ async def get_orders(params):
 
 async def create_customer(params):
     """Create a new customer record."""
-    logger.debug("agent_functions.create_customer called (keys=%s)", list(params.keys()))
+    logger.info("agent_functions.create_customer called (keys=%s)", list(params.keys()))
     connection_id = params.get("connection_id")
     first_name = params.get("first_name")
     last_name = params.get("last_name")
@@ -77,7 +81,7 @@ async def create_customer(params):
 
 async def create_appointment(params):
     """Schedule a new appointment."""
-    logger.debug("agent_functions.create_appointment called (keys=%s)", list(params.keys()))
+    logger.info("agent_functions.create_appointment called (keys=%s)", list(params.keys()))
     connection_id = params.get("connection_id")
     first_name = params.get("first_name")
     last_name = params.get("last_name")
@@ -101,9 +105,31 @@ async def create_appointment(params):
     return result
 
 
+async def update_appointment_booking(params):
+    """Reschedule an existing appointment."""
+    logger.info("agent_functions.update_appointment_booking called (keys=%s)", list(params.keys()))
+    connection_id = params.get("connection_id")
+    booking_id = params.get("booking_id")
+    date = params.get("date")
+    service = params.get("service")
+    staff_id = params.get("staff_id")
+    staff_name = params.get("staff_name") or params.get("staff")
+    if not all([connection_id, booking_id, date]):
+        return {"error": "connection_id, booking_id, and date are required"}
+    result = await update_appointment(
+        connection_id,
+        booking_id,
+        date,
+        service=service,
+        staff_id=staff_id,
+        staff_name=staff_name,
+    )
+    return result
+
+
 async def check_availability(params):
     """Check available appointment slots."""
-    logger.debug("agent_functions.check_availability called (keys=%s)", list(params.keys()))
+    logger.info("agent_functions.check_availability called (keys=%s)", list(params.keys()))
     start_date = params.get("start_date")
     if not start_date:
         return {"error": "start_date is required"}
@@ -131,7 +157,7 @@ async def check_availability(params):
 
 async def select_service(params):
     """Store the selected service in the connection context."""
-    logger.debug("agent_functions.select_service called (keys=%s)", list(params.keys()))
+    logger.info("agent_functions.select_service called (keys=%s)", list(params.keys()))
     connection_id = params.get("connection_id")
     service = params.get("service")
     if not connection_id or not service:
@@ -142,7 +168,7 @@ async def select_service(params):
 
 async def selected_staff(params):
     """Store the selected staff in the connection context."""
-    logger.debug("agent_functions.selected_staff called (keys=%s)", list(params.keys()))
+    logger.info("agent_functions.selected_staff called (keys=%s)", list(params.keys()))
     connection_id = params.get("connection_id")
     staff = params.get("staff")
     staff_id = params.get("staff_id")
@@ -194,7 +220,7 @@ async def end_call(websocket, params):
     """
     End the conversation and close the connection.
     """
-    logger.debug("agent_functions.end_call called (keys=%s)", list(params.keys()))
+    logger.info("agent_functions.end_call called (keys=%s)", list(params.keys()))
     farewell_type = params.get("farewell_type", "general")
     message = params.get("message", "Alright, have a nice day.")
     result = await prepare_farewell_message(websocket, farewell_type, message=message)
@@ -203,7 +229,7 @@ async def end_call(websocket, params):
 
 async def transfer_to_staff(params):
     """Forward the caller to the business location phone number."""
-    logger.debug("agent_functions.transfer_to_staff called (keys=%s)", list(params.keys()))
+    logger.info("agent_functions.transfer_to_staff called (keys=%s)", list(params.keys()))
     connection_id = params.get("connection_id")
     result = await forward_call_to_location(connection_id)
     return result
@@ -211,25 +237,25 @@ async def transfer_to_staff(params):
 
 async def get_store_hours(params):
     """Return store hours."""
-    logger.debug("agent_functions.get_store_hours called (keys=%s)", list(params.keys()))
+    logger.info("agent_functions.get_store_hours called (keys=%s)", list(params.keys()))
     return get_store_hours_from_context(params)
 
 
 async def get_store_location(params):
     """Return store location information."""
-    logger.debug("agent_functions.get_store_location called (keys=%s)", list(params.keys()))
+    logger.info("agent_functions.get_store_location called (keys=%s)", list(params.keys()))
     return get_store_location_from_context(params)
 
 
 async def get_services(params):
     """Return store services."""
-    logger.debug("agent_functions.get_services called (keys=%s)", list(params.keys()))
+    logger.info("agent_functions.get_services called (keys=%s)", list(params.keys()))
     return get_services_from_context(params)
 
 
 async def get_staff(params):
     """Return store staff information."""
-    logger.debug("agent_functions.get_staff called (keys=%s)", list(params.keys()))
+    logger.info("agent_functions.get_staff called (keys=%s)", list(params.keys()))
     return get_staff_from_context(params)
 
 
@@ -289,12 +315,16 @@ FUNCTION_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
+                "connection_id": {
+                    "type": "string",
+                    "description": "Connection id for the current session.",
+                },
                 "customer_id": {
                     "type": "string",
                     "description": "Customer's ID in CUSTXXXX format. Must be obtained from find_customer first.",
                 }
             },
-            "required": ["customer_id"],
+            "required": ["connection_id", "customer_id"],
         },
     },
     {
@@ -349,7 +379,7 @@ FUNCTION_DEFINITIONS = [
         Before scheduling:
         1. Ask for a preferred day/date or whether they want week availability
         2. Check availability using check_availability
-        3. Confirm date/time and service type with the customer
+        3. Confirm date/time and service type with the customer (must be an available slot)
         4. Collect first and last name and confirm spelling before booking
         5. If the customer exists, pass their customer_id; if not, create the customer first.
         Use the caller's phone number from context unless the customer provides a different number.""",
@@ -389,6 +419,47 @@ FUNCTION_DEFINITIONS = [
         },
     },
     {
+        "name": "update_appointment",
+        "description": """Reschedule an existing appointment. Use this when:
+        - A customer wants to change their appointment time
+        - A customer asks to reschedule
+        Before rescheduling:
+        1. Confirm the booking_id
+        2. Confirm the desired new date/time and service
+        3. Verify availability for the new slot
+        After updating, confirm the new appointment details.""",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "connection_id": {
+                    "type": "string",
+                    "description": "Connection id for the current session.",
+                },
+                "booking_id": {
+                    "type": "string",
+                    "description": "Square booking ID to update.",
+                },
+                "date": {
+                    "type": "string",
+                    "description": "New appointment date and time in ISO format (YYYY-MM-DDTHH:MM:SS).",
+                },
+                "service": {
+                    "type": "string",
+                    "description": "Updated service name, if changing the service.",
+                },
+                "staff_id": {
+                    "type": "string",
+                    "description": "Updated staff ID, if changing staff.",
+                },
+                "staff_name": {
+                    "type": "string",
+                    "description": "Updated staff name, if changing staff.",
+                },
+            },
+            "required": ["connection_id", "booking_id", "date"],
+        },
+    },
+    {
         "name": "check_availability",
         "description": """Check available appointment slots within a date range. Use this when:
         - A customer wants to know available appointment times
@@ -397,7 +468,8 @@ FUNCTION_DEFINITIONS = [
         After checking availability, present options to the customer in a natural way, like:
         'I have openings on [date] at [time] or [date] at [time]. Which works better for you? (Spell times in words, e.g., "two am", "one thirty pm".)'
         If the availability response includes ranges, summarize them as ranges instead of listing every slot.
-        If available_staff is provided and the customer is open to any staff, confirm which available staff works for them.""",
+        If available_staff is provided and the customer is open to any staff, confirm which available staff works for them.
+        Only call this after the service has been selected so service_variation_id can be resolved.""",
         "parameters": {
             "type": "object",
             "properties": {
@@ -424,7 +496,7 @@ FUNCTION_DEFINITIONS = [
     },
     {
         "name": "select_service",
-        "description": "Save the customer's selected service in the connection context.",
+        "description": "Save the customer's selected service in the connection context for reuse in availability and booking.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -436,7 +508,7 @@ FUNCTION_DEFINITIONS = [
     },
     {
         "name": "selected_staff",
-        "description": "Save the customer's selected staff in the connection context.",
+        "description": "Save the customer's selected staff in the connection context for reuse in availability and booking.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -450,7 +522,7 @@ FUNCTION_DEFINITIONS = [
     },
     {
         "name": "selected_appointment_date_and_time",
-        "description": "Save the selected appointment date and time in the connection context.",
+        "description": "Save the selected appointment date and time in the connection context for reuse in booking.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -462,7 +534,7 @@ FUNCTION_DEFINITIONS = [
     },
     {
         "name": "select_appointment_date_and_time",
-        "description": "Save the selected appointment date and time in the connection context.",
+        "description": "Save the selected appointment date and time in the connection context for reuse in booking.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -568,6 +640,7 @@ FUNCTION_MAP = {
     "get_orders": get_orders,
     "create_customer": create_customer,
     "create_appointment": create_appointment,
+    "update_appointment": update_appointment_booking,
     "check_availability": check_availability,
     "end_call": end_call,
     "transfer_to_staff": transfer_to_staff,
