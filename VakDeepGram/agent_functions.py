@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 async def find_customer(params):
     """Look up a customer by phone, email, or ID."""
-    logger.info("agent_functions.find_customer called (keys=%s)", list(params.keys()))
+    logger.debug("agent_functions.find_customer called (keys=%s)", list(params.keys()))
     connection_id = params.get("connection_id")
     phone = params.get("phone")
     email = params.get("email")
@@ -40,7 +40,7 @@ async def find_customer(params):
 
 async def get_appointments(params):
     """Get appointments for a customer."""
-    logger.info("agent_functions.get_appointments called (keys=%s)", list(params.keys()))
+    logger.debug("agent_functions.get_appointments called (keys=%s)", list(params.keys()))
     customer_id = params.get("customer_id")
     connection_id = params.get("connection_id")
     if not customer_id:
@@ -53,7 +53,7 @@ async def get_appointments(params):
 
 async def get_orders(params):
     """Get orders for a customer."""
-    logger.info("agent_functions.get_orders called (keys=%s)", list(params.keys()))
+    logger.debug("agent_functions.get_orders called (keys=%s)", list(params.keys()))
     customer_id = params.get("customer_id")
     if not customer_id:
         return {"error": "customer_id is required"}
@@ -63,7 +63,7 @@ async def get_orders(params):
 
 async def create_customer(params):
     """Create a new customer record."""
-    logger.info("agent_functions.create_customer called (keys=%s)", list(params.keys()))
+    logger.debug("agent_functions.create_customer called (keys=%s)", list(params.keys()))
     connection_id = params.get("connection_id")
     first_name = params.get("first_name")
     last_name = params.get("last_name")
@@ -81,7 +81,7 @@ async def create_customer(params):
 
 async def create_appointment(params):
     """Schedule a new appointment."""
-    logger.info("agent_functions.create_appointment called (keys=%s)", list(params.keys()))
+    logger.debug("agent_functions.create_appointment called (keys=%s)", list(params.keys()))
     connection_id = params.get("connection_id")
     first_name = params.get("first_name")
     last_name = params.get("last_name")
@@ -107,7 +107,7 @@ async def create_appointment(params):
 
 async def update_appointment_booking(params):
     """Reschedule an existing appointment."""
-    logger.info("agent_functions.update_appointment_booking called (keys=%s)", list(params.keys()))
+    logger.debug("agent_functions.update_appointment_booking called (keys=%s)", list(params.keys()))
     connection_id = params.get("connection_id")
     booking_id = params.get("booking_id")
     date = params.get("date")
@@ -129,7 +129,7 @@ async def update_appointment_booking(params):
 
 async def check_availability(params):
     """Check available appointment slots."""
-    logger.info("agent_functions.check_availability called (keys=%s)", list(params.keys()))
+    logger.debug("agent_functions.check_availability called (keys=%s)", list(params.keys()))
     start_date = params.get("start_date")
     if not start_date:
         return {"error": "start_date is required"}
@@ -157,7 +157,7 @@ async def check_availability(params):
 
 async def select_service(params):
     """Store the selected service in the connection context."""
-    logger.info("agent_functions.select_service called (keys=%s)", list(params.keys()))
+    logger.debug("agent_functions.select_service called (keys=%s)", list(params.keys()))
     connection_id = params.get("connection_id")
     service = params.get("service")
     if not connection_id or not service:
@@ -168,7 +168,7 @@ async def select_service(params):
 
 async def selected_staff(params):
     """Store the selected staff in the connection context."""
-    logger.info("agent_functions.selected_staff called (keys=%s)", list(params.keys()))
+    logger.debug("agent_functions.selected_staff called (keys=%s)", list(params.keys()))
     connection_id = params.get("connection_id")
     staff = params.get("staff")
     staff_id = params.get("staff_id")
@@ -220,7 +220,7 @@ async def end_call(websocket, params):
     """
     End the conversation and close the connection.
     """
-    logger.info("agent_functions.end_call called (keys=%s)", list(params.keys()))
+    logger.debug("agent_functions.end_call called (keys=%s)", list(params.keys()))
     farewell_type = params.get("farewell_type", "general")
     message = params.get("message", "Alright, have a nice day.")
     result = await prepare_farewell_message(websocket, farewell_type, message=message)
@@ -229,7 +229,7 @@ async def end_call(websocket, params):
 
 async def transfer_to_staff(params):
     """Forward the caller to the business location phone number."""
-    logger.info("agent_functions.transfer_to_staff called (keys=%s)", list(params.keys()))
+    logger.debug("agent_functions.transfer_to_staff called (keys=%s)", list(params.keys()))
     connection_id = params.get("connection_id")
     result = await forward_call_to_location(connection_id)
     return result
@@ -237,25 +237,25 @@ async def transfer_to_staff(params):
 
 async def get_store_hours(params):
     """Return store hours."""
-    logger.info("agent_functions.get_store_hours called (keys=%s)", list(params.keys()))
+    logger.debug("agent_functions.get_store_hours called (keys=%s)", list(params.keys()))
     return get_store_hours_from_context(params)
 
 
 async def get_store_location(params):
     """Return store location information."""
-    logger.info("agent_functions.get_store_location called (keys=%s)", list(params.keys()))
+    logger.debug("agent_functions.get_store_location called (keys=%s)", list(params.keys()))
     return get_store_location_from_context(params)
 
 
 async def get_services(params):
     """Return store services."""
-    logger.info("agent_functions.get_services called (keys=%s)", list(params.keys()))
+    logger.debug("agent_functions.get_services called (keys=%s)", list(params.keys()))
     return get_services_from_context(params)
 
 
 async def get_staff(params):
     """Return store staff information."""
-    logger.info("agent_functions.get_staff called (keys=%s)", list(params.keys()))
+    logger.debug("agent_functions.get_staff called (keys=%s)", list(params.keys()))
     return get_staff_from_context(params)
 
 

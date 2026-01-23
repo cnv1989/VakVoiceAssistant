@@ -6,38 +6,46 @@ import logging
 from typing import Any, Dict
 
 from square import AsyncSquare
-try:
-    from square.environment import SquareEnvironment
-except Exception:  # pragma: no cover - optional dependency behavior
-    SquareEnvironment = None
 
-import config
 from connection_store import get_connection_context
+from utils.square_helpers import get_square_environment
 
 logger = logging.getLogger(__name__)
 
-
-def _square_environment():
-    logger.info("store_tools._square_environment called")
-    env_name = config.settings.square_environment
-    if SquareEnvironment:
-        return SquareEnvironment.SANDBOX if env_name == "sandbox" else SquareEnvironment.PRODUCTION
-    return "sandbox" if env_name == "sandbox" else "production"
+# Import thread-local business context for chat
+try:
+    from strands_tools import get_chat_business_context
+except ImportError:
+    def get_chat_business_context():
+        return {}
 
 
 def _get_context(params: Dict[str, Any]) -> Dict[str, Any]:
-    logger.info("store_tools._get_context called (keys=%s)", list(params.keys()))
+    logger.debug("store_tools._get_context called (keys=%s)", list(params.keys()))
     connection_id = params.get("connection_id")
+    
+    # For chat, use business context from thread-local storage instead of connection store
     if not connection_id:
-        return {"success": False, "error": "connection_id is required", "context": {}}
+        business_context = get_chat_business_context()
+        if business_context:
+            logger.debug("Using business context from thread-local storage (chat mode)")
+            return {"success": True, "context": business_context}
+        return {"success": False, "error": "connection_id is required and no business context available", "context": {}}
+    
+    # For voice assistant, use connection store
     context = get_connection_context(connection_id)
     if not context:
+        # Fallback to thread-local business context if available
+        business_context = get_chat_business_context()
+        if business_context:
+            logger.debug("Falling back to business context from thread-local storage")
+            return {"success": True, "context": business_context}
         return {"success": False, "error": "No connection context found.", "context": {}}
     return {"success": True, "context": context}
 
 
 def get_store_location_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
-    logger.info("store_tools.get_store_location_from_context called")
+    logger.debug("store_tools.get_store_location_from_context called")
     context_result = _get_context(params)
     if not context_result.get("success"):
         return {"success": False, "error": context_result.get("error"), "location": {}}
@@ -46,7 +54,7 @@ def get_store_location_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def get_store_hours_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
-    logger.info("store_tools.get_store_hours_from_context called")
+    logger.debug("store_tools.get_store_hours_from_context called")
     context_result = _get_context(params)
     if not context_result.get("success"):
         return {"success": False, "error": context_result.get("error"), "hours": []}
@@ -57,7 +65,7 @@ def get_store_hours_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def get_services_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
-    logger.info("store_tools.get_services_from_context called")
+    logger.debug("store_tools.get_services_from_context called")
     context_result = _get_context(params)
     if not context_result.get("success"):
         return {"success": False, "error": context_result.get("error"), "services": []}
@@ -89,7 +97,7 @@ def get_services_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def get_staff_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
-    logger.info("store_tools.get_staff_from_context called")
+    logger.debug("store_tools.get_staff_from_context called")
     context_result = _get_context(params)
     if not context_result.get("success"):
         return {"success": False, "error": context_result.get("error"), "staff": []}
@@ -127,7 +135,7 @@ async def get_store_hours_from_square(params: Dict[str, Any]) -> Dict[str, Any]:
         return {"success": False, "error": "Missing Square access token or location ID."}
 
     logger.info("Fetching Square location for connection %s (locationId=%s)", connection_id, location_id)
-    client = AsyncSquare(token=access_token, environment=_square_environment())
+    client = AsyncSquare(token=access_token, environment=get_square_environment())
 
     response = await client.locations.get(location_id)
     if hasattr(response, "is_error"):

@@ -10,13 +10,23 @@ from typing import Optional
 
 from twilio.rest import Client as TwilioClient
 from urllib.parse import urlencode, parse_qs
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from twilio.request_validator import RequestValidator
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import uvicorn
-import boto3
 import config
+from strands import Agent
+from strands.models import BedrockModel
+try:
+    from strands.event_loop._recover_message_on_max_tokens_reached import MaxTokensReachedException
+except ImportError:
+    MaxTokensReachedException = None
 from deepgram_handler import deepgram_manager
+from strands_tools import ALL_STRANDS_TOOLS, set_chat_business_context
 from connection_store import (
     get_connection_context,
     resolve_business_context,
@@ -26,19 +36,23 @@ from connection_store import (
 )
 from business_logic import prefetch_customer_by_phone
 
-# Configure logging
-logging.basicConfig(
-    level=getattr(logging, config.settings.log_level.upper()),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Configure logging with PII redaction
+from utils.logging import configure_pii_safe_logging
+configure_pii_safe_logging(level=config.settings.log_level)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="VakDeepGram", version="1.0.0")
 
-bedrock_client = boto3.client(
-    "bedrock-runtime",
-    region_name=config.settings.aws_region,
-)
+# Rate limiting setup
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# HTTP Bearer auth for /chat endpoint
+security = HTTPBearer(auto_error=False)
+
+# Track WebSocket connections per IP for rate limiting
+_websocket_connections: dict[str, int] = {}
 
 
 def verify_twilio_signature(request_url: str, params: dict, signature: str) -> bool:
@@ -184,11 +198,18 @@ async def _end_twilio_call(
             exc_info=True,
         )
 
-# CORS middleware
+# CORS middleware - restrict origins in production
+_cors_origins = config.settings.cors_allowed_origins
+if not _cors_origins and config.settings.environment.value == "development":
+    _cors_origins = ["*"]
+elif not _cors_origins:
+    # Default allowed origins for non-dev environments
+    _cors_origins = ["https://localhost:3000"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=True if _cors_origins != ["*"] else False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -205,6 +226,7 @@ async def root():
         "websocket_endpoint": "/ws",
         "twilio_endpoint": "/twilio",
         "chat_endpoint": "/chat",
+        "twilio_chat_endpoint": "/twilio-chat",
     }
 
 
@@ -215,9 +237,32 @@ async def health():
     return {"status": "ok"}
 
 
+async def verify_chat_auth(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> bool:
+    """Verify API key for /chat endpoint."""
+    api_key = config.settings.chat_api_key
+    if not api_key:
+        # No API key configured - allow access (development mode)
+        return True
+    if not credentials:
+        raise HTTPException(status_code=401, detail="API key required")
+    if credentials.credentials != api_key:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    return True
+
+
 @app.post("/chat")
-async def chat(request: Request):
-    """Simple chat endpoint for browser testing."""
+@limiter.limit(lambda: f"{config.settings.rate_limit_per_minute}/minute")
+async def chat(
+    request: Request,
+    _auth: bool = Depends(verify_chat_auth),
+):
+    """Simple chat endpoint for browser testing.
+
+    Accepts business_number to fetch business context (similar to voice assistant).
+    Requires API key authentication when chat_api_key is configured.
+    """
     logger.info("chat endpoint called")
     try:
         payload = await request.json()
@@ -226,6 +271,26 @@ async def chat(request: Request):
     message = payload.get("message") or payload.get("text")
     if not message or not isinstance(message, str):
         raise HTTPException(status_code=400, detail="message is required.")
+
+    # Get business number and customer number
+    business_number = payload.get("business_number") or payload.get("businessNumber")
+    customer_phone = payload.get("customer_number") or payload.get("customerPhone") or payload.get("customer_phone")
+
+    if not business_number:
+        raise HTTPException(status_code=400, detail="business_number is required")
+    
+    logger.info("Chat request: businessNumber=%s customerPhone=%s", business_number, customer_phone)
+    
+    # Resolve business context directly (without connection store)
+    business_context = {}
+    if business_number:
+        try:
+            business_context = await resolve_business_context(business_number, caller_number=customer_phone)
+            if customer_phone:
+                business_context["caller"] = customer_phone
+        except Exception as exc:
+            logger.error("Failed to resolve business context: %s", exc, exc_info=True)
+            business_context = {"success": False, "error": str(exc)}
 
     system_prompt = payload.get("system_prompt") or config.settings.deepgram_agent_prompt or ""
     model_id = payload.get("model_id") or config.settings.bedrock_model_id
@@ -237,49 +302,314 @@ async def chat(request: Request):
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid max_tokens or temperature.")
 
-    logger.info("Invoking Bedrock chat (model=%s message_chars=%d)", model_id, len(message))
-    request_body = {
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "system": system_prompt,
-        "messages": [
-            {
-                "role": "user",
-                "content": [{"type": "text", "text": message}],
-            }
-        ],
-    }
+    logger.info("Invoking Strands Agent chat (model=%s message_chars=%d max_tokens=%d)", 
+                model_id, len(message), max_tokens)
     try:
-        response = bedrock_client.invoke_model(
-            modelId=model_id,
-            body=json.dumps(request_body),
-            contentType="application/json",
-            accept="application/json",
+        # Create Bedrock model with Strands
+        bedrock_model = BedrockModel(
+            model_id=model_id,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            region_name=config.settings.aws_region,
         )
+        
+        # Create agent with system prompt and all voice assistant tools
+        agent = Agent(
+            model=bedrock_model,
+            system_prompt=system_prompt if system_prompt else None,
+            tools=ALL_STRANDS_TOOLS,
+        )
+        
+        # Invoke agent in executor to avoid blocking async event loop
+        # Set business context in thread-local storage before invoking agent
+        def invoke_agent():
+            # Set business context in thread-local storage for tools to access
+            from strands_tools import set_chat_business_context
+            set_chat_business_context(business_context)
+            return agent(message)
+        
+        response = await asyncio.to_thread(invoke_agent)
+        
+        # Extract reply from response
+        if isinstance(response, str):
+            reply = response
+        elif hasattr(response, "content"):
+            reply = response.content
+        elif isinstance(response, dict):
+            reply = response.get("content") or response.get("reply") or str(response)
+        else:
+            reply = str(response)
+            
     except Exception as exc:
-        logger.error("Bedrock invoke failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=502, detail="Bedrock request failed.")
+        error_msg = str(exc)
+        # Handle max_tokens error specifically
+        is_max_tokens_error = (
+            MaxTokensReachedException and isinstance(exc, MaxTokensReachedException)
+        ) or (
+            "max_tokens" in error_msg.lower() or 
+            "MaxTokensReachedException" in str(type(exc)) or
+            "unrecoverable state due to max_tokens" in error_msg.lower()
+        )
+        
+        if is_max_tokens_error:
+            logger.warning("Strands Agent hit max_tokens limit (max_tokens=%d). Consider increasing max_tokens.", max_tokens)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Response exceeded token limit (max_tokens={max_tokens}). Please increase max_tokens or simplify your request."
+            )
+        logger.error("Strands Agent invoke failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=502, detail=f"Agent request failed: {error_msg}")
 
-    body = response.get("body")
-    raw = body.read() if hasattr(body, "read") else body
-    data = json.loads(raw)
-    content = data.get("content") or []
-    reply = "".join(
-        part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") == "text"
-    )
-    if not reply:
-        reply = data.get("completion") or ""
     return {"reply": reply, "model_id": model_id}
+
+
+def verify_twilio_http_signature(request: Request, body: bytes) -> bool:
+    """
+    Verify Twilio signature for HTTP POST requests.
+
+    For POST requests, Twilio signs: URL + sorted POST body parameters
+
+    Args:
+        request: The FastAPI request object
+        body: The raw request body bytes
+
+    Returns:
+        True if signature is valid, False otherwise
+    """
+    logger.info("verify_twilio_http_signature called")
+
+    if not config.settings.twilio_auth_token:
+        logger.warning("Twilio auth token not configured, skipping signature verification")
+        return True  # Allow in development
+
+    signature = request.headers.get("X-Twilio-Signature", "")
+    if not signature:
+        logger.error("Missing X-Twilio-Signature header")
+        return False
+
+    # Build the full URL (Twilio signs the full URL without query string for POST)
+    # Use X-Forwarded headers if behind a load balancer
+    scheme = request.headers.get("X-Forwarded-Proto", request.url.scheme)
+    host = request.headers.get("X-Forwarded-Host", request.headers.get("Host", request.url.netloc))
+    path = request.url.path
+
+    request_url = f"{scheme}://{host}{path}"
+
+    # For POST requests, parse the body as form data
+    try:
+        # Twilio sends form-encoded data
+        body_str = body.decode("utf-8")
+        params = dict(parse_qs(body_str, keep_blank_values=True))
+        # parse_qs returns lists, flatten to single values
+        params = {k: v[0] if len(v) == 1 else v for k, v in params.items()}
+    except Exception as e:
+        logger.error(f"Failed to parse request body: {e}")
+        params = {}
+
+    logger.debug(f"Twilio HTTP signature verification - URL: {request_url}")
+    logger.debug(f"Twilio HTTP signature verification - Params: {params}")
+
+    try:
+        validator = RequestValidator(config.settings.twilio_auth_token)
+        is_valid = validator.validate(request_url, params, signature)
+        logger.info(f"Twilio HTTP signature verification result: {is_valid}")
+        return is_valid
+    except Exception as e:
+        logger.error(f"Error during Twilio signature verification: {e}", exc_info=True)
+        return False
+
+
+@app.post("/twilio-chat")
+@limiter.limit(lambda: f"{config.settings.rate_limit_per_minute}/minute")
+async def twilio_chat(request: Request):
+    """Chat endpoint for Twilio webhook callbacks.
+
+    Similar to /chat but verifies Twilio signature instead of API key.
+    Accepts business_number to fetch business context (similar to voice assistant).
+    """
+    logger.info("twilio_chat endpoint called")
+
+    # Read raw body for signature verification
+    body = await request.body()
+
+    # Verify Twilio signature
+    if not verify_twilio_http_signature(request, body):
+        is_production = config.settings.environment.value == "production"
+        verification_enabled = config.settings.twilio_signature_verification_enabled
+
+        if is_production and verification_enabled:
+            logger.error("Rejecting /twilio-chat request: invalid Twilio signature")
+            raise HTTPException(status_code=403, detail="Invalid Twilio signature")
+        logger.warning("Allowing /twilio-chat request despite failed signature verification (non-production)")
+
+    # Parse the request body
+    try:
+        # Twilio sends form-encoded data, but we also support JSON
+        content_type = request.headers.get("Content-Type", "")
+        if "application/json" in content_type:
+            payload = json.loads(body.decode("utf-8"))
+        else:
+            # Form-encoded data from Twilio
+            body_str = body.decode("utf-8")
+            parsed = parse_qs(body_str, keep_blank_values=True)
+            payload = {k: v[0] if len(v) == 1 else v for k, v in parsed.items()}
+    except Exception as e:
+        logger.error(f"Failed to parse request body: {e}")
+        raise HTTPException(status_code=400, detail="Invalid request body")
+
+    # Extract message - Twilio typically sends "Body" for SMS
+    message = (
+        payload.get("message") or
+        payload.get("text") or
+        payload.get("Body") or
+        payload.get("body")
+    )
+    if not message or not isinstance(message, str):
+        raise HTTPException(status_code=400, detail="message is required")
+
+    # Get business number - Twilio sends "To" for the destination number
+    business_number = (
+        payload.get("business_number") or
+        payload.get("businessNumber") or
+        payload.get("To") or
+        payload.get("to")
+    )
+
+    # Get customer number - Twilio sends "From" for the sender
+    customer_phone = (
+        payload.get("customer_number") or
+        payload.get("customerPhone") or
+        payload.get("customer_phone") or
+        payload.get("From") or
+        payload.get("from")
+    )
+
+    if not business_number:
+        raise HTTPException(status_code=400, detail="business_number is required")
+
+    logger.info("Twilio chat request: businessNumber=%s customerPhone=%s", business_number, customer_phone)
+
+    # Resolve business context directly (without connection store)
+    business_context = {}
+    if business_number:
+        try:
+            business_context = await resolve_business_context(business_number, caller_number=customer_phone)
+            if customer_phone:
+                business_context["caller"] = customer_phone
+        except Exception as exc:
+            logger.error("Failed to resolve business context: %s", exc, exc_info=True)
+            business_context = {"success": False, "error": str(exc)}
+
+    system_prompt = payload.get("system_prompt") or config.settings.deepgram_agent_prompt or ""
+    model_id = payload.get("model_id") or config.settings.bedrock_model_id
+    max_tokens = payload.get("max_tokens") or config.settings.bedrock_max_tokens
+    temperature = payload.get("temperature") or config.settings.bedrock_temperature
+    try:
+        max_tokens = int(max_tokens)
+        temperature = float(temperature)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid max_tokens or temperature.")
+
+    logger.info("Invoking Strands Agent for Twilio chat (model=%s message_chars=%d max_tokens=%d)",
+                model_id, len(message), max_tokens)
+    try:
+        # Create Bedrock model with Strands
+        bedrock_model = BedrockModel(
+            model_id=model_id,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            region_name=config.settings.aws_region,
+        )
+
+        # Create agent with system prompt and all voice assistant tools
+        agent = Agent(
+            model=bedrock_model,
+            system_prompt=system_prompt if system_prompt else None,
+            tools=ALL_STRANDS_TOOLS,
+        )
+
+        # Invoke agent in executor to avoid blocking async event loop
+        def invoke_agent():
+            from strands_tools import set_chat_business_context
+            set_chat_business_context(business_context)
+            return agent(message)
+
+        response = await asyncio.to_thread(invoke_agent)
+
+        # Extract reply from response
+        if isinstance(response, str):
+            reply = response
+        elif hasattr(response, "content"):
+            reply = response.content
+        elif isinstance(response, dict):
+            reply = response.get("content") or response.get("reply") or str(response)
+        else:
+            reply = str(response)
+
+    except Exception as exc:
+        error_msg = str(exc)
+        is_max_tokens_error = (
+            MaxTokensReachedException and isinstance(exc, MaxTokensReachedException)
+        ) or (
+            "max_tokens" in error_msg.lower() or
+            "MaxTokensReachedException" in str(type(exc)) or
+            "unrecoverable state due to max_tokens" in error_msg.lower()
+        )
+
+        if is_max_tokens_error:
+            logger.warning("Strands Agent hit max_tokens limit (max_tokens=%d).", max_tokens)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Response exceeded token limit (max_tokens={max_tokens})."
+            )
+        logger.error("Strands Agent invoke failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=502, detail=f"Agent request failed: {error_msg}")
+
+    return {"reply": reply, "model_id": model_id}
+
+
+def _get_client_ip(websocket: WebSocket) -> str:
+    """Extract client IP from WebSocket connection."""
+    if websocket.client:
+        return websocket.client.host
+    return "unknown"
+
+
+def _check_websocket_rate_limit(client_ip: str) -> bool:
+    """Check if client IP has exceeded WebSocket connection limit."""
+    max_connections = config.settings.max_websocket_connections_per_ip
+    current = _websocket_connections.get(client_ip, 0)
+    return current < max_connections
+
+
+def _increment_websocket_count(client_ip: str) -> None:
+    """Increment WebSocket connection count for IP."""
+    _websocket_connections[client_ip] = _websocket_connections.get(client_ip, 0) + 1
+
+
+def _decrement_websocket_count(client_ip: str) -> None:
+    """Decrement WebSocket connection count for IP."""
+    current = _websocket_connections.get(client_ip, 0)
+    if current > 0:
+        _websocket_connections[client_ip] = current - 1
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for Deepgram Voice Agents (browser clients)
-    
+
     Starts Deepgram session immediately on connection for bidirectional audio streaming.
     """
     logger.info("websocket_endpoint called")
+
+    # Check WebSocket connection rate limit
+    client_ip = _get_client_ip(websocket)
+    if not _check_websocket_rate_limit(client_ip):
+        logger.warning("WebSocket connection limit exceeded for IP: %s", client_ip)
+        await websocket.close(code=1008, reason="Connection limit exceeded")
+        return
+
+    _increment_websocket_count(client_ip)
     await websocket.accept()
     connection_id = f"ws-{uuid.uuid4().hex[:12]}"
     logger.info(f"WebSocket connection established: {connection_id}")
@@ -404,13 +734,14 @@ async def websocket_endpoint(websocket: WebSocket):
         if session:
             await deepgram_manager.close_session(connection_id)
         clear_connection_context(connection_id)
-        logger.info(f"Cleaned up connection: {connection_id}")
+        _decrement_websocket_count(client_ip)
+        logger.info("Cleaned up connection: %s", connection_id)
 
 
 @app.websocket("/twilio")
 async def twilio_websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for Twilio Stream connections
-    
+
     Follows sts-twilio implementation exactly:
     - Starts Deepgram session immediately on connection (bidirectional)
     - Receives mulaw audio from Twilio (8kHz)
@@ -421,6 +752,13 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
     - Verifies Twilio signature before accepting connection
     """
     logger.info("twilio_websocket_endpoint called")
+
+    # Check WebSocket connection rate limit
+    client_ip = _get_client_ip(websocket)
+    if not _check_websocket_rate_limit(client_ip):
+        logger.warning("WebSocket connection limit exceeded for IP: %s", client_ip)
+        await websocket.close(code=1008, reason="Connection limit exceeded")
+        return
     # Get query parameters and signature from headers before accepting
     logger.info(f"=== Incoming Twilio WebSocket Connection ===")
     logger.info(f"Client: {websocket.client}")
@@ -468,30 +806,30 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
         logger.warning("No signature header present, skipping verification (allowing connection)")
     
     if not signature_verification_result:
+        is_production = config.settings.environment.value == "production"
+        verification_enabled = config.settings.twilio_signature_verification_enabled
+
         if not signature:
-            logger.warning(f"WARNING: No X-Twilio-Signature header received from {websocket.client}")
-            logger.warning(f"This may be normal for Twilio Media Streams - allowing connection for debugging")
-            logger.warning(f"If you want to enforce signature verification, ensure Twilio sends the header")
+            logger.warning("No X-Twilio-Signature header received from %s", websocket.client)
+            if is_production and verification_enabled:
+                logger.error("Rejecting connection: signature verification required in production")
+                await websocket.close(code=1008, reason="Signature verification failed")
+                return
+            logger.warning("Allowing connection without signature (non-production mode)")
         else:
-            logger.error(f"Twilio signature verification FAILED for connection from {websocket.client}")
-            logger.error(f"Tried WSS URL: {wss_url}")
-            logger.error(f"Tried HTTPS URL: {https_url}")
-            logger.error(f"Query params used: {query_params}")
-            logger.error(f"Signature received: {signature}")
-            logger.error(f"This could indicate:")
-            logger.error(f"  1. Wrong auth token configured")
-            logger.error(f"  2. URL construction mismatch")
-            logger.error(f"  3. Query parameter encoding issue")
-            logger.error(f"  4. Signature header format issue")
-            logger.error(f"  5. Twilio Media Streams may not send signatures (uncommon)")
-            # For now, allow connection to debug - remove this after fixing
-            logger.warning(f"ALLOWING CONNECTION DESPITE FAILED VERIFICATION FOR DEBUGGING")
-            # Uncomment the following lines once signature verification is working:
-            # await websocket.close(code=1008, reason="Signature verification failed")
-            # return
+            logger.error("Twilio signature verification FAILED for connection from %s", websocket.client)
+            logger.debug("Tried WSS URL: %s", wss_url)
+            logger.debug("Tried HTTPS URL: %s", https_url)
+            logger.debug("Query params used: %s", query_params)
+            if is_production and verification_enabled:
+                logger.error("Rejecting connection: invalid signature in production")
+                await websocket.close(code=1008, reason="Signature verification failed")
+                return
+            logger.warning("Allowing connection despite failed verification (non-production mode)")
     
-    logger.info(f"Twilio signature verified for connection from {websocket.client}")
-    
+    logger.info("Twilio signature verified for connection from %s", websocket.client)
+
+    _increment_websocket_count(client_ip)
     await websocket.accept()
     connection_id = f"twilio-{uuid.uuid4().hex[:12]}"
     logger.info(f"Twilio WebSocket connection established: {connection_id}")
@@ -768,7 +1106,8 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
         if session_ref["value"]:
             await deepgram_manager.close_session(connection_id)
         clear_connection_context(connection_id)
-        logger.info(f"Cleaned up Twilio connection: {connection_id}")
+        _decrement_websocket_count(client_ip)
+        logger.info("Cleaned up Twilio connection: %s", connection_id)
 
 
 if __name__ == "__main__":

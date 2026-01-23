@@ -287,6 +287,16 @@ export class VakAppStack extends cdk.Stack {
       }),
     });
 
+    // Block /chat over HTTP - require HTTPS for Cognito auth
+    httpListener.addAction('BlockChatOverHttp', {
+      priority: 6,
+      conditions: [elbv2.ListenerCondition.pathPatterns(['/chat*'])],
+      action: elbv2.ListenerAction.fixedResponse(403, {
+        contentType: 'text/plain',
+        messageBody: 'Chat requires HTTPS. Use https://<host>/chat.',
+      }),
+    });
+
     // HTTPS listener on port 443 for secure WebSocket (WSS) connections
     // Only added if certificate ARN is provided
     if (props.certificateArn) {
@@ -328,6 +338,21 @@ export class VakAppStack extends cdk.Stack {
           priority: 5,
           conditions: [
             elbv2.ListenerCondition.pathPatterns(['/ws*']),
+            elbv2.ListenerCondition.hostHeaders([props.cognitoHost!]),
+          ],
+          action: new elbv2Actions.AuthenticateCognitoAction({
+            userPool,
+            userPoolClient,
+            userPoolDomain,
+            next: elbv2.ListenerAction.forward([targetGroup]),
+          }),
+        });
+
+        // Add Cognito auth for /chat endpoint (similar to /ws)
+        httpsListener.addAction('AuthenticateChat', {
+          priority: 6,
+          conditions: [
+            elbv2.ListenerCondition.pathPatterns(['/chat*']),
             elbv2.ListenerCondition.hostHeaders([props.cognitoHost!]),
           ],
           action: new elbv2Actions.AuthenticateCognitoAction({

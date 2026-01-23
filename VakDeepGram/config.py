@@ -1,8 +1,22 @@
 """
 Configuration settings for VakDeepGram service
 """
+from enum import Enum
 from pydantic_settings import BaseSettings
 from typing import Optional
+
+
+class Environment(str, Enum):
+    """Application environment."""
+    DEVELOPMENT = "development"
+    STAGING = "staging"
+    PRODUCTION = "production"
+
+
+class SquareEnv(str, Enum):
+    """Square API environment."""
+    SANDBOX = "sandbox"
+    PRODUCTION = "production"
 
 
 class Settings(BaseSettings):
@@ -16,15 +30,32 @@ class Settings(BaseSettings):
     
     # Twilio Configuration
     twilio_auth_token: str = None  # Required for signature verification
-    
+    twilio_signature_verification_enabled: bool = True  # Set to False to skip verification
+
+    # Application Environment
+    environment: Environment = Environment.DEVELOPMENT
+
+    # CORS Configuration
+    cors_allowed_origins: list[str] = []  # Empty = allow all in dev, specific origins in prod
+
+    # Rate Limiting
+    rate_limit_per_minute: int = 100  # Requests per minute per IP
+    max_websocket_connections_per_ip: int = 10
+
+    # Authentication
+    chat_api_key: Optional[str] = None  # API key for /chat endpoint (None = no auth in dev)
+
+    # Connection Store
+    connection_ttl_seconds: int = 3600  # 1 hour TTL for connection contexts
+
     # Square Configuration
-    square_environment: Optional[str] = "production"  # Use 'production' for live environment
+    square_environment: SquareEnv = SquareEnv.PRODUCTION
     square_account_table: str = "SquareAccount-pxy5meaaojbaxjwedt6v6oidw4-NONE"
     business_number_table: str = "BusinessNumber-pxy5meaaojbaxjwedt6v6oidw4-NONE"
     aws_region: str = "us-west-2"
 
-    bedrock_model_id: str = "anthropic.claude-3-haiku-20240307-v1:0"
-    bedrock_max_tokens: int = 512
+    bedrock_model_id: str = "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    bedrock_max_tokens: int = 8192  # Maximum tokens for Claude models - increased for tool usage
     bedrock_temperature: float = 0.4
     
     # Server Configuration
@@ -52,6 +83,10 @@ class Settings(BaseSettings):
     deepgram_output_sample_rate: int = 24000
 
     deepgram_sts_timeout_seconds: int = 300
+
+    # Audio buffer and WebSocket settings
+    max_audio_buffer_size: int = 100  # Max buffered audio chunks before dropping oldest
+    websocket_ping_interval: int = 30  # Seconds between WebSocket pings
 
     booking_availability_window_minutes: int = 30
     booking_availability_window_by_service: dict[str, int] = {}

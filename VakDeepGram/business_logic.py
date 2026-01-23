@@ -7,16 +7,17 @@ from typing import Any, Dict, Optional
 import uuid
 
 from square import AsyncSquare
-try:
-    from square.environment import SquareEnvironment
-except Exception:  # pragma: no cover - optional dependency behavior
-    SquareEnvironment = None
 
 import config
 from connection_store import (
     fetch_square_customer_by_phone,
     get_connection_context,
-    normalize_phone_number,
+)
+from utils.phone import normalize_phone_number
+from utils.square_helpers import (
+    get_square_environment as _square_environment,
+    parse_square_response as _parse_square_response,
+    extract_square_cursor as _extract_square_cursor,
 )
 from twilio.rest import Client as TwilioClient
 
@@ -26,41 +27,6 @@ except ImportError:  # pragma: no cover - py<3.9 fallback
     ZoneInfo = None
 
 logger = logging.getLogger(__name__)
-
-
-def _square_environment():
-    logger.info("business_logic._square_environment called")
-    env_name = config.settings.square_environment
-    if SquareEnvironment:
-        return SquareEnvironment.SANDBOX if env_name == "sandbox" else SquareEnvironment.PRODUCTION
-    return "sandbox" if env_name == "sandbox" else "production"
-
-
-def _parse_square_response(response: Any) -> Dict[str, Any]:
-    logger.info("business_logic._parse_square_response called (type=%s)", type(response))
-    if hasattr(response, "is_error"):
-        if response.is_error():
-            return {"success": False, "error": response.errors}
-        payload = response.body or {}
-    elif hasattr(response, "model_dump"):
-        payload = response.model_dump()
-        if payload.get("errors"):
-            return {"success": False, "error": payload.get("errors")}
-    elif isinstance(response, dict):
-        payload = response
-        if payload.get("errors"):
-            return {"success": False, "error": payload.get("errors")}
-    else:
-        return {"success": False, "error": "Unexpected Square response type."}
-    return {"success": True, "payload": payload}
-
-
-def _extract_square_cursor(response: Any) -> Optional[str]:
-    for attr in ("_response", "response", "__response"):
-        page = getattr(response, attr, None)
-        if page:
-            return getattr(page, "cursor", None)
-    return None
 
 
 def _select_service_variation_id(context: Dict[str, Any]) -> Optional[str]:

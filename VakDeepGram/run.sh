@@ -21,6 +21,7 @@ source venv/bin/activate
 
 # Install dependencies
 echo "📥 Installing dependencies..."
+pip install --upgrade pip
 pip install -r requirements.txt
 
 # Run server with reload enabled (watches for file changes)

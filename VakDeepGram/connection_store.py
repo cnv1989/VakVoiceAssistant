@@ -3,59 +3,87 @@ Helpers for resolving business context from DynamoDB for Square integrations.
 """
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Optional
 
 import aioboto3
 from square import AsyncSquare
-try:
-    from square.environment import SquareEnvironment
-except Exception:  # pragma: no cover - optional dependency behavior
-    SquareEnvironment = None
+
 try:
     from zoneinfo import ZoneInfo
 except ImportError:  # pragma: no cover - py<3.9 fallback
     ZoneInfo = None
 
 import config
+from utils.square_helpers import (
+    get_square_environment as _square_environment,
+    parse_square_response as _parse_square_response,
+    extract_square_cursor as _extract_square_cursor,
+)
+from utils.phone import (
+    normalize_phone_number,
+    phone_digit_variants as _phone_digit_variants,
+    candidate_numbers as _candidate_numbers,
+)
 
 logger = logging.getLogger(__name__)
 
+# Connection context storage with timestamps for TTL
 _connection_contexts: Dict[str, Dict[str, Any]] = {}
+_connection_timestamps: Dict[str, float] = {}
 _SERVICE_PRODUCT_TYPES = ["APPOINTMENTS_SERVICE", "LEGACY_SQUARE_ONLINE_SERVICE"]
+_cleanup_task_started = False
 
 
-def _parse_square_response(response: Any) -> Dict[str, Any]:
-    logger.info("connection_store._parse_square_response called (type=%s)", type(response))
-    if hasattr(response, "is_error"):
-        if response.is_error():
-            return {"success": False, "error": response.errors}
-        payload = response.body or {}
-    elif hasattr(response, "model_dump"):
-        payload = response.model_dump()
-        if payload.get("errors"):
-            return {"success": False, "error": payload.get("errors")}
-    elif isinstance(response, dict):
-        payload = response
-        if payload.get("errors"):
-            return {"success": False, "error": payload.get("errors")}
-    else:
-        return {"success": False, "error": f"Unexpected Square response type: {type(response)}"}
-    return {"success": True, "payload": payload}
+async def _cleanup_expired_connections() -> None:
+    """Background task to clean up expired connection contexts."""
+    global _cleanup_task_started
+    _cleanup_task_started = True
+    logger.debug("Starting connection cleanup background task")
+
+    while True:
+        try:
+            await asyncio.sleep(60)  # Check every minute
+            ttl = config.settings.connection_ttl_seconds
+            now = time.time()
+            expired = []
+
+            for conn_id, timestamp in list(_connection_timestamps.items()):
+                if now - timestamp > ttl:
+                    expired.append(conn_id)
+
+            for conn_id in expired:
+                _connection_contexts.pop(conn_id, None)
+                _connection_timestamps.pop(conn_id, None)
+                logger.debug("Cleaned up expired connection: %s", conn_id)
+
+            if expired:
+                logger.info("Cleaned up %d expired connections", len(expired))
+
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error("Error in connection cleanup task: %s", e)
 
 
-def _extract_square_cursor(response: Any) -> Optional[str]:
-    logger.info("connection_store._extract_square_cursor called (type=%s)", type(response))
-    for attr in ("_response", "response", "__response"):
-        page = getattr(response, attr, None)
-        if page:
-            return getattr(page, "cursor", None)
-    return None
+def start_cleanup_task() -> None:
+    """Start the connection cleanup background task if not already running."""
+    global _cleanup_task_started
+    if not _cleanup_task_started:
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_cleanup_expired_connections())
+        except RuntimeError:
+            # No running loop yet, will be started later
+            pass
 
 
 def set_connection_context(connection_id: str, context: Dict[str, Any]) -> None:
-    logger.info("connection_store.set_connection_context called (connection_id=%s)", connection_id)
+    logger.debug("connection_store.set_connection_context called (connection_id=%s)", connection_id)
     _connection_contexts[connection_id] = context
+    _connection_timestamps[connection_id] = time.time()
+    start_cleanup_task()
 
 
 def update_connection_context(connection_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
@@ -72,8 +100,9 @@ def get_connection_context(connection_id: str) -> Dict[str, Any]:
 
 
 def clear_connection_context(connection_id: str) -> None:
-    logger.info("connection_store.clear_connection_context called (connection_id=%s)", connection_id)
+    logger.debug("connection_store.clear_connection_context called (connection_id=%s)", connection_id)
     _connection_contexts.pop(connection_id, None)
+    _connection_timestamps.pop(connection_id, None)
 
 
 def get_localized_datetime_for_connection(connection_id: str) -> str:
@@ -154,35 +183,6 @@ async def _fetch_square_bookings_for_month(
     }
 
 
-def normalize_phone_number(value: str) -> Optional[str]:
-    logger.info("connection_store.normalize_phone_number called (value=%s)", value)
-    if not value:
-        return None
-    digits = "".join(ch for ch in value if ch.isdigit())
-    if not digits:
-        return None
-    if digits.startswith("1") and len(digits) == 11:
-        normalized = f"+{digits}"
-        logger.debug("Normalized phone number %s -> %s", value, normalized)
-        return normalized
-    if len(digits) == 10:
-        normalized = f"+1{digits}"
-        logger.debug("Normalized phone number %s -> %s", value, normalized)
-        return normalized
-    if value.startswith("+"):
-        logger.debug("Normalized phone number %s -> %s", value, value)
-        return value
-    normalized = f"+{digits}"
-    logger.debug("Normalized phone number %s -> %s", value, normalized)
-    return normalized
-
-
-def _square_environment():
-    logger.info("connection_store._square_environment called")
-    env_name = config.settings.square_environment
-    if SquareEnvironment:
-        return SquareEnvironment.SANDBOX if env_name == "sandbox" else SquareEnvironment.PRODUCTION
-    return "sandbox" if env_name == "sandbox" else "production"
 
 
 async def _fetch_business_number_record(phone_number: str) -> Optional[Dict[str, Any]]:
@@ -310,43 +310,6 @@ async def _fetch_square_staff(access_token: str, location_id: str) -> Dict[str, 
     return {"success": True, "team_members": team_members}
 
 
-def _candidate_numbers(raw_number: str) -> list[str]:
-    logger.info("connection_store._candidate_numbers called (raw=%s)", raw_number)
-    normalized = normalize_phone_number(raw_number)
-    if not normalized:
-        return []
-    digits = "".join(ch for ch in normalized if ch.isdigit())
-    if digits.startswith("1") and len(digits) == 11:
-        return [digits[1:]]
-    if len(digits) == 10:
-        return [digits]
-    return [digits]
-
-
-def _phone_digits(value: Optional[str]) -> Optional[str]:
-    logger.info("connection_store._phone_digits called (value=%s)", value)
-    normalized = normalize_phone_number(value or "")
-    if not normalized:
-        return None
-    digits = "".join(ch for ch in normalized if ch.isdigit())
-    if digits.startswith("1") and len(digits) == 11:
-        return digits[1:]
-    return digits
-
-
-def _phone_digit_variants(value: Optional[str]) -> set[str]:
-    digits = "".join(ch for ch in (value or "") if ch.isdigit())
-    if not digits:
-        normalized = normalize_phone_number(value or "")
-        if not normalized:
-            return set()
-        digits = "".join(ch for ch in normalized if ch.isdigit())
-    variants = {digits} if digits else set()
-    if digits.startswith("1") and len(digits) == 11:
-        variants.add(digits[1:])
-    if len(digits) == 10:
-        variants.add(f"1{digits}")
-    return variants
 
 
 async def _fetch_square_customers(access_token: str) -> Dict[str, Any]:
