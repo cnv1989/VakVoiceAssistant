@@ -10,7 +10,7 @@ from typing import Optional
 
 from twilio.rest import Client as TwilioClient
 from urllib.parse import urlencode, parse_qs
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, Request, Depends
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, Request, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from twilio.request_validator import RequestValidator
@@ -558,14 +558,21 @@ async def twilio_chat(request: Request):
 
         if is_max_tokens_error:
             logger.warning("Strands Agent hit max_tokens limit (max_tokens=%d).", max_tokens)
-            raise HTTPException(
-                status_code=400,
-                detail=f"Response exceeded token limit (max_tokens={max_tokens})."
-            )
-        logger.error("Strands Agent invoke failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=502, detail=f"Agent request failed: {error_msg}")
+            reply = "Sorry, I couldn't complete my response. Please try a simpler question."
+        else:
+            logger.error("Strands Agent invoke failed: %s", exc, exc_info=True)
+            reply = "Sorry, something went wrong. Please try again later."
 
-    return {"reply": reply, "model_id": model_id}
+    # Return TwiML XML response for Twilio
+    # Escape XML special characters in the reply
+    import html
+    escaped_reply = html.escape(reply)
+    twiml_response = f'''<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Message>{escaped_reply}</Message>
+</Response>'''
+
+    return Response(content=twiml_response, media_type="application/xml")
 
 
 def _get_client_ip(websocket: WebSocket) -> str:

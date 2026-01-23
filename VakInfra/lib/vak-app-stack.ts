@@ -137,6 +137,18 @@ export class VakAppStack extends cdk.Stack {
     squareAccountTable.grantReadWriteData(taskRole);
     businessNumberTable.grantReadWriteData(taskRole);
 
+    // Allow ECS tasks to invoke Bedrock models (for Strands Agent / chat endpoint)
+    taskRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'bedrock:InvokeModel',
+        'bedrock:InvokeModelWithResponseStream',
+      ],
+      resources: [
+        `arn:aws:bedrock:${this.region}::foundation-model/*`,
+      ],
+    }));
+
     // ECS Task Definition
     // Valid Fargate CPU/Memory combinations: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-cpu-memory-error.html
     const taskDefinition = new ecs.FargateTaskDefinition(this, 'VakTaskDefinition', {
