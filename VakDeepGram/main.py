@@ -27,6 +27,26 @@ except ImportError:
     MaxTokensReachedException = None
 from deepgram_handler import deepgram_manager
 from strands_tools import ALL_STRANDS_TOOLS
+import json
+
+
+def _make_json_serializable(obj):
+    """Convert an object to JSON-serializable format."""
+    if obj is None:
+        return None
+    if isinstance(obj, (str, int, float, bool)):
+        return obj
+    if isinstance(obj, dict):
+        return {k: _make_json_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_make_json_serializable(item) for item in obj]
+    # For Square SDK objects and other classes, try to convert to dict
+    if hasattr(obj, '__dict__'):
+        return _make_json_serializable(vars(obj))
+    if hasattr(obj, 'to_dict'):
+        return _make_json_serializable(obj.to_dict())
+    # Fallback to string representation
+    return str(obj)
 from connection_store import (
     get_connection_context,
     resolve_business_context,
@@ -315,11 +335,13 @@ async def chat(
 
         # Create agent with system prompt and all voice assistant tools
         # Pass business context via state so tools receive it deterministically
+        # Convert to JSON-serializable format (Square SDK objects aren't serializable)
+        serializable_context = _make_json_serializable(business_context)
         agent = Agent(
             model=bedrock_model,
             system_prompt=system_prompt if system_prompt else None,
             tools=ALL_STRANDS_TOOLS,
-            state={"business_context": business_context},
+            state={"business_context": serializable_context},
         )
 
         # Invoke agent in executor to avoid blocking async event loop
@@ -327,7 +349,7 @@ async def chat(
             return agent(message)
 
         response = await asyncio.to_thread(invoke_agent)
-        
+
         # Extract reply from response
         if isinstance(response, str):
             reply = response
@@ -532,11 +554,13 @@ async def twilio_chat(request: Request):
 
         # Create agent with system prompt and all voice assistant tools
         # Pass business context via state so tools receive it deterministically
+        # Convert to JSON-serializable format (Square SDK objects aren't serializable)
+        serializable_context = _make_json_serializable(business_context)
         agent = Agent(
             model=bedrock_model,
             system_prompt=system_prompt if system_prompt else None,
             tools=ALL_STRANDS_TOOLS,
-            state={"business_context": business_context},
+            state={"business_context": serializable_context},
         )
 
         # Invoke agent in executor to avoid blocking async event loop
