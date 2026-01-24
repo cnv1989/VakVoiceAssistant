@@ -490,12 +490,23 @@ async def twilio_chat(request: Request):
     logger.info("Twilio chat request: businessNumber=%s customerPhone=%s", business_number, customer_phone)
 
     # Resolve business context directly (without connection store)
+    # This fetches Square credentials, services, staff, etc. for the business
     business_context = {}
     if business_number:
         try:
             business_context = await resolve_business_context(business_number, caller_number=customer_phone)
             if customer_phone:
                 business_context["caller"] = customer_phone
+            if business_context.get("success"):
+                logger.info(
+                    "Resolved Square context for %s: locationId=%s, services=%d, staff=%d",
+                    business_number,
+                    business_context.get("locationId"),
+                    len(business_context.get("services") or []),
+                    len(business_context.get("staff") or []),
+                )
+            else:
+                logger.warning("Failed to resolve business context: %s", business_context.get("error"))
         except Exception as exc:
             logger.error("Failed to resolve business context: %s", exc, exc_info=True)
             business_context = {"success": False, "error": str(exc)}
