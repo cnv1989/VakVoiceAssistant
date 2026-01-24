@@ -33,9 +33,36 @@ def _get_business_context_from_tool(tool_context: Optional[ToolContext]) -> dict
     """Extract business context from tool_context."""
     if not tool_context:
         return {}
-    # tool_context has a 'state' attribute that holds the context data
-    if hasattr(tool_context, 'state') and tool_context.state:
-        return tool_context.state.get('business_context', {})
+    if isinstance(tool_context, dict):
+        if tool_context.get("business_context"):
+            return tool_context.get("business_context") or {}
+        state = tool_context.get("state")
+        if isinstance(state, dict):
+            return state.get("business_context", {}) or {}
+    state = getattr(tool_context, "state", None)
+    if isinstance(state, dict):
+        return state.get("business_context", {}) or {}
+    if state is not None:
+        if hasattr(state, "get"):
+            try:
+                return state.get("business_context", {}) or {}
+            except TypeError:
+                pass
+        if hasattr(state, "model_dump"):
+            dumped = state.model_dump()
+            if isinstance(dumped, dict):
+                return dumped.get("business_context", {}) or {}
+        if hasattr(state, "dict"):
+            dumped = state.dict()
+            if isinstance(dumped, dict):
+                return dumped.get("business_context", {}) or {}
+    if getattr(tool_context, "business_context", None):
+        return tool_context.business_context or {}
+    for attr in ("context", "metadata", "agent_state"):
+        value = getattr(tool_context, attr, None)
+        if isinstance(value, dict) and value.get("business_context"):
+            return value.get("business_context") or {}
+    logger.debug("Tool context missing business_context (type=%s, attrs=%s)", type(tool_context), dir(tool_context))
     return {}
 
 

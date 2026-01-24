@@ -72,7 +72,7 @@ The container will use environment variables from:
 - `DEEPGRAM_AGENT_ID` - Agent ID (optional, leave empty for dynamic creation)
 - `HOST` - Server host (default: 0.0.0.0)
 - `PORT` - Server port (default: 8080)
-- `LOG_LEVEL` - Logging level (default: info)
+- `LOG_LEVEL` - Logging level (default: debug)
 
 ## Accessing the Server
 

@@ -27,21 +27,9 @@ pip install -r requirements.txt
 # Run server with reload enabled (watches for file changes)
 echo "🚀 Starting VakDeepGram server with auto-reload (watching for file changes)..."
 echo "📁 Watching: *.py, *.yaml, *.yml, *.json, *.env"
-FILTER_PATTERN='DEBUG: *[<>] (BINARY|TEXT)'
-if command -v stdbuf >/dev/null 2>&1; then
-    uvicorn main:app \
+uvicorn main:app \
         --host 0.0.0.0 \
         --port 8080 \
         --reload \
         --reload-dir . \
-        --log-level debug \
-        2>&1 | stdbuf -oL -eL grep -v -E "$FILTER_PATTERN"
-else
-    uvicorn main:app \
-        --host 0.0.0.0 \
-        --port 8080 \
-        --reload \
-        --reload-dir . \
-        --log-level debug \
-        2>&1 | perl -ne 'BEGIN{$|=1} print unless /'"$FILTER_PATTERN"'/'
-fi
+        --log-level debug

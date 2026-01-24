@@ -50,7 +50,7 @@ DEEPGRAM_AGENT_ID=your_agent_id  # Optional: Leave empty to create agent dynamic
 # Optional - Server Configuration
 HOST=0.0.0.0
 PORT=8080
-LOG_LEVEL=info
+LOG_LEVEL=debug
 
 # Optional - Voice Agent Configuration
 DEEPGRAM_AGENT_LANGUAGE=en

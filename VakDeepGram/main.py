@@ -426,8 +426,8 @@ def verify_twilio_http_signature(request: Request, body: bytes) -> bool:
         logger.error(f"Failed to parse request body: {e}")
         params = {}
 
-    logger.debug(f"Twilio HTTP signature verification - URL: {request_url}")
-    logger.debug(f"Twilio HTTP signature verification - Params: {params}")
+    logger.info(f"Twilio HTTP signature verification - URL: {request_url}")
+    logger.info(f"Twilio HTTP signature verification - Params: {params}")
 
     try:
         validator = RequestValidator(config.settings.twilio_auth_token)
