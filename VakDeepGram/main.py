@@ -26,7 +26,7 @@ try:
 except ImportError:
     MaxTokensReachedException = None
 from deepgram_handler import deepgram_manager
-from strands_tools import ALL_STRANDS_TOOLS, set_chat_business_context
+from strands_tools import ALL_STRANDS_TOOLS
 from connection_store import (
     get_connection_context,
     resolve_business_context,
@@ -302,7 +302,7 @@ async def chat(
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid max_tokens or temperature.")
 
-    logger.info("Invoking Strands Agent chat (model=%s message_chars=%d max_tokens=%d)", 
+    logger.info("Invoking Strands Agent chat (model=%s message_chars=%d max_tokens=%d)",
                 model_id, len(message), max_tokens)
     try:
         # Create Bedrock model with Strands
@@ -312,22 +312,20 @@ async def chat(
             max_tokens=max_tokens,
             region_name=config.settings.aws_region,
         )
-        
+
         # Create agent with system prompt and all voice assistant tools
+        # Pass business context via state so tools receive it deterministically
         agent = Agent(
             model=bedrock_model,
             system_prompt=system_prompt if system_prompt else None,
             tools=ALL_STRANDS_TOOLS,
+            state={"business_context": business_context},
         )
-        
+
         # Invoke agent in executor to avoid blocking async event loop
-        # Set business context in thread-local storage before invoking agent
         def invoke_agent():
-            # Set business context in thread-local storage for tools to access
-            from strands_tools import set_chat_business_context
-            set_chat_business_context(business_context)
             return agent(message)
-        
+
         response = await asyncio.to_thread(invoke_agent)
         
         # Extract reply from response
@@ -533,16 +531,16 @@ async def twilio_chat(request: Request):
         )
 
         # Create agent with system prompt and all voice assistant tools
+        # Pass business context via state so tools receive it deterministically
         agent = Agent(
             model=bedrock_model,
             system_prompt=system_prompt if system_prompt else None,
             tools=ALL_STRANDS_TOOLS,
+            state={"business_context": business_context},
         )
 
         # Invoke agent in executor to avoid blocking async event loop
         def invoke_agent():
-            from strands_tools import set_chat_business_context
-            set_chat_business_context(business_context)
             return agent(message)
 
         response = await asyncio.to_thread(invoke_agent)

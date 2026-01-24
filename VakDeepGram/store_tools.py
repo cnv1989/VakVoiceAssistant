@@ -12,36 +12,26 @@ from utils.square_helpers import get_square_environment
 
 logger = logging.getLogger(__name__)
 
-# Import thread-local business context for chat
-try:
-    from strands_tools import get_chat_business_context
-except ImportError:
-    def get_chat_business_context():
-        return {}
-
 
 def _get_context(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Get context from params - supports both voice (connection_id) and chat (business_context) modes."""
     logger.debug("store_tools._get_context called (keys=%s)", list(params.keys()))
-    connection_id = params.get("connection_id")
-    
-    # For chat, use business context from thread-local storage instead of connection store
-    if not connection_id:
-        business_context = get_chat_business_context()
-        if business_context:
-            logger.debug("Using business context from thread-local storage (chat mode)")
-            return {"success": True, "context": business_context}
-        return {"success": False, "error": "connection_id is required and no business context available", "context": {}}
-    
+
+    # For chat/SMS, business_context is passed directly from tools
+    business_context = params.get("business_context")
+    if business_context:
+        logger.debug("Using business context passed directly (chat/SMS mode)")
+        return {"success": True, "context": business_context}
+
     # For voice assistant, use connection store
-    context = get_connection_context(connection_id)
-    if not context:
-        # Fallback to thread-local business context if available
-        business_context = get_chat_business_context()
-        if business_context:
-            logger.debug("Falling back to business context from thread-local storage")
-            return {"success": True, "context": business_context}
+    connection_id = params.get("connection_id")
+    if connection_id:
+        context = get_connection_context(connection_id)
+        if context:
+            return {"success": True, "context": context}
         return {"success": False, "error": "No connection context found.", "context": {}}
-    return {"success": True, "context": context}
+
+    return {"success": False, "error": "No business_context or connection_id provided.", "context": {}}
 
 
 def get_store_location_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
