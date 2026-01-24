@@ -29,7 +29,8 @@ class Settings(BaseSettings):
     deepgram_agent_id: Optional[str] = None
     
     # Twilio Configuration
-    twilio_auth_token: str = None  # Required for signature verification
+    twilio_account_sid: str = None  # Required for sending SMS via Twilio API
+    twilio_auth_token: str = None  # Required for signature verification and sending SMS
     twilio_signature_verification_enabled: bool = True  # Set to False to skip verification
 
     # Application Environment

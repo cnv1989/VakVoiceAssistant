@@ -563,14 +563,36 @@ async def twilio_chat(request: Request):
             logger.error("Strands Agent invoke failed: %s", exc, exc_info=True)
             reply = "Sorry, something went wrong. Please try again later."
 
-    # Return TwiML XML response for Twilio
-    # Escape XML special characters in the reply
-    import html
-    escaped_reply = html.escape(reply)
-    twiml_response = f'''<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Message>{escaped_reply}</Message>
-</Response>'''
+    # Send SMS reply directly using Twilio client
+    try:
+        from twilio.rest import Client as TwilioClient
+
+        twilio_account_sid = config.settings.twilio_account_sid
+        twilio_auth_token = config.settings.twilio_auth_token
+
+        if not twilio_account_sid or not twilio_auth_token:
+            logger.error("Twilio credentials not configured")
+            raise HTTPException(status_code=500, detail="Twilio credentials not configured")
+
+        client = TwilioClient(twilio_account_sid, twilio_auth_token)
+
+        # Send SMS: from business number to customer
+        sms_message = client.messages.create(
+            body=reply,
+            from_=business_number,  # The Twilio number that received the message
+            to=customer_phone,      # The customer who sent the message
+        )
+
+        logger.info("Sent SMS reply via Twilio: sid=%s from=%s to=%s",
+                    sms_message.sid, business_number, customer_phone)
+
+    except Exception as sms_exc:
+        logger.error("Failed to send SMS via Twilio: %s", sms_exc, exc_info=True)
+        raise HTTPException(status_code=502, detail=f"Failed to send SMS: {str(sms_exc)}")
+
+    # Return empty TwiML response (we already sent the SMS directly)
+    twiml_response = '''<?xml version="1.0" encoding="UTF-8"?>
+<Response></Response>'''
 
     return Response(content=twiml_response, media_type="application/xml")
 
