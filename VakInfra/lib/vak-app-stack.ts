@@ -192,7 +192,7 @@ export class VakAppStack extends cdk.Stack {
         DEEPGRAM_INPUT_SAMPLE_RATE: '48000',
         DEEPGRAM_OUTPUT_SAMPLE_RATE: '24000',
         // Twilio configuration (Account SID is not sensitive, only Auth Token is)
-        TWILIO_ACCOUNT_SID: 'AC47eb63e4e625c5268eb966cb16160c62',
+        TWILIO_ACCOUNT_SID: 'ACd00787e66384ec2d2ed3e262748525af',
       },
       secrets: Object.keys(containerSecrets).length > 0 ? containerSecrets : undefined,
       healthCheck: {
