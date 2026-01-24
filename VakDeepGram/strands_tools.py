@@ -39,7 +39,7 @@ def _get_business_context_from_tool(tool_context: Optional[ToolContext]) -> dict
     return {}
 
 
-@tool
+@tool(context=True)
 async def find_customer(
     tool_context: ToolContext,
     customer_id: Optional[str] = None,
@@ -63,7 +63,7 @@ async def find_customer(
     return await _find_customer(params)
 
 
-@tool
+@tool(context=True)
 async def get_appointments(
     tool_context: ToolContext,
     customer_id: str,
@@ -81,7 +81,7 @@ async def get_appointments(
     return await _get_appointments(params)
 
 
-@tool
+@tool(context=True)
 async def get_orders(
     tool_context: ToolContext,
     customer_id: str,
@@ -100,7 +100,7 @@ async def get_orders(
     return await _get_orders(params)
 
 
-@tool
+@tool(context=True)
 async def create_customer(
     tool_context: ToolContext,
     first_name: str,
@@ -126,7 +126,7 @@ async def create_customer(
     return await _create_customer(params)
 
 
-@tool
+@tool(context=True)
 async def create_appointment(
     tool_context: ToolContext,
     first_name: str,
@@ -165,7 +165,7 @@ async def create_appointment(
     return await _create_appointment(params)
 
 
-@tool
+@tool(context=True)
 async def update_appointment(
     tool_context: ToolContext,
     booking_id: str,
@@ -196,7 +196,7 @@ async def update_appointment(
     return await _update_appointment_booking(params)
 
 
-@tool
+@tool(context=True)
 async def check_availability(
     tool_context: ToolContext,
     start_date: str,
@@ -224,7 +224,7 @@ async def check_availability(
     return await _check_availability(params)
 
 
-@tool
+@tool(context=True)
 async def select_service(
     tool_context: ToolContext,
     service: str,
@@ -238,7 +238,7 @@ async def select_service(
     return await _select_service(params)
 
 
-@tool
+@tool(context=True)
 async def selected_staff(
     tool_context: ToolContext,
     staff: Optional[str] = None,
@@ -256,7 +256,7 @@ async def selected_staff(
     return await _selected_staff(params)
 
 
-@tool
+@tool(context=True)
 async def selected_appointment_date_and_time(
     tool_context: ToolContext,
     appointment_datetime: str,
@@ -273,7 +273,7 @@ async def selected_appointment_date_and_time(
     return await _selected_appointment_date_and_time(params)
 
 
-@tool
+@tool(context=True)
 async def get_store_hours(
     tool_context: ToolContext,
 ) -> dict:
@@ -291,7 +291,7 @@ async def get_store_hours(
     return await _get_store_hours(params)
 
 
-@tool
+@tool(context=True)
 async def get_store_location(
     tool_context: ToolContext,
 ) -> dict:
@@ -309,7 +309,7 @@ async def get_store_location(
     return await _get_store_location(params)
 
 
-@tool
+@tool(context=True)
 async def get_services(
     tool_context: ToolContext,
 ) -> dict:
@@ -327,7 +327,7 @@ async def get_services(
     return await _get_services(params)
 
 
-@tool
+@tool(context=True)
 async def get_staff(
     tool_context: ToolContext,
 ) -> dict:
