@@ -5,65 +5,65 @@ These tools can be used with Strands agents in the /chat endpoint.
 Tools receive business context via tool_context parameter which is passed
 deterministically from the agent invocation.
 """
+import inspect
 import logging
+import uuid
 from typing import Optional
 from strands import tool
 from strands.types.tools import ToolContext
-from agent_functions import (
-    find_customer as _find_customer,
-    get_appointments as _get_appointments,
-    get_orders as _get_orders,
+import config
+from business_logic import (
+    get_customer as _get_customer,
+    get_customer_appointments as _get_customer_appointments,
+    get_customer_orders as _get_customer_orders,
     create_customer as _create_customer,
-    create_appointment as _create_appointment,
-    update_appointment_booking as _update_appointment_booking,
-    check_availability as _check_availability,
-    select_service as _select_service,
-    selected_staff as _selected_staff,
-    selected_appointment_date_and_time as _selected_appointment_date_and_time,
-    get_store_hours as _get_store_hours,
-    get_store_location as _get_store_location,
-    get_services as _get_services,
-    get_staff as _get_staff,
+    schedule_appointment_with_contact as _schedule_appointment_with_contact,
+    update_appointment as _update_appointment,
+    get_available_appointment_slots as _get_available_appointment_slots,
+)
+from connection_store import set_connection_context, clear_connection_context
+from store_tools import (
+    get_store_hours_from_context as _get_store_hours,
+    get_store_location_from_context as _get_store_location,
+    get_services_from_context as _get_services,
+    get_staff_from_context as _get_staff,
 )
 
 logger = logging.getLogger(__name__)
 
 
 def _get_business_context_from_tool(tool_context: Optional[ToolContext]) -> dict:
-    """Extract business context from tool_context."""
+    """Extract business context from tool_context.agent.state."""
     if not tool_context:
         return {}
-    if isinstance(tool_context, dict):
-        if tool_context.get("business_context"):
-            return tool_context.get("business_context") or {}
-        state = tool_context.get("state")
-        if isinstance(state, dict):
-            return state.get("business_context", {}) or {}
-    state = getattr(tool_context, "state", None)
-    if isinstance(state, dict):
-        return state.get("business_context", {}) or {}
-    if state is not None:
-        if hasattr(state, "get"):
-            try:
-                return state.get("business_context", {}) or {}
-            except TypeError:
-                pass
-        if hasattr(state, "model_dump"):
-            dumped = state.model_dump()
-            if isinstance(dumped, dict):
-                return dumped.get("business_context", {}) or {}
-        if hasattr(state, "dict"):
-            dumped = state.dict()
-            if isinstance(dumped, dict):
-                return dumped.get("business_context", {}) or {}
-    if getattr(tool_context, "business_context", None):
-        return tool_context.business_context or {}
-    for attr in ("context", "metadata", "agent_state"):
-        value = getattr(tool_context, attr, None)
-        if isinstance(value, dict) and value.get("business_context"):
-            return value.get("business_context") or {}
-    logger.debug("Tool context missing business_context (type=%s, attrs=%s)", type(tool_context), dir(tool_context))
-    return {}
+
+    # Primary path: tool_context.agent.state contains business_context
+    return tool_context.agent.state.get("business_context")
+
+
+async def _call_with_connection_context(business_context: dict, func, **kwargs) -> dict:
+    """Invoke business logic with a temporary connection context for chat tools."""
+    connection_id = f"chat-{uuid.uuid4().hex}"
+    set_connection_context(connection_id, business_context)
+    try:
+        params = dict(kwargs)
+        if "connection_id" in inspect.signature(func).parameters:
+            params["connection_id"] = connection_id
+        return await func(**params)
+    finally:
+        clear_connection_context(connection_id)
+
+
+def _update_business_context(tool_context: ToolContext, updates: dict) -> dict:
+    """Persist chat selections in the agent state."""
+    if not tool_context or not getattr(tool_context, "agent", None):
+        return {}
+    state = tool_context.agent.state or {}
+    business_context = state.get("business_context") or {}
+    business_context.update(updates)
+    state["business_context"] = business_context
+    tool_context.agent.state = state
+    return business_context
 
 
 @tool(context=True)
@@ -82,12 +82,11 @@ async def find_customer(
     """
     business_context = _get_business_context_from_tool(tool_context)
     params = {
-        "business_context": business_context,
         "customer_id": customer_id,
         "phone": phone,
         "email": email,
     }
-    return await _find_customer(params)
+    return await _call_with_connection_context(business_context, _get_customer, **params)
 
 
 @tool(context=True)
@@ -101,11 +100,11 @@ async def get_appointments(
     Always verify you have the customer's account first using find_customer before checking appointments.
     """
     business_context = _get_business_context_from_tool(tool_context)
-    params = {
-        "business_context": business_context,
-        "customer_id": customer_id,
-    }
-    return await _get_appointments(params)
+    return await _call_with_connection_context(
+        business_context,
+        _get_customer_appointments,
+        customer_id=customer_id,
+    )
 
 
 @tool(context=True)
@@ -120,11 +119,7 @@ async def get_orders(
     Always verify you have the customer's account first using find_customer before checking orders.
     """
     business_context = _get_business_context_from_tool(tool_context)
-    params = {
-        "business_context": business_context,
-        "customer_id": customer_id,
-    }
-    return await _get_orders(params)
+    return await _get_customer_orders(customer_id)
 
 
 @tool(context=True)
@@ -144,13 +139,13 @@ async def create_customer(
     # Use caller's phone if not provided
     if not phone_number:
         phone_number = business_context.get("caller")
-    params = {
-        "business_context": business_context,
-        "first_name": first_name,
-        "last_name": last_name,
-        "phone_number": phone_number,
-    }
-    return await _create_customer(params)
+    return await _call_with_connection_context(
+        business_context,
+        _create_customer,
+        first_name=first_name,
+        last_name=last_name,
+        phone_number=phone_number,
+    )
 
 
 @tool(context=True)
@@ -179,17 +174,17 @@ async def create_appointment(
     # Use caller's phone if not provided
     if not phone_number:
         phone_number = business_context.get("caller")
-    params = {
-        "business_context": business_context,
-        "first_name": first_name,
-        "last_name": last_name,
-        "customer_id": customer_id,
-        "staff_id": staff_id,
-        "date": date,
-        "service": service,
-        "phone_number": phone_number,
-    }
-    return await _create_appointment(params)
+    return await _call_with_connection_context(
+        business_context,
+        _schedule_appointment_with_contact,
+        first_name=first_name,
+        last_name=last_name,
+        customer_id=customer_id,
+        staff_id=staff_id,
+        date=date,
+        service=service,
+        phone_number=phone_number,
+    )
 
 
 @tool(context=True)
@@ -212,15 +207,15 @@ async def update_appointment(
     Date should be in ISO format (YYYY-MM-DDTHH:MM:SS).
     """
     business_context = _get_business_context_from_tool(tool_context)
-    params = {
-        "business_context": business_context,
-        "booking_id": booking_id,
-        "date": date,
-        "service": service,
-        "staff_id": staff_id,
-        "staff_name": staff_name,
-    }
-    return await _update_appointment_booking(params)
+    return await _call_with_connection_context(
+        business_context,
+        _update_appointment,
+        booking_id=booking_id,
+        date=date,
+        service=service,
+        staff_id=staff_id,
+        staff_name=staff_name,
+    )
 
 
 @tool(context=True)
@@ -241,14 +236,14 @@ async def check_availability(
     Start_date can be in ISO format (YYYY-MM-DDTHH:MM:SS.sssZ), a relative date enum like TODAY or NEXT_WEEK, or a weekday name.
     """
     business_context = _get_business_context_from_tool(tool_context)
-    params = {
-        "business_context": business_context,
-        "start_date": start_date,
-        "end_date": end_date,
-        "service": service,
-        "staff_ids": staff_ids,
-    }
-    return await _check_availability(params)
+    return await _call_with_connection_context(
+        business_context,
+        _get_available_appointment_slots,
+        start_date=start_date,
+        end_date=end_date,
+        service=service,
+        staff_ids=staff_ids,
+    )
 
 
 @tool(context=True)
@@ -258,11 +253,8 @@ async def select_service(
 ) -> dict:
     """Save the customer's selected service in the connection context for reuse in availability and booking."""
     business_context = _get_business_context_from_tool(tool_context)
-    params = {
-        "business_context": business_context,
-        "service": service,
-    }
-    return await _select_service(params)
+    updated = _update_business_context(tool_context, {"selected_service": service})
+    return {"success": True, "selected_service": updated.get("selected_service")}
 
 
 @tool(context=True)
@@ -274,13 +266,20 @@ async def selected_staff(
 ) -> dict:
     """Save the customer's selected staff in the connection context for reuse in availability and booking."""
     business_context = _get_business_context_from_tool(tool_context)
-    params = {
-        "business_context": business_context,
-        "staff": staff,
-        "staff_id": staff_id,
-        "staff_name": staff_name,
+    updates = {}
+    if staff:
+        updates["selected_staff"] = staff
+    if staff_id:
+        updates["selected_staff_id"] = staff_id
+    if staff_name:
+        updates["selected_staff_name"] = staff_name
+    updated = _update_business_context(tool_context, updates)
+    return {
+        "success": True,
+        "selected_staff": updated.get("selected_staff"),
+        "selected_staff_id": updated.get("selected_staff_id"),
+        "selected_staff_name": updated.get("selected_staff_name"),
     }
-    return await _selected_staff(params)
 
 
 @tool(context=True)
@@ -293,11 +292,14 @@ async def selected_appointment_date_and_time(
     Date should be in ISO format (YYYY-MM-DDTHH:MM:SS).
     """
     business_context = _get_business_context_from_tool(tool_context)
-    params = {
-        "business_context": business_context,
-        "appointment_datetime": appointment_datetime,
+    updated = _update_business_context(
+        tool_context,
+        {"selected_appointment_date_and_time": appointment_datetime},
+    )
+    return {
+        "success": True,
+        "selected_appointment_date_and_time": updated.get("selected_appointment_date_and_time"),
     }
-    return await _selected_appointment_date_and_time(params)
 
 
 @tool(context=True)
@@ -315,7 +317,7 @@ async def get_store_hours(
     params = {
         "business_context": business_context,
     }
-    return await _get_store_hours(params)
+    return _get_store_hours(params)
 
 
 @tool(context=True)
@@ -333,7 +335,7 @@ async def get_store_location(
     params = {
         "business_context": business_context,
     }
-    return await _get_store_location(params)
+    return _get_store_location(params)
 
 
 @tool(context=True)
@@ -348,10 +350,7 @@ async def get_services(
     - 'Do you offer [service]?'
     """
     business_context = _get_business_context_from_tool(tool_context)
-    params = {
-        "business_context": business_context,
-    }
-    return await _get_services(params)
+    return _get_services({"business_context": business_context})
 
 
 @tool(context=True)
@@ -367,10 +366,44 @@ async def get_staff(
     Use the returned staff ids when filtering availability or booking.
     """
     business_context = _get_business_context_from_tool(tool_context)
-    params = {
-        "business_context": business_context,
-    }
-    return await _get_staff(params)
+    return _get_staff({"business_context": business_context})
+
+
+@tool(context=True)
+async def get_greeting_message(
+    tool_context: ToolContext,
+) -> dict:
+    """Return a greeting message using the business name when available."""
+    business_context = _get_business_context_from_tool(tool_context)
+    greeting = config.settings.deepgram_agent_greeting or ""
+    location = business_context.get("location") or {}
+    business_name = (
+        location.get("business_name")
+        or location.get("name")
+        or business_context.get("business_name")
+    )
+    if business_name:
+        greeting = f"Hi, welcome to {business_name}. How can I help you today?"
+    if greeting:
+        greeting = (
+            f"{greeting} "
+            "I can help with hours, location, services and pricing, staff info, and booking or rescheduling appointments."
+        )
+    if greeting:
+        return {"success": True, "greeting": greeting}
+    return {"success": False, "error": "No greeting available."}
+
+
+@tool(context=True)
+async def get_current_local_time(
+    tool_context: ToolContext,
+) -> dict:
+    """Return the current localized time for the business location."""
+    business_context = _get_business_context_from_tool(tool_context)
+    current_local_time = business_context.get("current_local_time")
+    if current_local_time:
+        return {"success": True, "current_local_time": current_local_time}
+    return {"success": False, "error": "current_local_time not available."}
 
 
 # List of all Strands tools for easy import
@@ -389,4 +422,6 @@ ALL_STRANDS_TOOLS = [
     get_store_location,
     get_services,
     get_staff,
+    get_greeting_message,
+    get_current_local_time,
 ]
