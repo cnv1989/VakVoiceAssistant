@@ -10,6 +10,7 @@ import base64
 import uuid
 from typing import Dict, Optional, Callable
 import websockets
+from websockets.protocol import State
 import config
 from agent_functions import FUNCTION_DEFINITIONS, FUNCTION_MAP
 from connection_store import get_localized_datetime_for_connection, get_connection_context
@@ -127,8 +128,19 @@ class DeepgramManager:
             "think": think_config,
             "speak": {"provider": speak_provider},
         }
-        if config.settings.deepgram_agent_greeting:
-            agent_config["greeting"] = config.settings.deepgram_agent_greeting
+
+        # Build greeting with business name if available
+        greeting = config.settings.deepgram_agent_greeting or ""
+        if connection_id:
+            context = get_connection_context(connection_id)
+            business_name = None
+            if context:
+                location = context.get("location") or {}
+                business_name = location.get("business_name") or location.get("name") or context.get("business_name")
+            if business_name:
+                greeting = f"Hi, welcome to {business_name}. How can I help you today?"
+        if greeting:
+            agent_config["greeting"] = greeting
         
         # Build settings message - use mulaw for Twilio, linear16 for browser
         if use_mulaw:
@@ -687,9 +699,9 @@ class DeepgramManager:
         logger.debug("DeepgramManager._send_audio_to_deepgram called (connection_id=%s bytes=%d)", session.connection_id, len(audio_data))
         try:
             if session.sts_ws and session.is_active:
-                # Check WebSocket state
-                if session.sts_ws.closed:
-                    logger.debug(f"⚠️ STS WebSocket closed for {session.connection_id}, marking session inactive")
+                # Check WebSocket state (websockets 16.0+ uses state instead of closed property)
+                if session.sts_ws.state != State.OPEN:
+                    logger.debug(f"⚠️ STS WebSocket not open for {session.connection_id} (state={session.sts_ws.state.name}), marking session inactive")
                     session.is_active = False
                     return
                 await session.sts_ws.send(audio_data)

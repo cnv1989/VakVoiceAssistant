@@ -115,6 +115,14 @@ def get_localized_datetime_for_connection(connection_id: str) -> str:
     return now.strftime("%Y-%m-%d %H:%M:%S (%A, %B %d, %Y)")
 
 
+def get_localized_datetime_from_context(business_context: dict) -> str:
+    """Return a localized datetime string based on the business context's timezone."""
+    location = business_context.get("location") or {}
+    timezone_name = location.get("timezone") or business_context.get("timezone")
+    now = datetime.now(ZoneInfo(timezone_name)) if timezone_name and ZoneInfo else datetime.now()
+    return now.strftime("%Y-%m-%d %H:%M:%S (%A, %B %d, %Y)")
+
+
 def _isoformat_utc(value: datetime) -> str:
     logger.info("connection_store._isoformat_utc called (value=%s)", value)
     return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
@@ -366,7 +374,7 @@ async def resolve_business_context(
     business_number: str,
     caller_number: Optional[str] = None,
 ) -> Dict[str, Any]:
-    logger.debug(
+    logger.info(
         "connection_store.resolve_business_context called (business_number=%s caller_number=%s)",
         business_number,
         caller_number,
@@ -384,7 +392,7 @@ async def resolve_business_context(
         if record:
             matched_number = candidate
             break
-        logger.debug("No BusinessNumber record found for %s", candidate)
+        logger.warning("No BusinessNumber record found for %s", candidate)
 
     if not record:
         logger.warning("No BusinessNumber record found for %s", candidates)

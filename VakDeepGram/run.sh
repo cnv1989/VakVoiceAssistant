@@ -32,4 +32,4 @@ uvicorn main:app \
         --port 8080 \
         --reload \
         --reload-dir . \
-        --log-level debug
+        --log-level info

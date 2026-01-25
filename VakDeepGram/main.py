@@ -21,6 +21,7 @@ import uvicorn
 import config
 from strands import Agent
 from strands.models import BedrockModel
+from strands.session.file_session_manager import FileSessionManager
 try:
     from strands.event_loop._recover_message_on_max_tokens_reached import MaxTokensReachedException
 except ImportError:
@@ -53,6 +54,7 @@ from connection_store import (
     set_connection_context,
     clear_connection_context,
     normalize_phone_number,
+    get_localized_datetime_from_context,
 )
 from business_logic import prefetch_customer_by_phone
 
@@ -295,6 +297,7 @@ async def chat(
     # Get business number and customer number
     business_number = payload.get("business_number") or payload.get("businessNumber")
     customer_phone = payload.get("customer_number") or payload.get("customerPhone") or payload.get("customer_phone")
+    session_id = payload.get("session_id") or payload.get("sessionId")
 
     if not business_number:
         raise HTTPException(status_code=400, detail="business_number is required")
@@ -312,7 +315,7 @@ async def chat(
             logger.error("Failed to resolve business context: %s", exc, exc_info=True)
             business_context = {"success": False, "error": str(exc)}
 
-    system_prompt = payload.get("system_prompt") or config.settings.deepgram_agent_prompt or ""
+    system_prompt = payload.get("system_prompt") or config.settings.chat_agent_prompt or ""
     model_id = payload.get("model_id") or config.settings.bedrock_model_id
     max_tokens = payload.get("max_tokens") or config.settings.bedrock_max_tokens
     temperature = payload.get("temperature") or config.settings.bedrock_temperature
@@ -335,13 +338,19 @@ async def chat(
 
         # Create agent with system prompt and all voice assistant tools
         # Pass business context via state so tools receive it deterministically
+        # Add current local time to context for relative date inference
+        business_context["current_local_time"] = get_localized_datetime_from_context(business_context)
         # Convert to JSON-serializable format (Square SDK objects aren't serializable)
         serializable_context = _make_json_serializable(business_context)
+        normalized_phone = normalize_phone_number(customer_phone) if customer_phone else None
+        resolved_session_id = session_id or f"chat:{business_number}:{normalized_phone or uuid.uuid4().hex}"
+        session_manager = FileSessionManager(session_id=resolved_session_id)
         agent = Agent(
             model=bedrock_model,
             system_prompt=system_prompt if system_prompt else None,
             tools=ALL_STRANDS_TOOLS,
             state={"business_context": serializable_context},
+            session_manager=session_manager,
         )
 
         # Invoke agent in executor to avoid blocking async event loop
@@ -362,21 +371,6 @@ async def chat(
             
     except Exception as exc:
         error_msg = str(exc)
-        # Handle max_tokens error specifically
-        is_max_tokens_error = (
-            MaxTokensReachedException and isinstance(exc, MaxTokensReachedException)
-        ) or (
-            "max_tokens" in error_msg.lower() or 
-            "MaxTokensReachedException" in str(type(exc)) or
-            "unrecoverable state due to max_tokens" in error_msg.lower()
-        )
-        
-        if is_max_tokens_error:
-            logger.warning("Strands Agent hit max_tokens limit (max_tokens=%d). Consider increasing max_tokens.", max_tokens)
-            raise HTTPException(
-                status_code=400,
-                detail=f"Response exceeded token limit (max_tokens={max_tokens}). Please increase max_tokens or simplify your request."
-            )
         logger.error("Strands Agent invoke failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=502, detail=f"Agent request failed: {error_msg}")
 
@@ -503,6 +497,7 @@ async def twilio_chat(request: Request):
         payload.get("From") or
         payload.get("from")
     )
+    session_id = payload.get("session_id") or payload.get("sessionId")
 
     if not business_number:
         raise HTTPException(status_code=400, detail="business_number is required")
@@ -531,7 +526,7 @@ async def twilio_chat(request: Request):
             logger.error("Failed to resolve business context: %s", exc, exc_info=True)
             business_context = {"success": False, "error": str(exc)}
 
-    system_prompt = payload.get("system_prompt") or config.settings.deepgram_agent_prompt or ""
+    system_prompt = payload.get("system_prompt") or config.settings.chat_agent_prompt or ""
     model_id = payload.get("model_id") or config.settings.bedrock_model_id
     max_tokens = payload.get("max_tokens") or config.settings.bedrock_max_tokens
     temperature = payload.get("temperature") or config.settings.bedrock_temperature
@@ -554,13 +549,19 @@ async def twilio_chat(request: Request):
 
         # Create agent with system prompt and all voice assistant tools
         # Pass business context via state so tools receive it deterministically
+        # Add current local time to context for relative date inference
+        business_context["current_local_time"] = get_localized_datetime_from_context(business_context)
         # Convert to JSON-serializable format (Square SDK objects aren't serializable)
         serializable_context = _make_json_serializable(business_context)
+        normalized_phone = normalize_phone_number(customer_phone) if customer_phone else None
+        resolved_session_id = session_id or f"chat:{business_number}:{normalized_phone or uuid.uuid4().hex}"
+        session_manager = FileSessionManager(session_id=resolved_session_id)
         agent = Agent(
             model=bedrock_model,
             system_prompt=system_prompt if system_prompt else None,
             tools=ALL_STRANDS_TOOLS,
             state={"business_context": serializable_context},
+            session_manager=session_manager,
         )
 
         # Invoke agent in executor to avoid blocking async event loop
