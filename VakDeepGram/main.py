@@ -488,6 +488,10 @@ async def twilio_chat(request: Request):
         payload.get("To") or
         payload.get("to")
     )
+    stripped_business_number = business_number
+    # Strip "whatsapp:" prefix if present
+    if business_number and business_number.startswith("whatsapp:"):
+        stripped_business_number = business_number[9:]  # Remove "whatsapp:" prefix
 
     # Get customer number - Twilio sends "From" for the sender
     customer_phone = (
@@ -497,25 +501,29 @@ async def twilio_chat(request: Request):
         payload.get("From") or
         payload.get("from")
     )
+    # Strip "whatsapp:" prefix if present
+    stripped_customer_phone = customer_phone
+    if customer_phone and customer_phone.startswith("whatsapp:"):
+        stripped_customer_phone = customer_phone[9:]  # Remove "whatsapp:" prefix
     session_id = payload.get("session_id") or payload.get("sessionId")
 
-    if not business_number:
+    if not stripped_business_number:
         raise HTTPException(status_code=400, detail="business_number is required")
 
-    logger.info("Twilio chat request: businessNumber=%s customerPhone=%s", business_number, customer_phone)
+    logger.info("Twilio chat request: businessNumber=%s customerPhone=%s", stripped_business_number, stripped_customer_phone)
 
     # Resolve business context directly (without connection store)
     # This fetches Square credentials, services, staff, etc. for the business
     business_context = {}
-    if business_number:
+    if stripped_business_number:
         try:
-            business_context = await resolve_business_context(business_number, caller_number=customer_phone)
-            if customer_phone:
-                business_context["caller"] = customer_phone
+            business_context = await resolve_business_context(stripped_business_number, caller_number=stripped_customer_phone)
+            if stripped_customer_phone:
+                business_context["caller"] = stripped_customer_phone
             if business_context.get("success"):
                 logger.info(
                     "Resolved Square context for %s: locationId=%s, services=%d, staff=%d",
-                    business_number,
+                    stripped_business_number,
                     business_context.get("locationId"),
                     len(business_context.get("services") or []),
                     len(business_context.get("staff") or []),
@@ -553,8 +561,8 @@ async def twilio_chat(request: Request):
         business_context["current_local_time"] = get_localized_datetime_from_context(business_context)
         # Convert to JSON-serializable format (Square SDK objects aren't serializable)
         serializable_context = _make_json_serializable(business_context)
-        normalized_phone = normalize_phone_number(customer_phone) if customer_phone else None
-        resolved_session_id = session_id or f"chat:{business_number}:{normalized_phone or uuid.uuid4().hex}"
+        normalized_phone = normalize_phone_number(stripped_customer_phone) if stripped_customer_phone else None
+        resolved_session_id = session_id or f"chat:{stripped_business_number}:{normalized_phone or uuid.uuid4().hex}"
         session_manager = FileSessionManager(session_id=resolved_session_id)
         agent = Agent(
             model=bedrock_model,

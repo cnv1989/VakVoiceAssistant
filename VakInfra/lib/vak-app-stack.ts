@@ -9,6 +9,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import { Construct } from 'constructs';
 import { VakNetworkStack } from './vak-network-stack';
 
@@ -158,6 +159,12 @@ export class VakAppStack extends cdk.Stack {
       taskRole: taskRole,
     });
 
+    const serviceLogGroup = new logs.LogGroup(this, 'VakServiceLogGroup', {
+      logGroupName: '/ecs/vak-service',
+      retention: logs.RetentionDays.ONE_MONTH,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
     // Build secrets object conditionally
     const containerSecrets: { [key: string]: ecs.Secret } = {};
     if (deepgramSecret) {
@@ -175,6 +182,7 @@ export class VakAppStack extends cdk.Stack {
       cpu: 512,  // 0.5 vCPU (matching task definition CPU allocation)
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: 'vak-deepgram',
+        logGroup: serviceLogGroup,
       }),
       environment: {
         HOST: '0.0.0.0',
