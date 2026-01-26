@@ -35,15 +35,16 @@ def normalize_phone_number(value: str) -> Optional[str]:
         logger.debug("Normalized phone number %s -> %s", value, normalized)
         return normalized
 
-    # Already has country code
+    # Already has country code; normalize to +digits
     if value.startswith("+"):
-        logger.debug("Normalized phone number %s -> %s", value, value)
-        return value
+        if 10 <= len(digits) <= 15:
+            normalized = f"+{digits}"
+            logger.debug("Normalized phone number %s -> %s", value, normalized)
+            return normalized
+        return None
 
-    # Default: prepend +
-    normalized = f"+{digits}"
-    logger.debug("Normalized phone number %s -> %s", value, normalized)
-    return normalized
+    # Reject unsupported lengths to avoid invalid Square requests
+    return None
 
 
 def phone_digit_variants(value: Optional[str]) -> Set[str]:

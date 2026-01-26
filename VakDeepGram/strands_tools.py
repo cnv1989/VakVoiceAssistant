@@ -5,28 +5,27 @@ These tools can be used with Strands agents in the /chat endpoint.
 Tools receive business context via tool_context parameter which is passed
 deterministically from the agent invocation.
 """
-import inspect
+from datetime import datetime, timedelta, timezone
 import logging
 import uuid
-from typing import Optional
+from typing import Any, Dict, Optional
+from zoneinfo import ZoneInfo
 from strands import tool
 from strands.types.tools import ToolContext
 import config
-from business_logic import (
-    get_customer as _get_customer,
-    get_customer_appointments as _get_customer_appointments,
-    get_customer_orders as _get_customer_orders,
-    create_customer as _create_customer,
-    schedule_appointment_with_contact as _schedule_appointment_with_contact,
-    update_appointment as _update_appointment,
-    get_available_appointment_slots as _get_available_appointment_slots,
-)
-from connection_store import set_connection_context, clear_connection_context
+from square import AsyncSquare
+from utils import booking_helpers
 from store_tools import (
     get_store_hours_from_context as _get_store_hours,
     get_store_location_from_context as _get_store_location,
     get_services_from_context as _get_services,
     get_staff_from_context as _get_staff,
+)
+from utils.phone import normalize_phone_number, phone_digit_variants
+from utils.square_helpers import (
+    get_square_environment,
+    parse_square_response,
+    extract_square_cursor,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,19 +40,6 @@ def _get_business_context_from_tool(tool_context: Optional[ToolContext]) -> dict
     return tool_context.agent.state.get("business_context")
 
 
-async def _call_with_connection_context(business_context: dict, func, **kwargs) -> dict:
-    """Invoke business logic with a temporary connection context for chat tools."""
-    connection_id = f"chat-{uuid.uuid4().hex}"
-    set_connection_context(connection_id, business_context)
-    try:
-        params = dict(kwargs)
-        if "connection_id" in inspect.signature(func).parameters:
-            params["connection_id"] = connection_id
-        return await func(**params)
-    finally:
-        clear_connection_context(connection_id)
-
-
 def _update_business_context(tool_context: ToolContext, updates: dict) -> dict:
     """Persist chat selections in the agent state."""
     if not tool_context or not getattr(tool_context, "agent", None):
@@ -66,27 +52,216 @@ def _update_business_context(tool_context: ToolContext, updates: dict) -> dict:
     return business_context
 
 
+def _get_access_context(business_context: dict, require_location: bool = True) -> dict:
+    access_token = business_context.get("accessToken") or business_context.get("access_token")
+    location_id = business_context.get("locationId") or business_context.get("location_id")
+    if not access_token:
+        return {"success": False, "error": "Missing Square access token."}
+    if require_location and not location_id:
+        return {"success": False, "error": "Missing Square location ID."}
+    return {"success": True, "access_token": access_token, "location_id": location_id}
+
+
+def _get_square_client(access_token: str) -> AsyncSquare:
+    return AsyncSquare(token=access_token, environment=get_square_environment())
+
+
+def _as_dict(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if hasattr(value, "dict"):
+        return value.dict()
+    return value
+
+
+async def _collect_async_pager(pager) -> list[dict]:
+    items: list[dict] = []
+    async for item in pager:
+        items.append(_as_dict(item))
+    return items
+
+
+async def _find_customer_by_phone(client: AsyncSquare, phone: str) -> Optional[dict]:
+    response = await client.customers.list(limit=100)
+    parsed = parse_square_response(response)
+    if not parsed.get("success"):
+        return None
+    if parsed.get("payload", {}).get("iterable"):
+        customers = await _collect_async_pager(response)
+    else:
+        customers = parsed.get("payload", {}).get("customers") or []
+    target_digits = phone_digit_variants(phone)
+    if not target_digits:
+        return None
+    for customer in customers:
+        customer_dict = _as_dict(customer)
+        customer_phone = customer_dict.get("phone_number") or customer_dict.get("phoneNumber")
+        if not customer_phone:
+            continue
+        customer_digits = phone_digit_variants(customer_phone)
+        if customer_digits and target_digits.intersection(customer_digits):
+            return customer_dict
+    return None
+
+
+def _select_service_variation_id(context: Dict[str, Any]) -> Optional[str]:
+    return booking_helpers.select_service_variation_id(context)
+
+
+def _match_service_variation(
+    context: Dict[str, Any],
+    service_name: Optional[str],
+) -> tuple[Optional[str], Optional[int], Optional[int]]:
+    return booking_helpers.match_service_variation(context, service_name)
+
+
+def _normalize_iso(value: str) -> str:
+    return booking_helpers.normalize_iso(value)
+
+
+def _parse_datetime(value: str) -> datetime:
+    return booking_helpers.parse_datetime(value)
+
+
+def _isoformat_utc(value: datetime) -> str:
+    return booking_helpers.isoformat_utc(value)
+
+
+def _start_of_day(dt_value: datetime) -> datetime:
+    return booking_helpers.start_of_day(dt_value)
+
+
+def _end_of_day(dt_value: datetime) -> datetime:
+    return booking_helpers.end_of_day(dt_value)
+
+
+def _ensure_minimum_range(start_at: datetime, end_at: datetime) -> tuple[datetime, datetime]:
+    return booking_helpers.ensure_minimum_range(start_at, end_at)
+
+
+def _resolve_location_timezone(context: Dict[str, Any]) -> Optional[str]:
+    return booking_helpers.resolve_location_timezone(context)
+
+
+def _availability_start_at(availability: Any) -> Optional[str]:
+    return booking_helpers.availability_start_at(availability)
+
+
+def _availability_duration_minutes(availability: Any) -> Optional[int]:
+    return booking_helpers.availability_duration_minutes(availability)
+
+
+def _availability_team_member_ids(availability: Any) -> list[str]:
+    return booking_helpers.availability_team_member_ids(availability)
+
+
+def _availability_start_dt(availability: Any, tzinfo) -> Optional[datetime]:
+    return booking_helpers.availability_start_dt(availability, tzinfo)
+
+
+def _availability_supports_start(
+    availability: Any,
+    start_dt: datetime,
+    duration_minutes: Optional[int],
+    tzinfo,
+    tolerance_minutes: int,
+) -> bool:
+    return booking_helpers.availability_supports_start(
+        availability,
+        start_dt,
+        duration_minutes,
+        tzinfo,
+        tolerance_minutes,
+    )
+
+
+def _resolve_available_staff(context: Dict[str, Any], availabilities: list[Any]) -> list[Dict[str, Any]]:
+    return booking_helpers.resolve_available_staff(context, availabilities)
+
+
+def _resolve_staff_ids(context: Dict[str, Any], requested: list[Any]) -> tuple[list[str], list[str]]:
+    return booking_helpers.resolve_staff_ids(context, requested)
+
+
+def _staff_display_name(context: Dict[str, Any], staff_id: Optional[str]) -> Optional[str]:
+    return booking_helpers.staff_display_name(context, staff_id)
+
+
+def _availability_window_minutes(service: Optional[str], duration_minutes: Optional[int]) -> int:
+    return booking_helpers.availability_window_minutes(service, duration_minutes)
+
+
+def _format_availability_response(availabilities: list[Any], tzinfo) -> Dict[str, Any]:
+    return booking_helpers.format_availability_response(availabilities, tzinfo)
+
+
+def _booking_segments(booking: Any) -> list[Dict[str, Any]]:
+    return booking_helpers.booking_segments(booking)
+
+
+def _booking_version(booking: Any) -> Optional[int]:
+    return booking_helpers.booking_version(booking)
+
+
+def _extract_booking_segment_details(booking: Any) -> Dict[str, Any]:
+    return booking_helpers.extract_booking_segment_details(booking)
+
+
+def _relative_range(name: str, now: datetime) -> tuple[datetime, datetime]:
+    return booking_helpers.relative_range(name, now)
+
+
+def _resolve_weekday_range(value: str, now: datetime) -> Optional[tuple[datetime, datetime]]:
+    return booking_helpers.resolve_weekday_range(value, now)
+
+
+def _resolve_date_range(
+    start_value: str,
+    end_value: Optional[str],
+    tzinfo,
+) -> tuple[datetime, datetime]:
+    return booking_helpers.resolve_date_range(start_value, end_value, tzinfo)
+
+
 @tool(context=True)
 async def find_customer(
     tool_context: ToolContext,
-    customer_id: Optional[str] = None,
     phone: Optional[str] = None,
-    email: Optional[str] = None,
+    caller_number: Optional[str] = None,
 ) -> dict:
-    """Look up a customer's account information by phone, email, or ID.
+    """Look up a customer's account information by phone number.
 
     Use this before appointments or order lookups when you need a customer ID.
-    Customer ID formats: Numbers only (e.g., '169', '42') -> Format as 'CUST0169', 'CUST0042'
-    Phone number: Format as +1XXXXXXXXXX (add +1 if not provided, remove spaces/dashes)
-    Email: Standard format (e.g., 'john.smith@example.com')
+    Phone number: Format as +1XXXXXXXXXX (add +1 if not provided, remove spaces/dashes).
     """
     business_context = _get_business_context_from_tool(tool_context)
-    params = {
-        "customer_id": customer_id,
-        "phone": phone,
-        "email": email,
-    }
-    return await _call_with_connection_context(business_context, _get_customer, **params)
+    prefetched = business_context.get("prefetchedCustomer") or {}
+    if not any([phone, caller_number]):
+        prefetched_customer = prefetched.get("customer") if isinstance(prefetched, dict) else None
+        if prefetched_customer:
+            return {"success": True, "customer": _as_dict(prefetched_customer), "new_customer": False}
+        if isinstance(prefetched, dict) and (
+            prefetched.get("newCustomer") or prefetched.get("new_customer")
+        ):
+            return {"success": False, "error": "Customer not found.", "new_customer": True}
+        phone = business_context.get("caller")
+    phone = phone or caller_number
+    if not phone:
+        return {"error": "phone is required"}
+
+    context_info = _get_access_context(business_context, require_location=False)
+    if not context_info.get("success"):
+        return context_info
+    client = _get_square_client(context_info["access_token"])
+
+    if phone:
+        normalized = normalize_phone_number(phone) or phone
+        customer = await _find_customer_by_phone(client, normalized)
+        if customer:
+            return {"success": True, "customer": customer, "new_customer": False}
+        return {"success": False, "error": "Customer not found.", "new_customer": True}
+
+    return {"success": False, "error": "Customer not found.", "new_customer": True}
 
 
 @tool(context=True)
@@ -100,11 +275,67 @@ async def get_appointments(
     Always verify you have the customer's account first using find_customer before checking appointments.
     """
     business_context = _get_business_context_from_tool(tool_context)
-    return await _call_with_connection_context(
-        business_context,
-        _get_customer_appointments,
-        customer_id=customer_id,
-    )
+    if not customer_id:
+        return {"success": False, "error": "customer_id is required"}
+    context_info = _get_access_context(business_context, require_location=False)
+    if not context_info.get("success"):
+        return context_info
+
+    client = _get_square_client(context_info["access_token"])
+    timezone_name = _resolve_location_timezone(business_context)
+    tzinfo = ZoneInfo(timezone_name) if timezone_name else None
+    now = datetime.now(tzinfo) if tzinfo else datetime.now()
+    start_at_min = _isoformat_utc(now - timedelta(days=1))
+    end_at_max = _isoformat_utc(now + timedelta(days=90))
+
+    appointments: list[Dict[str, Any]] = []
+    cursor = None
+    while True:
+        response = await client.bookings.list(
+            customer_id=customer_id,
+            start_at_min=start_at_min,
+            start_at_max=end_at_max,
+            cursor=cursor,
+            limit=200,
+        )
+        parsed = parse_square_response(response)
+        if not parsed.get("success"):
+            return {"success": False, "error": parsed.get("error")}
+        if parsed.get("payload", {}).get("iterable"):
+            page_items = await _collect_async_pager(response)
+            appointments.extend(page_items)
+            cursor = extract_square_cursor(response)
+        else:
+            payload = parsed.get("payload", {})
+            appointments.extend(payload.get("bookings") or [])
+            cursor = payload.get("cursor")
+        if not cursor:
+            break
+
+    formatted: list[Dict[str, Any]] = []
+    for booking in appointments:
+        booking = _as_dict(booking)
+        start_at = booking.get("start_at") or booking.get("startAt")
+        start_local = None
+        if start_at and tzinfo:
+            try:
+                start_local = datetime.fromisoformat(_normalize_iso(start_at)).astimezone(tzinfo)
+            except ValueError:
+                start_local = None
+        segment_details = _extract_booking_segment_details(booking)
+        formatted.append(
+            {
+                "appointment_id": booking.get("id"),
+                "status": booking.get("status"),
+                "start_at": start_at,
+                "start_at_local": start_local.isoformat(timespec="seconds") if start_local else None,
+                "service_variation_id": segment_details.get("service_variation_id"),
+                "staff_id": segment_details.get("team_member_id"),
+                "location_id": booking.get("location_id") or booking.get("locationId"),
+            }
+        )
+
+    return {"success": True, "appointments": formatted}
 
 
 @tool(context=True)
@@ -118,8 +349,20 @@ async def get_orders(
     or asks questions like 'Where is my order?' or 'What did I order?'
     Always verify you have the customer's account first using find_customer before checking orders.
     """
-    business_context = _get_business_context_from_tool(tool_context)
-    return await _get_customer_orders(customer_id)
+    _ = tool_context
+    _ = customer_id
+    now = datetime.now()
+    return {
+        "success": True,
+        "orders": [
+            {
+                "order_id": "ORD0089",
+                "date": (now - timedelta(days=4)).isoformat(timespec="seconds"),
+                "status": "shipped",
+                "amount": 129.99,
+            }
+        ],
+    }
 
 
 @tool(context=True)
@@ -128,6 +371,7 @@ async def create_customer(
     first_name: str,
     last_name: str,
     phone_number: Optional[str] = None,
+    caller_number: Optional[str] = None,
 ) -> dict:
     """Create a new customer in Square.
 
@@ -136,16 +380,42 @@ async def create_customer(
     You have confirmed first and last name, and optionally phone number.
     """
     business_context = _get_business_context_from_tool(tool_context)
-    # Use caller's phone if not provided
+    if not first_name or not last_name:
+        return {"success": False, "error": "first_name and last_name are required"}
     if not phone_number:
-        phone_number = business_context.get("caller")
-    return await _call_with_connection_context(
-        business_context,
-        _create_customer,
-        first_name=first_name,
-        last_name=last_name,
-        phone_number=phone_number,
-    )
+        phone_number = caller_number or business_context.get("caller")
+    if not phone_number:
+        return {"success": False, "error": "phone_number is required for customer creation."}
+
+    context_info = _get_access_context(business_context, require_location=False)
+    if not context_info.get("success"):
+        return context_info
+    client = _get_square_client(context_info["access_token"])
+
+    normalized_phone = normalize_phone_number(phone_number) or phone_number
+    existing = await _find_customer_by_phone(client, normalized_phone)
+    if existing:
+        return {
+            "success": True,
+            "customer": existing,
+            "duplicate": True,
+            "message": "Customer already exists. Confirm before using existing record.",
+        }
+
+    try:
+        response = await client.customers.create(
+            idempotency_key=str(uuid.uuid4()),
+            given_name=first_name,
+            family_name=last_name,
+            phone_number=normalized_phone,
+        )
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+    parsed = parse_square_response(response)
+    if not parsed.get("success"):
+        return {"success": False, "error": parsed.get("error")}
+    customer = parsed.get("payload", {}).get("customer")
+    return {"success": True, "customer": _as_dict(customer)}
 
 
 @tool(context=True)
@@ -154,10 +424,11 @@ async def create_appointment(
     first_name: str,
     last_name: str,
     customer_id: str,
-    staff_id: str,
     date: str,
     service: str,
+    staff_id: Optional[str] = None,
     phone_number: Optional[str] = None,
+    caller_number: Optional[str] = None,
 ) -> dict:
     """Schedule a new appointment for a customer.
 
@@ -168,23 +439,158 @@ async def create_appointment(
     3. Confirm date/time and service type with the customer (must be an available slot)
     4. Collect first and last name and confirm spelling before booking
     5. If the customer exists, pass their customer_id; if not, create the customer first.
+    If staff_id is omitted, the system picks an available staff member.
     Date should be in ISO format (YYYY-MM-DDTHH:MM:SS).
     """
     business_context = _get_business_context_from_tool(tool_context)
-    # Use caller's phone if not provided
+    if not all([first_name, last_name, date, service]):
+        return {"success": False, "error": "first_name, last_name, date, and service are required"}
+
     if not phone_number:
-        phone_number = business_context.get("caller")
-    return await _call_with_connection_context(
+        phone_number = caller_number or business_context.get("caller")
+
+    context_info = _get_access_context(business_context)
+    if not context_info.get("success"):
+        return context_info
+    client = _get_square_client(context_info["access_token"])
+    location_id = context_info["location_id"]
+
+    resolved_customer_id = customer_id
+    if not resolved_customer_id and phone_number:
+        normalized_phone = normalize_phone_number(phone_number) or phone_number
+        existing = await _find_customer_by_phone(client, normalized_phone)
+        if existing:
+            resolved_customer_id = existing.get("id")
+        else:
+            try:
+                created = await client.customers.create(
+                    idempotency_key=str(uuid.uuid4()),
+                    given_name=first_name,
+                    family_name=last_name,
+                    phone_number=normalized_phone,
+                )
+            except Exception as exc:
+                return {"success": False, "error": str(exc)}
+            parsed = parse_square_response(created)
+            if not parsed.get("success"):
+                return {"success": False, "error": parsed.get("error")}
+            resolved_customer_id = (parsed.get("payload", {}).get("customer") or {}).get("id")
+
+    if not resolved_customer_id:
+        return {"success": False, "error": "Customer not found and could not be created."}
+
+    service_variation_id, duration_minutes, service_version = _match_service_variation(
         business_context,
-        _schedule_appointment_with_contact,
-        first_name=first_name,
-        last_name=last_name,
-        customer_id=customer_id,
-        staff_id=staff_id,
-        date=date,
-        service=service,
-        phone_number=phone_number,
+        service,
     )
+    if not service_variation_id:
+        suggestions = booking_helpers.suggest_services(business_context, service)
+        response = {"success": False, "error": "Service not available for booking."}
+        if suggestions:
+            response["suggested_services"] = suggestions
+        return response
+
+    timezone_name = _resolve_location_timezone(business_context)
+    tzinfo = ZoneInfo(timezone_name) if timezone_name else None
+    start_dt = _parse_datetime(date)
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.replace(tzinfo=tzinfo or timezone.utc)
+    elif tzinfo:
+        start_dt = start_dt.astimezone(tzinfo)
+    effective_tzinfo = tzinfo or start_dt.tzinfo
+    start_at = _isoformat_utc(start_dt)
+
+    tolerance_minutes = _availability_window_minutes(service, duration_minutes)
+    availability_start = start_dt - timedelta(minutes=tolerance_minutes)
+    availability_end = start_dt + timedelta(minutes=tolerance_minutes + (duration_minutes or 0))
+    availability_filter = {
+        "start_at_range": {
+            "start_at": _isoformat_utc(availability_start),
+            "end_at": _isoformat_utc(availability_end),
+        },
+        "location_id": location_id,
+        "segment_filters": [{"service_variation_id": service_variation_id}],
+    }
+    availability_response = await client.bookings.search_availability(query={"filter": availability_filter})
+    availability_parsed = parse_square_response(availability_response)
+    if not availability_parsed.get("success"):
+        return {"success": False, "error": availability_parsed.get("error")}
+
+    availabilities = availability_parsed.get("payload", {}).get("availabilities") or []
+    matching_availabilities = [
+        availability
+        for availability in availabilities
+        if _availability_supports_start(
+            availability,
+            start_dt,
+            duration_minutes,
+            effective_tzinfo,
+            tolerance_minutes,
+        )
+    ]
+    available_staff_ids: list[str] = []
+    for availability in matching_availabilities:
+        available_staff_ids.extend(_availability_team_member_ids(availability))
+    available_staff_id_set = {member_id for member_id in available_staff_ids if member_id}
+
+    if staff_id:
+        if staff_id not in available_staff_id_set:
+            return {
+                "success": False,
+                "error": "Selected staff is not available around the requested time.",
+            }
+    else:
+        for member in business_context.get("staff") or []:
+            member_id = member.get("id")
+            if member_id in available_staff_id_set and member.get("status") == "ACTIVE":
+                staff_id = member_id
+                break
+        if not staff_id and available_staff_id_set:
+            staff_id = sorted(available_staff_id_set)[0]
+        if not staff_id:
+            return {"success": False, "error": "No staff availability around the requested time."}
+
+    staff_name = _staff_display_name(business_context, staff_id)
+    appointment_segment = {
+        "service_variation_id": service_variation_id,
+        "team_member_id": staff_id,
+    }
+    if service_version:
+        appointment_segment["service_variation_version"] = service_version
+    if duration_minutes:
+        appointment_segment["duration_minutes"] = duration_minutes
+
+    booking_payload = {
+        "start_at": start_at,
+        "location_id": location_id,
+        "customer_id": resolved_customer_id,
+        "appointment_segments": [appointment_segment],
+    }
+    created_booking = await client.bookings.create(
+        booking=booking_payload,
+        idempotency_key=str(uuid.uuid4()),
+    )
+    created_parsed = parse_square_response(created_booking)
+    if not created_parsed.get("success"):
+        return {"success": False, "error": created_parsed.get("error")}
+    booking = created_parsed.get("payload", {}).get("booking") or {}
+    booking = _as_dict(booking)
+
+    return {
+        "success": True,
+        "appointment": {
+            "appointment_id": booking.get("id"),
+            "first_name": first_name,
+            "last_name": last_name,
+            "phone_number": phone_number,
+            "customer_id": resolved_customer_id,
+            "date": booking.get("start_at") or start_at,
+            "service": service,
+            "staff_id": staff_id,
+            "staff_name": staff_name,
+            "status": booking.get("status") or "confirmed",
+        },
+    }
 
 
 @tool(context=True)
@@ -207,15 +613,144 @@ async def update_appointment(
     Date should be in ISO format (YYYY-MM-DDTHH:MM:SS).
     """
     business_context = _get_business_context_from_tool(tool_context)
-    return await _call_with_connection_context(
-        business_context,
-        _update_appointment,
+    if not booking_id or not date:
+        return {"success": False, "error": "booking_id and date are required"}
+
+    context_info = _get_access_context(business_context)
+    if not context_info.get("success"):
+        return context_info
+    client = _get_square_client(context_info["access_token"])
+    location_id = context_info["location_id"]
+
+    booking_response = await client.bookings.retrieve(booking_id=booking_id)
+    booking_parsed = parse_square_response(booking_response)
+    if not booking_parsed.get("success"):
+        return {"success": False, "error": booking_parsed.get("error")}
+    booking = booking_parsed.get("payload", {}).get("booking") or {}
+    booking = _as_dict(booking)
+    version = _booking_version(booking)
+    if version is None:
+        return {"success": False, "error": "Booking version not available."}
+
+    segment_details = _extract_booking_segment_details(booking)
+    if staff_name and not staff_id:
+        resolved_staff_ids, unmatched_staff = _resolve_staff_ids(business_context, [staff_name])
+        if unmatched_staff or not resolved_staff_ids:
+            return {
+                "success": False,
+                "error": "Requested staff not found. Please confirm the staff member name.",
+                "unmatched_staff": unmatched_staff,
+            }
+        staff_id = resolved_staff_ids[0]
+    if not staff_id:
+        staff_id = segment_details.get("team_member_id")
+    if not staff_id:
+        return {"success": False, "error": "staff_id is required for booking update."}
+
+    if service:
+        service_variation_id, duration_minutes, service_version = _match_service_variation(
+            business_context,
+            service,
+        )
+    else:
+        service_variation_id = segment_details.get("service_variation_id")
+        duration_minutes = segment_details.get("duration_minutes")
+        service_version = segment_details.get("service_variation_version")
+    if not service_variation_id:
+        suggestions = booking_helpers.suggest_services(business_context, service)
+        response = {"success": False, "error": "Service not available for booking."}
+        if suggestions:
+            response["suggested_services"] = suggestions
+        return response
+
+    timezone_name = _resolve_location_timezone(business_context)
+    tzinfo = ZoneInfo(timezone_name) if timezone_name else None
+    start_dt = _parse_datetime(date)
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.replace(tzinfo=tzinfo or timezone.utc)
+    elif tzinfo:
+        start_dt = start_dt.astimezone(tzinfo)
+    effective_tzinfo = tzinfo or start_dt.tzinfo
+    start_at = _isoformat_utc(start_dt)
+
+    tolerance_minutes = _availability_window_minutes(service, duration_minutes)
+    availability_start = start_dt - timedelta(minutes=tolerance_minutes)
+    availability_end = start_dt + timedelta(minutes=tolerance_minutes + (duration_minutes or 0))
+    availability_filter = {
+        "start_at_range": {
+            "start_at": _isoformat_utc(availability_start),
+            "end_at": _isoformat_utc(availability_end),
+        },
+        "location_id": location_id,
+        "segment_filters": [{"service_variation_id": service_variation_id}],
+    }
+    availability_filter["segment_filters"][0]["team_member_id_filter"] = {"any": [staff_id]}
+    availability_response = await client.bookings.search_availability(query={"filter": availability_filter})
+    availability_parsed = parse_square_response(availability_response)
+    if not availability_parsed.get("success"):
+        return {"success": False, "error": availability_parsed.get("error")}
+
+    availabilities = availability_parsed.get("payload", {}).get("availabilities") or []
+    matching_availabilities = [
+        availability
+        for availability in availabilities
+        if _availability_supports_start(
+            availability,
+            start_dt,
+            duration_minutes,
+            effective_tzinfo,
+            tolerance_minutes,
+        )
+    ]
+    available_staff_ids: list[str] = []
+    for availability in matching_availabilities:
+        available_staff_ids.extend(_availability_team_member_ids(availability))
+    available_staff_id_set = {member_id for member_id in available_staff_ids if member_id}
+    if staff_id not in available_staff_id_set:
+        return {"success": False, "error": "Selected staff is not available around the requested time."}
+
+    appointment_segment = {
+        "service_variation_id": service_variation_id,
+        "team_member_id": staff_id,
+    }
+    if service_version:
+        appointment_segment["service_variation_version"] = service_version
+    if duration_minutes:
+        appointment_segment["duration_minutes"] = duration_minutes
+
+    update_payload = {
+        "id": booking_id,
+        "version": version,
+        "start_at": start_at,
+        "location_id": location_id,
+        "appointment_segments": [appointment_segment],
+    }
+    customer_id = booking.get("customer_id") or booking.get("customerId")
+    if customer_id:
+        update_payload["customer_id"] = customer_id
+
+    update_response = await client.bookings.update(
         booking_id=booking_id,
-        date=date,
-        service=service,
-        staff_id=staff_id,
-        staff_name=staff_name,
+        booking=update_payload,
     )
+    update_parsed = parse_square_response(update_response)
+    if not update_parsed.get("success"):
+        return {"success": False, "error": update_parsed.get("error")}
+    updated_booking = update_parsed.get("payload", {}).get("booking") or {}
+    updated_booking = _as_dict(updated_booking)
+
+    staff_name_resolved = _staff_display_name(business_context, staff_id)
+    return {
+        "success": True,
+        "appointment": {
+            "appointment_id": updated_booking.get("id") or booking_id,
+            "date": updated_booking.get("start_at") or start_at,
+            "service": service,
+            "staff_id": staff_id,
+            "staff_name": staff_name_resolved,
+            "status": updated_booking.get("status") or booking.get("status"),
+        },
+    }
 
 
 @tool(context=True)
@@ -236,14 +771,66 @@ async def check_availability(
     Start_date can be in ISO format (YYYY-MM-DDTHH:MM:SS.sssZ), a relative date enum like TODAY or NEXT_WEEK, or a weekday name.
     """
     business_context = _get_business_context_from_tool(tool_context)
-    return await _call_with_connection_context(
-        business_context,
-        _get_available_appointment_slots,
-        start_date=start_date,
-        end_date=end_date,
-        service=service,
-        staff_ids=staff_ids,
-    )
+    if not start_date:
+        return {"success": False, "error": "start_date is required"}
+    if not service:
+        return {"success": False, "error": "service is required"}
+
+    context_info = _get_access_context(business_context)
+    if not context_info.get("success"):
+        return context_info
+    client = _get_square_client(context_info["access_token"])
+    location_id = context_info["location_id"]
+
+    timezone_name = _resolve_location_timezone(business_context)
+    tzinfo = ZoneInfo(timezone_name) if timezone_name else None
+    start_at_local, end_at_local = _resolve_date_range(start_date, end_date, tzinfo)
+    start_at_local, end_at_local = _ensure_minimum_range(start_at_local, end_at_local)
+    start_at = _isoformat_utc(start_at_local)
+    end_at = _isoformat_utc(end_at_local)
+
+    resolved_staff_ids, unmatched_staff = _resolve_staff_ids(business_context, staff_ids or [])
+    if staff_ids and (not resolved_staff_ids or unmatched_staff):
+        return {
+            "success": False,
+            "error": "Requested staff not found. Please confirm the staff member name.",
+            "unmatched_staff": unmatched_staff,
+        }
+
+    service_variation_id, _, _ = _match_service_variation(business_context, service)
+    if not service_variation_id:
+        suggestions = booking_helpers.suggest_services(business_context, service)
+        response = {"success": False, "error": "Service not available for booking."}
+        if suggestions:
+            response["suggested_services"] = suggestions
+        return response
+
+    filter_payload = {
+        "start_at_range": {"start_at": start_at, "end_at": end_at},
+        "location_id": location_id,
+        "segment_filters": [{"service_variation_id": service_variation_id}],
+    }
+    if resolved_staff_ids:
+        filter_payload["segment_filters"][0]["team_member_id_filter"] = {"any": resolved_staff_ids}
+
+    response = await client.bookings.search_availability(query={"filter": filter_payload})
+    parsed = parse_square_response(response)
+    if not parsed.get("success"):
+        return {"success": False, "error": parsed.get("error")}
+
+    availabilities = parsed.get("payload", {}).get("availabilities") or []
+    availability = _format_availability_response(availabilities, tzinfo)
+    available_staff = _resolve_available_staff(business_context, availabilities)
+    if resolved_staff_ids:
+        staff_id_set = set(resolved_staff_ids)
+        available_staff = [member for member in available_staff if member.get("id") in staff_id_set]
+    return {
+        "success": True,
+        "availability_mode": availability.get("mode"),
+        "slots": availability.get("slots"),
+        "ranges": availability.get("ranges"),
+        "available_staff": available_staff,
+    }
 
 
 @tool(context=True)

@@ -2,6 +2,7 @@
 Helpers for resolving business context from DynamoDB for Square integrations.
 """
 import asyncio
+import copy
 import logging
 import time
 from datetime import datetime, timezone, timedelta
@@ -9,6 +10,7 @@ from typing import Any, Dict, Optional
 
 import aioboto3
 from square import AsyncSquare
+from square.core.api_error import ApiError as SquareApiError
 
 try:
     from zoneinfo import ZoneInfo
@@ -26,14 +28,47 @@ from utils.phone import (
     phone_digit_variants as _phone_digit_variants,
     candidate_numbers as _candidate_numbers,
 )
+from utils.context_optimizer import (
+    optimize_location,
+    optimize_services,
+    optimize_staff,
+    optimize_customer,
+)
 
 logger = logging.getLogger(__name__)
 
 # Connection context storage with timestamps for TTL
 _connection_contexts: Dict[str, Dict[str, Any]] = {}
 _connection_timestamps: Dict[str, float] = {}
+_business_context_cache: Dict[tuple, Dict[str, Any]] = {}
+_business_context_timestamps: Dict[tuple, float] = {}
 _SERVICE_PRODUCT_TYPES = ["APPOINTMENTS_SERVICE", "LEGACY_SQUARE_ONLINE_SERVICE"]
 _cleanup_task_started = False
+
+
+def _as_dict(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if hasattr(value, "dict"):
+        return value.dict()
+    return value
+
+
+def _get_cached_business_context(cache_keys: list[tuple]) -> Optional[Dict[str, Any]]:
+    ttl = config.settings.business_context_ttl_seconds
+    now = time.time()
+    for key in cache_keys:
+        timestamp = _business_context_timestamps.get(key)
+        if not timestamp:
+            continue
+        if now - timestamp > ttl:
+            _business_context_cache.pop(key, None)
+            _business_context_timestamps.pop(key, None)
+            continue
+        cached = _business_context_cache.get(key)
+        if cached:
+            return copy.deepcopy(cached)
+    return None
 
 
 async def _cleanup_expired_connections() -> None:
@@ -191,6 +226,199 @@ async def _fetch_square_bookings_for_month(
     }
 
 
+async def _prefetch_availability_for_services(
+    access_token: str,
+    location_id: str,
+    services: list,
+    timezone_name: Optional[str],
+    days: int = 30,
+) -> Dict[str, Any]:
+    """
+    Prefetch availability for all services for the next N days.
+
+    Returns availability indexed by service_variation_id and date for efficient lookup.
+    This allows answering availability queries without making on-demand API calls.
+    """
+    logger.info(
+        "Prefetching availability for %d days (location=%s services=%d)",
+        days,
+        location_id,
+        len(services or []),
+    )
+
+    # Calculate date range
+    tzinfo = ZoneInfo(timezone_name) if timezone_name and ZoneInfo else None
+    now = datetime.now(tzinfo) if tzinfo else datetime.now(timezone.utc)
+    start_at = _isoformat_utc(now)
+    end_at = _isoformat_utc(now + timedelta(days=days))
+
+    # Collect all service variation IDs with their duration (None if missing/invalid)
+    # Format: list of (var_id, duration_minutes or None)
+    DEFAULT_DURATION_MINUTES = 30
+    service_variations = []
+    missing_duration_count = 0
+    for item in services or []:
+        # Handle both full Square format and optimized format
+        if "item_data" in item:
+            # Full Square format - duration is in milliseconds
+            item_data = item.get("item_data") or {}
+            for variation in item_data.get("variations") or []:
+                var_id = variation.get("id")
+                if not var_id:
+                    continue
+                var_data = variation.get("item_variation_data") or {}
+                duration_ms = var_data.get("service_duration")
+                # Convert to minutes, use None if missing/invalid (< 1 minute)
+                if duration_ms and duration_ms >= 60000:
+                    duration_minutes = int(duration_ms / 60000)
+                else:
+                    duration_minutes = None
+                    missing_duration_count += 1
+                service_variations.append((var_id, duration_minutes))
+        elif "variations" in item:
+            # Optimized format - duration is in minutes
+            for variation in item.get("variations") or []:
+                var_id = variation.get("id")
+                if not var_id:
+                    continue
+                duration_minutes = variation.get("duration_minutes")
+                # Use None if missing/invalid (< 1 minute)
+                if not duration_minutes or duration_minutes < 1:
+                    duration_minutes = None
+                    missing_duration_count += 1
+                service_variations.append((var_id, duration_minutes))
+
+    if missing_duration_count > 0:
+        logger.info(
+            "Using default %d min duration for %d service variations without valid duration",
+            DEFAULT_DURATION_MINUTES,
+            missing_duration_count,
+        )
+
+    if not service_variations:
+        logger.warning("No service variations found for availability prefetch")
+        return {"success": False, "error": "No service variations found."}
+
+    client = AsyncSquare(token=access_token, environment=_square_environment())
+
+    # Fetch availability for each service variation
+    by_service: Dict[str, Dict[str, list]] = {}
+
+    for service_variation_id, duration_minutes in service_variations:
+        try:
+            # Build segment filter - include explicit duration if service doesn't have one
+            segment_filter = {"service_variation_id": service_variation_id}
+            if duration_minutes is None:
+                segment_filter["duration_minutes"] = DEFAULT_DURATION_MINUTES
+
+            filter_payload = {
+                "start_at_range": {"start_at": start_at, "end_at": end_at},
+                "location_id": location_id,
+                "segment_filters": [segment_filter],
+            }
+
+            response = await client.bookings.search_availability(
+                query={"filter": filter_payload}
+            )
+            parsed = _parse_square_response(response)
+
+            if not parsed.get("success"):
+                logger.warning(
+                    "Availability prefetch failed for service %s: %s",
+                    service_variation_id,
+                    parsed.get("error"),
+                )
+                continue
+
+            availabilities = parsed.get("payload", {}).get("availabilities") or []
+
+            # Process and index availability by date
+            service_slots: Dict[str, list] = {}
+            for avail in availabilities:
+                # Handle both dict and object formats
+                if hasattr(avail, "model_dump"):
+                    avail = avail.model_dump()
+
+                start_at_str = avail.get("start_at") or avail.get("startAt")
+                if not start_at_str:
+                    continue
+
+                # Parse start time
+                normalized = start_at_str.replace("Z", "+00:00")
+                try:
+                    start_dt = datetime.fromisoformat(normalized)
+                    if tzinfo:
+                        start_dt = start_dt.astimezone(tzinfo)
+                except ValueError:
+                    continue
+
+                date_key = start_dt.date().isoformat()
+                time_str = start_dt.strftime("%H:%M")
+
+                # Extract segments
+                segments = avail.get("appointment_segments") or avail.get("appointmentSegments") or []
+                duration_minutes = None
+                team_member_ids = []
+                for seg in segments:
+                    if hasattr(seg, "model_dump"):
+                        seg = seg.model_dump()
+                    if isinstance(seg, dict):
+                        dm = seg.get("duration_minutes") or seg.get("durationMinutes")
+                        tm_id = seg.get("team_member_id") or seg.get("teamMemberId")
+                    else:
+                        dm = getattr(seg, "duration_minutes", None) or getattr(seg, "durationMinutes", None)
+                        tm_id = getattr(seg, "team_member_id", None) or getattr(seg, "teamMemberId", None)
+                    if dm and duration_minutes is None:
+                        duration_minutes = dm
+                    if tm_id:
+                        team_member_ids.append(tm_id)
+
+                slot = {
+                    "start_at": start_at_str,
+                    "time": time_str,
+                    "duration_minutes": duration_minutes,
+                    "team_member_ids": team_member_ids,
+                }
+
+                # Index by date
+                if date_key not in service_slots:
+                    service_slots[date_key] = []
+                service_slots[date_key].append(slot)
+
+            by_service[service_variation_id] = service_slots
+
+        except SquareApiError as exc:
+            # Square API errors (e.g., invalid duration) - log as warning and skip
+            logger.warning(
+                "Square API error prefetching availability for service %s: %s",
+                service_variation_id,
+                exc,
+            )
+        except Exception as exc:
+            logger.error(
+                "Error prefetching availability for service %s: %s",
+                service_variation_id,
+                exc,
+                exc_info=True,
+            )
+
+    # Count total dates with availability
+    all_dates = set()
+    for service_data in by_service.values():
+        all_dates.update(service_data.keys())
+
+    logger.info(
+        "Prefetched availability: %d services, %d dates",
+        len(by_service),
+        len(all_dates),
+    )
+
+    return {
+        "success": True,
+        "start_date": now.date().isoformat(),
+        "end_date": (now + timedelta(days=days)).date().isoformat(),
+        "by_service": by_service,
+    }
 
 
 async def _fetch_business_number_record(phone_number: str) -> Optional[Dict[str, Any]]:
@@ -328,6 +556,13 @@ async def _fetch_square_customers(access_token: str) -> Dict[str, Any]:
     cursor = None
     while True:
         response = await client.customers.list(cursor=cursor, limit=100)
+        if hasattr(response, "__aiter__"):
+            async for customer in response:
+                customers.append(_as_dict(customer))
+            cursor = _extract_square_cursor(response)
+            if not cursor:
+                break
+            continue
         if hasattr(response, "is_error"):
             if response.is_error():
                 return {"success": False, "error": response.errors}
@@ -362,10 +597,11 @@ async def fetch_square_customer_by_phone(access_token: str, phone_number: str) -
         return result
 
     for customer in result.get("customers") or []:
-        customer_phone = customer.get("phone_number") or customer.get("phoneNumber")
+        customer_dict = _as_dict(customer)
+        customer_phone = customer_dict.get("phone_number") or customer_dict.get("phoneNumber")
         customer_digits = _phone_digit_variants(customer_phone)
         if customer_digits and candidate_digits.intersection(customer_digits):
-            return {"success": True, "customer": customer, "new_customer": False}
+            return {"success": True, "customer": customer_dict, "new_customer": False}
 
     return {"success": False, "error": "Customer not found.", "new_customer": True}
 
@@ -373,16 +609,32 @@ async def fetch_square_customer_by_phone(access_token: str, phone_number: str) -
 async def resolve_business_context(
     business_number: str,
     caller_number: Optional[str] = None,
+    optimize: Optional[bool] = None,
+    prefetch_availability_days: Optional[int] = None,
 ) -> Dict[str, Any]:
+    # Use config defaults if not specified
+    if optimize is None:
+        optimize = config.settings.optimize_business_context
+    if prefetch_availability_days is None:
+        prefetch_availability_days = config.settings.prefetch_availability_days
+
     logger.info(
-        "connection_store.resolve_business_context called (business_number=%s caller_number=%s)",
+        "connection_store.resolve_business_context called (business_number=%s caller_number=%s optimize=%s prefetch_days=%d)",
         business_number,
         caller_number,
+        optimize,
+        prefetch_availability_days,
     )
     candidates = _candidate_numbers(business_number)
     if not candidates:
         logger.warning("Business number normalization failed: %s", business_number)
         return {"success": False, "error": "Invalid business number."}
+
+    cache_keys = [(candidate, bool(optimize), int(prefetch_availability_days)) for candidate in candidates]
+    cached = _get_cached_business_context(cache_keys)
+    if cached:
+        logger.info("Returning cached business context for %s", business_number)
+        return cached
 
     logger.info("Resolving business context for %s (candidates=%s)", business_number, candidates)
     record = None
@@ -464,43 +716,38 @@ async def resolve_business_context(
             staff_result.get("error"),
         )
 
-    bookings_result = await _fetch_square_bookings_for_month(
-        access_token,
-        location_id,
-        timezone_name,
-    )
-    if not bookings_result.get("success"):
-        logger.warning(
-            "Square bookings lookup failed for locationId=%s: %s",
-            location_id,
-            bookings_result.get("error"),
-        )
 
-    prefetched_customer = None
+
+    customer = None
     if caller_number:
-        customer_result = await fetch_square_customer_by_phone(access_token, caller_number)
-        prefetched_customer = {
-            "success": customer_result.get("success", False),
-            "customer": customer_result.get("customer"),
-            "newCustomer": customer_result.get("new_customer", False),
-            "error": customer_result.get("error"),
-        }
+        normalized_caller = normalize_phone_number(caller_number) or caller_number
+        customer_result = await fetch_square_customer_by_phone(access_token, normalized_caller)
+        customer = customer_result.get("customer") if customer_result.get("success") else None
         if not customer_result.get("success"):
             logger.info(
-                "No Square customer found for caller %s (new=%s)",
-                caller_number,
+                "No Square customer found for caller %s (new=%s error=%s)",
+                normalized_caller,
                 customer_result.get("new_customer"),
+                customer_result.get("error"),
             )
 
+    # Apply optimizations if enabled
+    if optimize:
+        location = optimize_location(location)
+        services = optimize_services(services)
+        staff = optimize_staff(staff)
+        customer = optimize_customer(customer)
+
     logger.info(
-        "Resolved business context for %s (locationId=%s, merchantId=%s, userId=%s)",
+        "Resolved business context for %s (locationId=%s, merchantId=%s, userId=%s, optimized=%s)",
         matched_number,
         location_id,
         merchant_id,
         user_id,
+        optimize,
     )
 
-    return {
+    result = {
         "success": True,
         "businessNumber": matched_number,
         "locationId": location_id,
@@ -510,6 +757,6 @@ async def resolve_business_context(
         "location": location,
         "services": services,
         "staff": staff,
-        "prefetchedAppointments": bookings_result,
-        "prefetchedCustomer": prefetched_customer,
+        "customer": customer,
     }
+    return result

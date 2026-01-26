@@ -17,7 +17,7 @@ from store_tools import (
     get_store_hours_from_context,
     get_store_location_from_context,
 )
-from connection_store import update_connection_context
+from connection_store import get_connection_context, update_connection_context
 
 logger = logging.getLogger(__name__)
 
@@ -133,18 +133,23 @@ async def check_availability(params):
     start_date = params.get("start_date")
     if not start_date:
         return {"error": "start_date is required"}
+    connection_id = params.get("connection_id")
+    if not connection_id:
+        return {"error": "connection_id is required"}
     service = params.get("service")
     if not service:
+        context = get_connection_context(connection_id)
+        service = context.get("selected_service")
+    if not service:
         return {"error": "service is required"}
-    connection_id = params.get("connection_id")
     end_date = params.get("end_date")
     staff_ids = params.get("staff_ids")
-    if not end_date:
-        normalized_start = start_date.replace("Z", "+00:00")
-        try:
-            end_date = (datetime.fromisoformat(normalized_start) + timedelta(days=7)).isoformat()
-        except ValueError:
-            end_date = None
+    if not staff_ids:
+        context = get_connection_context(connection_id)
+        selected_staff = context.get("selected_staff")
+        selected_staff_id = context.get("selected_staff_id")
+        selected_staff_name = context.get("selected_staff_name")
+        staff_ids = [value for value in (selected_staff_id, selected_staff_name, selected_staff) if value]
     result = await get_available_appointment_slots(
         start_date,
         end_date,

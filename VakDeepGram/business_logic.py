@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 import uuid
 
 from square import AsyncSquare
+from square.core.api_error import ApiError as SquareApiError
 
 import config
 from connection_store import (
@@ -14,6 +15,7 @@ from connection_store import (
     get_connection_context,
 )
 from utils.phone import normalize_phone_number
+from utils import booking_helpers
 from utils.square_helpers import (
     get_square_environment as _square_environment,
     parse_square_response as _parse_square_response,
@@ -29,18 +31,6 @@ except ImportError:  # pragma: no cover - py<3.9 fallback
 logger = logging.getLogger(__name__)
 
 
-def _select_service_variation_id(context: Dict[str, Any]) -> Optional[str]:
-    logger.info("business_logic._select_service_variation_id called")
-    services = context.get("services") or []
-    for item in services:
-        item_data = item.get("item_data") or {}
-        for variation in item_data.get("variations") or []:
-            variation_id = variation.get("id")
-            if variation_id:
-                return variation_id
-    return None
-
-
 def _select_team_member_id(context: Dict[str, Any]) -> Optional[str]:
     logger.info("business_logic._select_team_member_id called")
     staff = context.get("staff") or []
@@ -51,38 +41,6 @@ def _select_team_member_id(context: Dict[str, Any]) -> Optional[str]:
         if member.get("id"):
             return member.get("id")
     return None
-
-
-def _match_service_variation(
-    context: Dict[str, Any],
-    service_name: Optional[str],
-) -> tuple[Optional[str], Optional[int], Optional[int]]:
-    logger.info("business_logic._match_service_variation called (service=%s)", service_name)
-    if not service_name:
-        return _select_service_variation_id(context), None, None
-    target = service_name.strip().lower()
-    services = context.get("services") or []
-    for item in services:
-        item_data = item.get("item_data") or {}
-        item_name = (item_data.get("name") or item.get("name") or "").strip().lower()
-        for variation in item_data.get("variations") or []:
-            variation_data = variation.get("item_variation_data") or {}
-            variation_name = (variation_data.get("name") or "").strip().lower()
-            if target in item_name or target in variation_name:
-                duration_ms = variation_data.get("service_duration")
-                duration_minutes = int(duration_ms / 60000) if duration_ms else None
-                version = variation.get("version")
-                return variation.get("id"), duration_minutes, version
-    fallback_id = _select_service_variation_id(context)
-    fallback_version = None
-    services = context.get("services") or []
-    for item in services:
-        item_data = item.get("item_data") or {}
-        for variation in item_data.get("variations") or []:
-            if variation.get("id") == fallback_id:
-                fallback_version = variation.get("version")
-                break
-    return fallback_id, None, fallback_version
 
 
 def _normalize_iso(value: str) -> str:
@@ -135,14 +93,19 @@ async def create_square_customer(
     normalized_phone = normalize_phone_number(phone_number) if phone_number else None
     logger.info("business_logic.create_square_customer called (phone=%s)", normalized_phone)
     if not normalized_phone:
-        return {"success": False, "error": "phone_number is required for customer creation."}
+        return {"success": False, "error": "phone_number must be a valid E.164 number."}
     kwargs = {
         "idempotency_key": str(uuid.uuid4()),
         "given_name": first_name,
         "family_name": last_name,
     }
     kwargs["phone_number"] = normalized_phone
-    response = await client.customers.create(**kwargs)
+    try:
+        response = await client.customers.create(**kwargs)
+    except SquareApiError as exc:
+        return {"success": False, "error": exc.body or str(exc)}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
     parsed = _parse_square_response(response)
     if not parsed.get("success"):
         return {"success": False, "error": parsed.get("error")}
@@ -913,9 +876,16 @@ async def schedule_appointment_with_contact(
     if not resolved_customer_id:
         return {"success": False, "error": "Customer not found and could not be created."}
 
-    service_variation_id, duration_minutes, service_version = _match_service_variation(context, service)
+    service_variation_id, duration_minutes, service_version = booking_helpers.match_service_variation(
+        context,
+        service,
+    )
     if not service_variation_id:
-        return {"success": False, "error": "Service not available for booking."}
+        suggestions = booking_helpers.suggest_services(context, service)
+        response = {"success": False, "error": "Service not available for booking."}
+        if suggestions:
+            response["suggested_services"] = suggestions
+        return response
 
     tolerance_minutes = _availability_window_minutes(service, duration_minutes)
     availability_start = start_dt - timedelta(minutes=tolerance_minutes)
@@ -1063,13 +1033,20 @@ async def update_appointment(
         return {"success": False, "error": "staff_id is required for booking update."}
 
     if service:
-        service_variation_id, duration_minutes, service_version = _match_service_variation(context, service)
+        service_variation_id, duration_minutes, service_version = booking_helpers.match_service_variation(
+            context,
+            service,
+        )
     else:
         service_variation_id = segment_details.get("service_variation_id")
         duration_minutes = segment_details.get("duration_minutes")
         service_version = segment_details.get("service_variation_version")
     if not service_variation_id:
-        return {"success": False, "error": "Service not available for booking."}
+        suggestions = booking_helpers.suggest_services(context, service)
+        response = {"success": False, "error": "Service not available for booking."}
+        if suggestions:
+            response["suggested_services"] = suggestions
+        return response
 
     timezone_name = _resolve_location_timezone(context)
     tzinfo = ZoneInfo(timezone_name) if timezone_name and ZoneInfo else None
@@ -1268,9 +1245,13 @@ async def get_available_appointment_slots(
             "unmatched_staff": unmatched_staff,
         }
 
-    service_variation_id, _, _ = _match_service_variation(context, service)
+    service_variation_id, _, _ = booking_helpers.match_service_variation(context, service)
     if not service_variation_id:
-        return {"success": False, "error": "Service not available for booking."}
+        suggestions = booking_helpers.suggest_services(context, service)
+        response = {"success": False, "error": "Service not available for booking."}
+        if suggestions:
+            response["suggested_services"] = suggestions
+        return response
 
     filter_payload = {
         "start_at_range": {"start_at": start_at, "end_at": end_at},

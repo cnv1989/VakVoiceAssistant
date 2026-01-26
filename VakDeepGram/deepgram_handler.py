@@ -129,7 +129,7 @@ class DeepgramManager:
             "speak": {"provider": speak_provider},
         }
 
-        # Build greeting with business name if available
+        # Build greeting with business name and caller name if available
         greeting = config.settings.deepgram_agent_greeting or ""
         if connection_id:
             context = get_connection_context(connection_id)
@@ -137,8 +137,18 @@ class DeepgramManager:
             if context:
                 location = context.get("location") or {}
                 business_name = location.get("business_name") or location.get("name") or context.get("business_name")
-            if business_name:
-                greeting = f"Hi, welcome to {business_name}. How can I help you today?"
+                customer = context.get("customer")
+                if customer and hasattr(customer, "model_dump"):
+                    customer = customer.model_dump()
+                first_name = None
+                if isinstance(customer, dict):
+                    first_name = customer.get("given_name") or customer.get("givenName")
+                if first_name and business_name:
+                    greeting = f"Hi {first_name}, welcome to {business_name}. How can I help you today?"
+                elif first_name:
+                    greeting = f"Hi {first_name}, how can I help you today?"
+                elif business_name:
+                    greeting = f"Hi, welcome to {business_name}. How can I help you today?"
         if greeting:
             agent_config["greeting"] = greeting
         

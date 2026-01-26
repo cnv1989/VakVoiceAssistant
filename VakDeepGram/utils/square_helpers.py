@@ -33,6 +33,8 @@ def parse_square_response(response: Any) -> Dict[str, Any]:
     Returns:
         Dict with 'success' bool, and either 'payload' or 'error'
     """
+    if hasattr(response, "__aiter__"):
+        return {"success": True, "payload": {"iterable": True}}
     if hasattr(response, "is_error"):
         if response.is_error():
             return {"success": False, "error": response.errors}

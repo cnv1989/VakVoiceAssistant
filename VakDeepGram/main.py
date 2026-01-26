@@ -163,7 +163,7 @@ async def _prefetch_and_set_customer(connection_id: str, caller_number: Optional
     if not caller_number:
         return
     existing_context = get_connection_context(connection_id)
-    if existing_context.get("prefetchedCustomer"):
+    if existing_context.get("customer"):
         return
     normalized = normalize_phone_number(caller_number)
     try:
@@ -181,7 +181,7 @@ async def _prefetch_and_set_customer(connection_id: str, caller_number: Optional
         return
     if not result.get("success") and not result.get("newCustomer"):
         return
-    existing_context["prefetchedCustomer"] = result
+    existing_context["customer"] = result.get("customer")
     set_connection_context(connection_id, existing_context)
 
 
@@ -690,12 +690,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 "caller": customer_phone,
             },
         )
-        asyncio.create_task(
-            _resolve_and_set_context(
-                connection_id,
-                business_number,
-                extra_context={"caller": customer_phone} if customer_phone else None,
-            )
+        await _resolve_and_set_context(
+            connection_id,
+            business_number,
+            extra_context={"caller": customer_phone} if customer_phone else None,
         )
     else:
         logger.info("No businessNumber provided for %s", connection_id)
@@ -1054,15 +1052,10 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                                 **extra_context,
                             },
                         )
-                        asyncio.create_task(
-                            _resolve_and_set_context(
-                                connection_id,
-                                normalized_number,
-                                extra_context=extra_context,
-                            )
-                        )
-                        asyncio.create_task(
-                            _prefetch_and_set_customer(connection_id, from_number)
+                        await _resolve_and_set_context(
+                            connection_id,
+                            normalized_number,
+                            extra_context=extra_context,
                         )
                     else:
                         logger.info("No Twilio business number available for %s", connection_id)

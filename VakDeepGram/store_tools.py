@@ -55,6 +55,7 @@ def get_store_hours_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def get_services_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Get services from context - handles both full Square format and optimized format."""
     logger.debug("store_tools.get_services_from_context called")
     context_result = _get_context(params)
     if not context_result.get("success"):
@@ -62,20 +63,37 @@ def get_services_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
     services = context_result["context"].get("services") or []
     formatted = []
     for item in services:
-        item_data = item.get("item_data") or {}
-        name = item_data.get("name") or item.get("name")
-        description = item_data.get("description")
-        variations = []
-        for variation in item_data.get("variations") or []:
-            variation_data = variation.get("item_variation_data") or {}
-            price_money = variation_data.get("price_money") or {}
-            variations.append(
-                {
-                    "name": variation_data.get("name"),
-                    "price": price_money.get("amount"),
-                    "currency": price_money.get("currency"),
-                }
-            )
+        # Check if this is optimized format (flat variations array) or full Square format
+        if "item_data" in item:
+            # Full Square format - nested structure
+            item_data = item.get("item_data") or {}
+            name = item_data.get("name") or item.get("name")
+            description = item_data.get("description")
+            variations = []
+            for variation in item_data.get("variations") or []:
+                variation_data = variation.get("item_variation_data") or {}
+                price_money = variation_data.get("price_money") or {}
+                variations.append(
+                    {
+                        "name": variation_data.get("name"),
+                        "price": price_money.get("amount"),
+                        "currency": price_money.get("currency"),
+                    }
+                )
+        else:
+            # Optimized format - flat structure with pre-converted fields
+            name = item.get("name")
+            description = item.get("description")
+            variations = []
+            for variation in item.get("variations") or []:
+                price = variation.get("price") or {}
+                variations.append(
+                    {
+                        "name": variation.get("name"),
+                        "price": price.get("amount") if isinstance(price, dict) else None,
+                        "currency": price.get("currency") if isinstance(price, dict) else None,
+                    }
+                )
         formatted.append(
             {
                 "name": name,
@@ -87,6 +105,7 @@ def get_services_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def get_staff_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Get staff from context - handles both full Square format and optimized format."""
     logger.debug("store_tools.get_staff_from_context called")
     context_result = _get_context(params)
     if not context_result.get("success"):
@@ -94,13 +113,15 @@ def get_staff_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
     staff = context_result["context"].get("staff") or []
     formatted = []
     for member in staff:
+        # Get display_name, computing from given_name/family_name if needed
+        display_name = member.get("display_name")
+        if not display_name:
+            parts = [member.get("given_name"), member.get("family_name")]
+            display_name = " ".join(p for p in parts if p).strip() or None
         formatted.append(
             {
                 "id": member.get("id"),
-                "display_name": member.get("display_name"),
-                "given_name": member.get("given_name"),
-                "family_name": member.get("family_name"),
-                "job_title": member.get("job_title"),
+                "display_name": display_name,
                 "status": member.get("status"),
             }
         )

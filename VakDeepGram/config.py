@@ -49,6 +49,9 @@ class Settings(BaseSettings):
 
     # Connection Store
     connection_ttl_seconds: int = 3600  # 1 hour TTL for connection contexts
+    business_context_ttl_seconds: int = 300  # Cache TTL for business context lookups
+    optimize_business_context: bool = True  # Reduce payload size for agents
+    prefetch_availability_days: int = 14  # Days of availability to prefetch
 
     # Square Configuration
     square_environment: SquareEnv = SquareEnv.PRODUCTION
