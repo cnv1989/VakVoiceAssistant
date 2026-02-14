@@ -1,5 +1,5 @@
 """
-Helpers for resolving business context from DynamoDB for Square integrations.
+Helpers for resolving business context from DynamoDB for Square/Setmore integrations.
 """
 import asyncio
 import copy
@@ -18,6 +18,7 @@ except ImportError:  # pragma: no cover - py<3.9 fallback
     ZoneInfo = None
 
 import config
+from utils import setmore_api
 from utils.square_helpers import (
     get_square_environment as _square_environment,
     parse_square_response as _parse_square_response,
@@ -449,6 +450,89 @@ async def _fetch_square_account_record(user_id: str, merchant_id: str) -> Option
         return response.get("Item")
 
 
+async def _fetch_setmore_account_record(
+    account_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    logger.debug(
+        "connection_store._fetch_setmore_account_record called (account_id=%s user_id=%s)",
+        account_id,
+        user_id,
+    )
+    if not account_id and not user_id:
+        return None
+    session = aioboto3.Session()
+    async with session.resource("dynamodb", region_name=config.settings.aws_region) as dynamodb:
+        table = dynamodb.Table(config.settings.setmore_account_table)
+        if asyncio.iscoroutine(table):
+            table = await table
+        key_candidates = []
+        if account_id and user_id:
+            key_candidates.append({"accountId": account_id, "userId": user_id})
+            key_candidates.append({"setmoreAccountId": account_id, "setmoreUserId": user_id})
+        if account_id:
+            key_candidates.append({"accountId": account_id})
+            key_candidates.append({"setmoreAccountId": account_id})
+        if user_id:
+            key_candidates.append({"userId": user_id})
+            key_candidates.append({"setmoreUserId": user_id})
+        for key in key_candidates:
+            response = await table.get_item(Key=key)
+            item = response.get("Item")
+            if item:
+                return item
+        return None
+
+
+def _normalize_setmore_services(services: Optional[list[Dict[str, Any]]]) -> list[Dict[str, Any]]:
+    if not services:
+        return []
+    normalized = []
+    for service in services:
+        name = service.get("service_name") or service.get("name")
+        duration = service.get("duration")
+        price = service.get("cost")
+        currency = service.get("currency")
+        normalized.append(
+            {
+                "id": service.get("key"),
+                "name": name,
+                "description": service.get("description"),
+                "duration_minutes": duration,
+                "staff_keys": service.get("staff_keys") or [],
+                "variations": [
+                    {
+                        "id": service.get("key"),
+                        "name": name,
+                        "duration_minutes": duration,
+                        "price": {"amount": price, "currency": currency} if price is not None else None,
+                    }
+                ],
+                "raw": service,
+            }
+        )
+    return normalized
+
+
+def _normalize_setmore_staff(staffs: Optional[list[Dict[str, Any]]]) -> list[Dict[str, Any]]:
+    if not staffs:
+        return []
+    normalized = []
+    for staff in staffs:
+        first = staff.get("first_name") or ""
+        last = staff.get("last_name") or ""
+        display_name = " ".join(part for part in [first, last] if part).strip() or None
+        normalized.append(
+            {
+                "id": staff.get("key"),
+                "display_name": display_name,
+                "status": "ACTIVE",
+                "raw": staff,
+            }
+        )
+    return normalized
+
+
 async def _fetch_square_location(access_token: str, location_id: str) -> Dict[str, Any]:
     logger.info("connection_store._fetch_square_location called (location_id=%s)", location_id)
     logger.info("Fetching Square location %s", location_id)
@@ -650,6 +734,80 @@ async def resolve_business_context(
         logger.warning("No BusinessNumber record found for %s", candidates)
         return {"success": False, "error": "Business number not found."}
 
+    provider = (record.get("provider") or record.get("bookingProvider") or "square").lower()
+
+    if provider == "setmore":
+        account_id = (
+            record.get("setmoreAccountId")
+            or record.get("setmore_account_id")
+            or record.get("accountId")
+        )
+        account_user_id = (
+            record.get("setmoreUserId")
+            or record.get("setmore_user_id")
+            or record.get("userId")
+            or record.get("ownerId")
+        )
+        refresh_token = (
+            record.get("setmoreRefreshToken")
+            or record.get("setmore_refresh_token")
+            or record.get("refreshToken")
+        )
+
+        account = None
+        if not refresh_token:
+            account = await _fetch_setmore_account_record(account_id, account_user_id)
+            refresh_token = (account or {}).get("refreshToken") or (account or {}).get("refresh_token")
+        if not refresh_token:
+            logger.warning("Setmore account missing refresh token (account_id=%s user_id=%s)", account_id, account_user_id)
+            return {"success": False, "error": "Setmore refresh token not found."}
+
+        token_result = await setmore_api.get_access_token(refresh_token)
+        if not token_result.get("success"):
+            return {"success": False, "error": token_result.get("error")}
+        access_token = token_result.get("access_token")
+
+        services_result = await setmore_api.fetch_services(access_token)
+        services_raw = services_result.get("services") if services_result.get("success") else []
+        if not services_result.get("success"):
+            logger.warning("Setmore services lookup failed: %s", services_result.get("error"))
+        services = _normalize_setmore_services(services_raw)
+
+        staff_result = await setmore_api.fetch_staff(access_token)
+        staff_raw = staff_result.get("staffs") if staff_result.get("success") else []
+        if not staff_result.get("success"):
+            logger.warning("Setmore staff lookup failed: %s", staff_result.get("error"))
+        staff = _normalize_setmore_staff(staff_raw)
+
+        timezone_name = (
+            record.get("timezone")
+            or record.get("timeZone")
+            or (account or {}).get("timezone")
+        )
+        location = {
+            "timezone": timezone_name,
+            "business_name": record.get("businessName") or record.get("business_name"),
+            "phone_number": record.get("phoneNumber") or record.get("phone_number"),
+        }
+
+        result = {
+            "success": True,
+            "provider": "setmore",
+            "businessNumber": matched_number,
+            "accessToken": access_token,
+            "refreshToken": refresh_token,
+            "accountId": account_id or (account or {}).get("accountId"),
+            "userId": account_user_id or (account or {}).get("userId"),
+            "location": location,
+            "timezone": timezone_name,
+            "services": services,
+            "staff": staff,
+            "customer": None,
+            "setmore_services": services_raw,
+            "setmore_staff": staff_raw,
+        }
+        return result
+
     location_id = record.get("locationId") or record.get("location_id")
     merchant_id = record.get("merchantId") or record.get("squareMerchantId")
     user_id = record.get("userId") or record.get("ownerId")
@@ -716,8 +874,6 @@ async def resolve_business_context(
             staff_result.get("error"),
         )
 
-
-
     customer = None
     if caller_number:
         normalized_caller = normalize_phone_number(caller_number) or caller_number
@@ -749,6 +905,7 @@ async def resolve_business_context(
 
     result = {
         "success": True,
+        "provider": "square",
         "businessNumber": matched_number,
         "locationId": location_id,
         "merchantId": merchant_id,

@@ -14,6 +14,7 @@ from strands import tool
 from strands.types.tools import ToolContext
 import config
 from square import AsyncSquare
+from utils import setmore_api
 from utils import booking_helpers
 from store_tools import (
     get_store_hours_from_context as _get_store_hours,
@@ -29,6 +30,59 @@ from utils.square_helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _provider_from_context(context: Dict[str, Any]) -> str:
+    return (context.get("provider") or "square").lower()
+
+
+def _setmore_match_service(context: Dict[str, Any], service_name: str) -> Optional[Dict[str, Any]]:
+    if not service_name:
+        return None
+    target = service_name.strip().lower()
+    for service in context.get("services") or []:
+        name = (service.get("name") or "").strip().lower()
+        if name == target:
+            return service
+    for service in context.get("services") or []:
+        name = (service.get("name") or "").strip().lower()
+        if target in name:
+            return service
+    return None
+
+
+def _setmore_resolve_staff_key(context: Dict[str, Any], staff_ids: Optional[list[str]]) -> Optional[str]:
+    staff_list = context.get("staff") or []
+    if staff_ids:
+        requested = [value.lower() for value in staff_ids if isinstance(value, str)]
+        for staff in staff_list:
+            staff_id = (staff.get("id") or "").lower()
+            display_name = (staff.get("display_name") or "").lower()
+            if staff_id in requested or display_name in requested:
+                return staff.get("id")
+    if staff_list:
+        return staff_list[0].get("id")
+    return None
+
+
+def _setmore_format_date(dt_value: datetime) -> str:
+    return dt_value.strftime("%d/%m/%Y")
+
+
+def _setmore_slot_to_iso(date_value: datetime, slot: str, tzinfo) -> Optional[str]:
+    try:
+        if isinstance(slot, str):
+            parts = slot.replace(":", ".").split(".")
+            hour = int(parts[0])
+            minute = int(parts[1]) if len(parts) > 1 else 0
+        else:
+            return None
+        start_dt = date_value.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if tzinfo and start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=tzinfo)
+        return start_dt.isoformat(timespec="seconds")
+    except Exception:
+        return None
 
 
 def _get_business_context_from_tool(tool_context: Optional[ToolContext]) -> dict:
@@ -228,6 +282,8 @@ async def find_customer(
     tool_context: ToolContext,
     phone: Optional[str] = None,
     caller_number: Optional[str] = None,
+    first_name: Optional[str] = None,
+    email: Optional[str] = None,
 ) -> dict:
     """Look up a customer's account information by phone number.
 
@@ -235,15 +291,10 @@ async def find_customer(
     Phone number: Format as +1XXXXXXXXXX (add +1 if not provided, remove spaces/dashes).
     """
     business_context = _get_business_context_from_tool(tool_context)
-    prefetched = business_context.get("prefetchedCustomer") or {}
     if not any([phone, caller_number]):
-        prefetched_customer = prefetched.get("customer") if isinstance(prefetched, dict) else None
-        if prefetched_customer:
-            return {"success": True, "customer": _as_dict(prefetched_customer), "new_customer": False}
-        if isinstance(prefetched, dict) and (
-            prefetched.get("newCustomer") or prefetched.get("new_customer")
-        ):
-            return {"success": False, "error": "Customer not found.", "new_customer": True}
+        context_customer = business_context.get("customer")
+        if context_customer:
+            return {"success": True, "customer": _as_dict(context_customer), "new_customer": False}
         phone = business_context.get("caller")
     phone = phone or caller_number
     if not phone:
@@ -252,8 +303,26 @@ async def find_customer(
     context_info = _get_access_context(business_context, require_location=False)
     if not context_info.get("success"):
         return context_info
-    client = _get_square_client(context_info["access_token"])
+    provider = _provider_from_context(business_context)
 
+    if provider == "setmore":
+        if not first_name:
+            return {"success": False, "error": "first_name is required for Setmore customer lookup."}
+        normalized = normalize_phone_number(phone) if phone else None
+        result = await setmore_api.fetch_customer(
+            context_info["access_token"],
+            first_name=first_name,
+            phone=normalized,
+            email=email,
+        )
+        if not result.get("success"):
+            return {"success": False, "error": result.get("error")}
+        customers = result.get("customers") or []
+        if customers:
+            return {"success": True, "customer": customers[0], "new_customer": False}
+        return {"success": False, "error": "Customer not found.", "new_customer": True}
+
+    client = _get_square_client(context_info["access_token"])
     if phone:
         normalized = normalize_phone_number(phone) or phone
         customer = await _find_customer_by_phone(client, normalized)
@@ -280,11 +349,45 @@ async def get_appointments(
     context_info = _get_access_context(business_context, require_location=False)
     if not context_info.get("success"):
         return context_info
-
-    client = _get_square_client(context_info["access_token"])
+    provider = _provider_from_context(business_context)
     timezone_name = _resolve_location_timezone(business_context)
     tzinfo = ZoneInfo(timezone_name) if timezone_name else None
     now = datetime.now(tzinfo) if tzinfo else datetime.now()
+
+    if provider == "setmore":
+        start_date = (now - timedelta(days=1)).strftime("%d-%m-%Y")
+        end_date = (now + timedelta(days=90)).strftime("%d-%m-%Y")
+        result = await setmore_api.fetch_appointments(
+            context_info["access_token"],
+            start_date=start_date,
+            end_date=end_date,
+            customer_details=True,
+        )
+        if not result.get("success"):
+            return {"success": False, "error": result.get("error")}
+        appointments = [appt for appt in (result.get("appointments") or []) if appt.get("customer_key") == customer_id]
+        formatted = []
+        for appt in appointments:
+            start_at = appt.get("start_time")
+            start_local = None
+            if start_at and tzinfo:
+                try:
+                    start_local = datetime.fromisoformat(_normalize_iso(start_at)).astimezone(tzinfo)
+                except ValueError:
+                    start_local = None
+            formatted.append(
+                {
+                    "appointment_id": appt.get("key"),
+                    "status": appt.get("status") or "scheduled",
+                    "start_at": start_at,
+                    "start_at_local": start_local.isoformat(timespec="seconds") if start_local else None,
+                    "service_id": appt.get("service_key"),
+                    "staff_id": appt.get("staff_key"),
+                }
+            )
+        return {"success": True, "appointments": formatted}
+
+    client = _get_square_client(context_info["access_token"])
     start_at_min = _isoformat_utc(now - timedelta(days=1))
     end_at_max = _isoformat_utc(now + timedelta(days=90))
 
@@ -390,6 +493,18 @@ async def create_customer(
     context_info = _get_access_context(business_context, require_location=False)
     if not context_info.get("success"):
         return context_info
+    provider = _provider_from_context(business_context)
+
+    if provider == "setmore":
+        normalized_phone = normalize_phone_number(phone_number) or phone_number
+        payload = {"first_name": first_name, "last_name": last_name}
+        if normalized_phone:
+            payload["cell_phone"] = normalized_phone
+        created = await setmore_api.create_customer(context_info["access_token"], payload)
+        if not created.get("success"):
+            return {"success": False, "error": created.get("error")}
+        return {"success": True, "customer": created.get("customer")}
+
     client = _get_square_client(context_info["access_token"])
 
     normalized_phone = normalize_phone_number(phone_number) or phone_number
@@ -452,6 +567,73 @@ async def create_appointment(
     context_info = _get_access_context(business_context)
     if not context_info.get("success"):
         return context_info
+    provider = _provider_from_context(business_context)
+    if provider == "setmore":
+        timezone_name = _resolve_location_timezone(business_context)
+        tzinfo = ZoneInfo(timezone_name) if timezone_name else None
+        start_dt = _parse_datetime(date)
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=tzinfo or timezone.utc)
+        elif tzinfo:
+            start_dt = start_dt.astimezone(tzinfo)
+
+        service_item = _setmore_match_service(business_context, service)
+        if not service_item:
+            suggestions = booking_helpers.suggest_services(business_context, service)
+            response = {"success": False, "error": "Service not available for booking."}
+            if suggestions:
+                response["suggested_services"] = suggestions
+            return response
+
+        service_key = service_item.get("id")
+        duration_minutes = service_item.get("duration_minutes") or 30
+        if not service_key:
+            return {"success": False, "error": "Service key not found."}
+
+        resolved_customer_id = customer_id
+        if not resolved_customer_id and phone_number:
+            payload = {
+                "first_name": first_name,
+                "last_name": last_name,
+                "cell_phone": normalize_phone_number(phone_number) or phone_number,
+            }
+            created = await setmore_api.create_customer(context_info["access_token"], payload)
+            if not created.get("success"):
+                return {"success": False, "error": created.get("error")}
+            resolved_customer_id = (created.get("customer") or {}).get("key")
+
+        if not resolved_customer_id:
+            return {"success": False, "error": "Customer not found and could not be created."}
+
+        resolved_staff_id = staff_id or _setmore_resolve_staff_key(business_context, [staff_id] if staff_id else [])
+        if not resolved_staff_id:
+            return {"success": False, "error": "Staff not available for booking."}
+
+        start_utc = start_dt.astimezone(timezone.utc)
+        end_utc = start_utc + timedelta(minutes=duration_minutes)
+        payload = {
+            "staff_key": resolved_staff_id,
+            "service_key": service_key,
+            "customer_key": resolved_customer_id,
+            "start_time": start_utc.strftime("%Y-%m-%dT%H:%MZ"),
+            "end_time": end_utc.strftime("%Y-%m-%dT%H:%MZ"),
+        }
+        created = await setmore_api.create_appointment(context_info["access_token"], payload)
+        if not created.get("success"):
+            return {"success": False, "error": created.get("error")}
+        appointment = created.get("appointment") or {}
+        return {
+            "success": True,
+            "appointment": {
+                "appointment_id": appointment.get("key"),
+                "date": appointment.get("start_time") or payload["start_time"],
+                "service": service_item.get("name"),
+                "staff_id": resolved_staff_id,
+                "customer_id": resolved_customer_id,
+                "status": "confirmed",
+            },
+        }
+
     client = _get_square_client(context_info["access_token"])
     location_id = context_info["location_id"]
 
@@ -619,6 +801,10 @@ async def update_appointment(
     context_info = _get_access_context(business_context)
     if not context_info.get("success"):
         return context_info
+    provider = _provider_from_context(business_context)
+    if provider == "setmore":
+        return {"success": False, "error": "Setmore appointment updates are not supported by the API."}
+
     client = _get_square_client(context_info["access_token"])
     location_id = context_info["location_id"]
 

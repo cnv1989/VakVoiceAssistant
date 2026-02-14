@@ -15,7 +15,7 @@ npm run dev
 3. **Open browser:**
    - The app will open at `http://localhost:3000`
    - WebSocket URL defaults to `ws://localhost:8080/ws`
-   - Make sure VakServer is running on port 8080
+   - Make sure VakDeepGram is running on port 8080
 
 4. **Connect and test:**
    - Click "Connect" button

@@ -29,10 +29,12 @@ async def find_customer(params):
     phone = params.get("phone")
     email = params.get("email")
     customer_id = params.get("customer_id")
+    first_name = params.get("first_name")
     result = await get_customer(
         phone=phone,
         email=email,
         customer_id=customer_id,
+        first_name=first_name,
         connection_id=connection_id,
     )
     return result
@@ -306,6 +308,10 @@ FUNCTION_DEFINITIONS = [
                     - Convert 'at' to '@'
                     - Remove spaces between spelled out letters
                     Example: 'j dot smith at example dot com' -> 'j.smith@example.com'""",
+                },
+                "first_name": {
+                    "type": "string",
+                    "description": "Customer first name (required for Setmore customer lookup).",
                 },
             },
         },

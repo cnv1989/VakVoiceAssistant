@@ -56,7 +56,6 @@ from connection_store import (
     normalize_phone_number,
     get_localized_datetime_from_context,
 )
-from business_logic import prefetch_customer_by_phone
 
 # Configure logging with PII redaction
 from utils.logging import configure_pii_safe_logging
@@ -152,37 +151,6 @@ async def _resolve_and_set_context(
     set_connection_context(connection_id, merged_context)
     if not merged_context.get("success"):
         logger.warning("Failed to resolve business context: %s", merged_context.get("error"))
-
-
-async def _prefetch_and_set_customer(connection_id: str, caller_number: Optional[str]) -> None:
-    logger.debug(
-        "_prefetch_and_set_customer called (connection_id=%s caller_number=%s)",
-        connection_id,
-        caller_number,
-    )
-    if not caller_number:
-        return
-    existing_context = get_connection_context(connection_id)
-    if existing_context.get("customer"):
-        return
-    normalized = normalize_phone_number(caller_number)
-    try:
-        result = await prefetch_customer_by_phone(
-            normalized or caller_number,
-            connection_id=connection_id,
-        )
-    except Exception as exc:
-        logger.error(
-            "Failed to prefetch customer for %s: %s",
-            connection_id,
-            exc,
-            exc_info=True,
-        )
-        return
-    if not result.get("success") and not result.get("newCustomer"):
-        return
-    existing_context["customer"] = result.get("customer")
-    set_connection_context(connection_id, existing_context)
 
 
 async def _end_twilio_call(

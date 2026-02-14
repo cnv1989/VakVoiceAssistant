@@ -189,18 +189,3 @@ def optimize_customer(customer: Optional[Dict[str, Any]]) -> Optional[Dict[str, 
         "phone_number": customer.get("phone_number") or customer.get("phoneNumber"),
     }
 
-
-def optimize_prefetched_customer(prefetched: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Optimize the prefetched customer result structure.
-
-    Applies optimize_customer to the nested customer object.
-    """
-    if not prefetched:
-        return None
-
-    return {
-        "success": prefetched.get("success", False),
-        "customer": optimize_customer(prefetched.get("customer")),
-        "newCustomer": prefetched.get("newCustomer") or prefetched.get("new_customer", False),
-        "error": prefetched.get("error"),
-    }

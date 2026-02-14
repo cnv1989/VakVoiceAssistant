@@ -15,6 +15,7 @@ from connection_store import (
     get_connection_context,
 )
 from utils.phone import normalize_phone_number
+from utils import setmore_api
 from utils import booking_helpers
 from utils.square_helpers import (
     get_square_environment as _square_environment,
@@ -29,6 +30,70 @@ except ImportError:  # pragma: no cover - py<3.9 fallback
     ZoneInfo = None
 
 logger = logging.getLogger(__name__)
+
+
+def _provider_from_context(context: Dict[str, Any]) -> str:
+    return (context.get("provider") or "square").lower()
+
+
+def _setmore_match_service(context: Dict[str, Any], service_name: str) -> Optional[Dict[str, Any]]:
+    if not service_name:
+        return None
+    target = service_name.strip().lower()
+    for service in context.get("services") or []:
+        name = (service.get("name") or "").strip().lower()
+        if name == target:
+            return service
+    for service in context.get("services") or []:
+        name = (service.get("name") or "").strip().lower()
+        if target in name:
+            return service
+    return None
+
+
+def _setmore_resolve_staff_key(context: Dict[str, Any], staff_ids: Optional[list[str]]) -> Optional[str]:
+    staff_list = context.get("staff") or []
+    if staff_ids:
+        requested = [value.lower() for value in staff_ids if isinstance(value, str)]
+        for staff in staff_list:
+            staff_id = (staff.get("id") or "").lower()
+            display_name = (staff.get("display_name") or "").lower()
+            if staff_id in requested or display_name in requested:
+                return staff.get("id")
+    if staff_list:
+        return staff_list[0].get("id")
+    return None
+
+
+def _setmore_format_date(dt_value: datetime) -> str:
+    return dt_value.strftime("%d/%m/%Y")
+
+
+def _setmore_slot_to_iso(date_value: datetime, slot: str, tzinfo) -> Optional[str]:
+    try:
+        if isinstance(slot, str):
+            parts = slot.replace(":", ".").split(".")
+            hour = int(parts[0])
+            minute = int(parts[1]) if len(parts) > 1 else 0
+        else:
+            return None
+        start_dt = date_value.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if tzinfo and start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=tzinfo)
+        return start_dt.isoformat(timespec="seconds")
+    except Exception:
+        return None
+
+
+def _setmore_phone_fields(phone_number: Optional[str]) -> Dict[str, Optional[str]]:
+    if not phone_number:
+        return {"country_code": None, "cell_phone": None}
+    normalized = normalize_phone_number(phone_number) or phone_number
+    if normalized.startswith("+") and len(normalized) > 2:
+        # Best-effort split: country code is first 2-3 chars
+        country_code = normalized[:2] if normalized.startswith("+1") else normalized[:3]
+        return {"country_code": country_code, "cell_phone": normalized}
+    return {"country_code": None, "cell_phone": normalized}
 
 
 def _select_team_member_id(context: Dict[str, Any]) -> Optional[str]:
@@ -128,13 +193,29 @@ async def create_customer(
     if not connection_id:
         return {"success": False, "error": "connection_id is required"}
     context = get_connection_context(connection_id)
+    provider = _provider_from_context(context)
     access_token = context.get("accessToken") or context.get("access_token")
     if not access_token:
-        return {"success": False, "error": "Square access token not available."}
+        return {"success": False, "error": "Access token not available."}
 
     caller_phone = context.get("caller") or phone_number
     if not caller_phone:
         return {"success": False, "error": "phone_number is required for customer creation."}
+
+    if provider == "setmore":
+        phone_fields = _setmore_phone_fields(caller_phone)
+        payload = {
+            "first_name": first_name,
+            "last_name": last_name,
+        }
+        if phone_fields.get("country_code"):
+            payload["country_code"] = phone_fields["country_code"]
+        if phone_fields.get("cell_phone"):
+            payload["cell_phone"] = phone_fields["cell_phone"]
+        created = await setmore_api.create_customer(access_token, payload)
+        if not created.get("success"):
+            return {"success": False, "error": created.get("error")}
+        return {"success": True, "customer": created.get("customer")}
 
     lookup = await fetch_square_customer_by_phone(access_token, caller_phone)
     if lookup.get("success") and lookup.get("customer"):
@@ -658,6 +739,7 @@ async def get_customer(
     phone: Optional[str] = None,
     email: Optional[str] = None,
     customer_id: Optional[str] = None,
+    first_name: Optional[str] = None,
     connection_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Look up a customer."""
@@ -668,23 +750,36 @@ async def get_customer(
         customer_id,
         connection_id,
     )
-    if not any([phone, email, customer_id]) and connection_id:
+    if not any([phone, email, customer_id, first_name]) and connection_id:
         context = get_connection_context(connection_id)
-        prefetched = context.get("prefetchedCustomer") or {}
-        if isinstance(prefetched, dict):
-            prefetched_customer = prefetched.get("customer")
-            if prefetched_customer:
-                return {"success": True, "customer": prefetched_customer, "new_customer": False}
-            if prefetched.get("newCustomer") or prefetched.get("new_customer"):
-                return {"success": False, "error": "Customer not found.", "new_customer": True}
+        context_customer = context.get("customer")
+        if context_customer:
+            return {"success": True, "customer": context_customer, "new_customer": False}
         phone = context.get("caller")
-    if not any([phone, email, customer_id]):
+    if not any([phone, email, customer_id, first_name]):
         return {"error": "phone, email, or customer_id is required"}
 
-    if phone and connection_id:
+    if connection_id:
         context = get_connection_context(connection_id)
+        provider = _provider_from_context(context)
         access_token = context.get("accessToken") or context.get("access_token")
-        if access_token:
+        if provider == "setmore" and access_token:
+            if not first_name:
+                return {"success": False, "error": "first_name is required for Setmore customer lookup."}
+            normalized_phone = normalize_phone_number(phone) if phone else None
+            result = await setmore_api.fetch_customer(
+                access_token,
+                first_name=first_name,
+                phone=normalized_phone,
+                email=email,
+            )
+            if result.get("success"):
+                customers = result.get("customers") or []
+                if customers:
+                    return {"success": True, "customer": customers[0], "new_customer": False}
+                return {"success": False, "error": "Customer not found.", "new_customer": True}
+            return {"success": False, "error": result.get("error")}
+        if phone and access_token:
             normalized = normalize_phone_number(phone) or phone
             result = await fetch_square_customer_by_phone(access_token, normalized)
             if result.get("success"):
@@ -708,15 +803,60 @@ async def get_customer_appointments(
     if not connection_id:
         return {"success": False, "error": "connection_id is required"}
     context = get_connection_context(connection_id)
+    provider = _provider_from_context(context)
     access_token = context.get("accessToken") or context.get("access_token")
-    location_id = context.get("locationId")
-    if not access_token or not location_id:
-        return {"success": False, "error": "Missing Square access token or location ID."}
+    if not access_token:
+        return {"success": False, "error": "Missing access token."}
 
-    client = AsyncSquare(token=access_token, environment=_square_environment())
     timezone_name = _resolve_location_timezone(context)
     tzinfo = ZoneInfo(timezone_name) if timezone_name and ZoneInfo else None
     now = datetime.now(tzinfo) if tzinfo else datetime.now()
+
+    if provider == "setmore":
+        start_local = now - timedelta(days=1)
+        end_local = now + timedelta(days=90)
+        start_date = start_local.strftime("%d-%m-%Y")
+        end_date = end_local.strftime("%d-%m-%Y")
+        result = await setmore_api.fetch_appointments(
+            access_token,
+            start_date=start_date,
+            end_date=end_date,
+            customer_details=True,
+        )
+        if not result.get("success"):
+            return {"success": False, "error": result.get("error")}
+        appointments = result.get("appointments") or []
+        if customer_id:
+            appointments = [
+                appt for appt in appointments if appt.get("customer_key") == customer_id
+            ]
+        formatted = []
+        for appt in appointments:
+            start_at = appt.get("start_time")
+            start_local = None
+            if start_at and tzinfo:
+                try:
+                    start_local = datetime.fromisoformat(_normalize_iso(start_at)).astimezone(tzinfo)
+                except ValueError:
+                    start_local = None
+            formatted.append(
+                {
+                    "appointment_id": appt.get("key"),
+                    "status": appt.get("status") or "scheduled",
+                    "start_at": start_at,
+                    "start_at_local": start_local.isoformat(timespec="seconds") if start_local else None,
+                    "service_id": appt.get("service_key"),
+                    "staff_id": appt.get("staff_key"),
+                    "customer_id": appt.get("customer_key"),
+                }
+            )
+        return {"success": True, "appointments": formatted}
+
+    location_id = context.get("locationId")
+    if not location_id:
+        return {"success": False, "error": "Missing Square location ID."}
+
+    client = AsyncSquare(token=access_token, environment=_square_environment())
     start_at_min = _isoformat_utc(now - timedelta(days=1))
     end_at_max = _isoformat_utc(now + timedelta(days=90))
     appointments: list[Dict[str, Any]] = []
@@ -838,9 +978,83 @@ async def schedule_appointment_with_contact(
         return {"success": False, "error": "connection_id is required"}
 
     context = get_connection_context(connection_id)
+    provider = _provider_from_context(context)
     access_token = context.get("accessToken") or context.get("access_token")
     location_id = context.get("locationId")
-    if not access_token or not location_id:
+    if not access_token:
+        return {"success": False, "error": "Missing access token."}
+
+    if provider == "setmore":
+        timezone_name = _resolve_location_timezone(context)
+        tzinfo = ZoneInfo(timezone_name) if timezone_name and ZoneInfo else None
+        start_dt = _parse_datetime(date)
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=tzinfo or timezone.utc)
+        elif tzinfo:
+            start_dt = start_dt.astimezone(tzinfo)
+
+        service_item = _setmore_match_service(context, service)
+        if not service_item:
+            suggestions = [item.get("name") for item in context.get("services") or [] if item.get("name")]
+            response = {"success": False, "error": "Service not available for booking."}
+            if suggestions:
+                response["suggested_services"] = suggestions[:5]
+            return response
+
+        duration_minutes = service_item.get("duration_minutes") or 30
+        service_key = service_item.get("id")
+        if not service_key:
+            return {"success": False, "error": "Service key not found."}
+
+        resolved_customer_id = customer_id
+        if not resolved_customer_id:
+            phone_fields = _setmore_phone_fields(caller_phone)
+            payload = {
+                "first_name": first_name,
+                "last_name": last_name,
+            }
+            if phone_fields.get("country_code"):
+                payload["country_code"] = phone_fields["country_code"]
+            if phone_fields.get("cell_phone"):
+                payload["cell_phone"] = phone_fields["cell_phone"]
+            created = await setmore_api.create_customer(access_token, payload)
+            if not created.get("success"):
+                return {"success": False, "error": created.get("error")}
+            resolved_customer_id = (created.get("customer") or {}).get("key")
+
+        if not resolved_customer_id:
+            return {"success": False, "error": "Customer not found and could not be created."}
+
+        resolved_staff_id = staff_id or _setmore_resolve_staff_key(context, [staff_id] if staff_id else [])
+        if not resolved_staff_id:
+            return {"success": False, "error": "Staff not available for booking."}
+
+        start_utc = start_dt.astimezone(timezone.utc)
+        end_utc = start_utc + timedelta(minutes=duration_minutes)
+        payload = {
+            "staff_key": resolved_staff_id,
+            "service_key": service_key,
+            "customer_key": resolved_customer_id,
+            "start_time": start_utc.strftime("%Y-%m-%dT%H:%MZ"),
+            "end_time": end_utc.strftime("%Y-%m-%dT%H:%MZ"),
+        }
+        created = await setmore_api.create_appointment(access_token, payload)
+        if not created.get("success"):
+            return {"success": False, "error": created.get("error")}
+        appointment = created.get("appointment") or {}
+        return {
+            "success": True,
+            "appointment": {
+                "appointment_id": appointment.get("key"),
+                "date": appointment.get("start_time") or payload["start_time"],
+                "service": service_item.get("name"),
+                "staff_id": resolved_staff_id,
+                "customer_id": resolved_customer_id,
+                "status": "confirmed",
+            },
+        }
+
+    if not location_id:
         return {"success": False, "error": "Missing Square access token or location ID."}
 
     client = AsyncSquare(token=access_token, environment=_square_environment())
@@ -1000,9 +1214,14 @@ async def update_appointment(
         return {"success": False, "error": "booking_id is required"}
 
     context = get_connection_context(connection_id)
+    provider = _provider_from_context(context)
     access_token = context.get("accessToken") or context.get("access_token")
     location_id = context.get("locationId")
-    if not access_token or not location_id:
+    if not access_token:
+        return {"success": False, "error": "Missing access token."}
+    if provider == "setmore":
+        return {"success": False, "error": "Setmore appointment updates are not supported by the API."}
+    if not location_id:
         return {"success": False, "error": "Missing Square access token or location ID."}
 
     client = AsyncSquare(token=access_token, environment=_square_environment())
@@ -1200,6 +1419,7 @@ async def get_available_appointment_slots(
         return {"success": False, "error": "connection_id is required"}
 
     context = get_connection_context(connection_id)
+    provider = _provider_from_context(context)
     access_token = context.get("accessToken") or context.get("access_token")
     location_id = context.get("locationId")
     logger.debug(
@@ -1207,7 +1427,76 @@ async def get_available_appointment_slots(
         location_id,
         bool(access_token),
     )
-    if not access_token or not location_id:
+    if not access_token:
+        logger.warning(
+            "Missing auth context for %s (locationId=%s, token=%s)",
+            connection_id,
+            location_id,
+            bool(access_token),
+        )
+        return {"success": False, "error": "Missing access token."}
+
+    if provider == "setmore":
+        timezone_name = _resolve_location_timezone(context)
+        tzinfo = ZoneInfo(timezone_name) if timezone_name and ZoneInfo else None
+        start_at_local, _ = _resolve_date_range(start_date, end_date, tzinfo)
+        start_at_local, _ = _ensure_minimum_range(start_at_local, start_at_local + timedelta(days=1))
+        selected_date = _setmore_format_date(start_at_local)
+
+        service_item = _setmore_match_service(context, service)
+        if not service_item:
+            suggestions = [item.get("name") for item in context.get("services") or [] if item.get("name")]
+            response = {"success": False, "error": "Service not available for booking."}
+            if suggestions:
+                response["suggested_services"] = suggestions[:5]
+            return response
+        service_key = service_item.get("id")
+        if not service_key:
+            return {"success": False, "error": "Service key not found."}
+
+        resolved_staff_id = _setmore_resolve_staff_key(context, staff_ids or [])
+        if staff_ids and not resolved_staff_id:
+            return {
+                "success": False,
+                "error": "Requested staff not found. Please confirm the staff member name.",
+            }
+        if not resolved_staff_id:
+            return {"success": False, "error": "No staff available for booking."}
+
+        payload = {
+            "staff_key": resolved_staff_id,
+            "service_key": service_key,
+            "selected_date": selected_date,
+        }
+        if timezone_name:
+            payload["timezone"] = timezone_name
+        slots_result = await setmore_api.fetch_slots(access_token, payload)
+        if not slots_result.get("success"):
+            return {"success": False, "error": slots_result.get("error")}
+        slots = []
+        for slot in slots_result.get("slots") or []:
+            iso_value = _setmore_slot_to_iso(start_at_local, slot, tzinfo)
+            if not iso_value:
+                continue
+            slots.append(
+                {
+                    "start_at": iso_value,
+                    "date": iso_value.split("T")[0],
+                    "time": iso_value.split("T")[-1][:5],
+                }
+            )
+        available_staff = [
+            member for member in context.get("staff") or [] if member.get("id") == resolved_staff_id
+        ]
+        return {
+            "success": True,
+            "availability_mode": "slots",
+            "slots": slots,
+            "ranges": [],
+            "available_staff": available_staff,
+        }
+
+    if not location_id:
         logger.warning(
             "Missing Square auth context for %s (locationId=%s, token=%s)",
             connection_id,
@@ -1215,7 +1504,6 @@ async def get_available_appointment_slots(
             bool(access_token),
         )
         return {"success": False, "error": "Missing Square access token or location ID."}
-
     client = AsyncSquare(token=access_token, environment=_square_environment())
     timezone = _resolve_location_timezone(context)
     tzinfo = ZoneInfo(timezone) if timezone and ZoneInfo else None
@@ -1317,9 +1605,12 @@ async def prefetch_customer_by_phone(
         return {"success": False, "error": "connection_id is required"}
 
     context = get_connection_context(connection_id)
+    provider = _provider_from_context(context)
     access_token = context.get("accessToken") or context.get("access_token")
     if not access_token:
-        return {"success": False, "error": "Square access token not available."}
+        return {"success": False, "error": "Access token not available."}
+    if provider == "setmore":
+        return {"success": False, "error": "Setmore customer prefetch not supported."}
 
     normalized = normalize_phone_number(phone_number) or phone_number
     result = await fetch_square_customer_by_phone(access_token, normalized)

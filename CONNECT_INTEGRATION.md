@@ -81,7 +81,7 @@ For **chat contacts**, you can use Connect's Participant Service WebSocket direc
 #### Step 1: Connect to Participant Service WebSocket
 
 ```typescript
-// VakServer/src/routes/connect-participant.ts
+// Example backend route (legacy VakServer location removed)
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { ConnectClient, StartChatContactCommand } from '@aws-sdk/client-connect';
 import { ConnectParticipantClient, CreateParticipantConnectionCommand, SendMessageCommand } from '@aws-sdk/client-connectparticipant';
@@ -332,7 +332,7 @@ async function callVakService(params: { contactId: string; message: string }) {
 Add a REST API endpoint that Connect Lambda can call:
 
 ```typescript
-// VakServer/src/routes/connect-api.ts
+// Example backend route (legacy VakServer location removed)
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { handleTextMessage } from './message-handlers';
 import { PollyClient, SynthesizeSpeechCommand } from '@aws-sdk/client-polly';
@@ -767,4 +767,3 @@ For **chat contacts**, you CAN use WebSocket directly through Participant Servic
 - [Connect Contact Streaming API](https://docs.aws.amazon.com/connect/latest/adminguide/contact-lens-streaming.html)
 - [Connect Contact Lens](https://docs.aws.amazon.com/connect/latest/adminguide/real-time-contact-lens.html)
 - [Lambda Integration with Connect](https://docs.aws.amazon.com/connect/latest/adminguide/lambda-functions.html)
-

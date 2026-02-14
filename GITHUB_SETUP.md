@@ -5,7 +5,7 @@
 1. Go to https://github.com/new
 2. Sign in with your GitHub account (cnv1989@gmail.com)
 3. Repository name: `vak`
-4. Description: `Voice Assistant Kit - Monorepo with client, server, and infrastructure`
+4. Description: `Voice Assistant Kit - Monorepo with client, Deepgram server, and infrastructure`
 5. Choose Public or Private
 6. **DO NOT** initialize with README, .gitignore, or license (we already have these)
 7. Click "Create repository"
@@ -56,7 +56,7 @@ cd /Users/nag/Projects/vak
 
 After pushing, verify at: https://github.com/YOUR_USERNAME/vak
 
-You should see all three directories:
+You should see the main directories:
 - VakClient/
-- VakServer/
+- VakDeepGram/
 - VakInfra/

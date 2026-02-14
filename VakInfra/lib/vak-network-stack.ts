@@ -7,7 +7,6 @@ export interface VakNetworkStackProps extends cdk.StackProps {}
 
 export class VakNetworkStack extends cdk.Stack {
   public readonly vpc: ec2.Vpc;
-  public readonly ecrRepo: ecr.IRepository;
   public readonly deepgramEcrRepo: ecr.IRepository;
 
   constructor(scope: Construct, id: string, props?: VakNetworkStackProps) {
@@ -30,15 +29,6 @@ export class VakNetworkStack extends cdk.Stack {
         },
       ],
     });
-
-    // ECR repository for VakServer image
-    // Import existing repository (created when we pushed the image manually)
-    // Note: Docker image assets create their own repo, but this is kept for manual image pushes
-    this.ecrRepo = ecr.Repository.fromRepositoryName(
-      this,
-      'VakServerRepo',
-      'vak-server'
-    );
 
     // ECR repository for VakDeepGram image
     // Import existing repository (created when we pushed the image manually)
@@ -65,12 +55,6 @@ export class VakNetworkStack extends cdk.Stack {
       value: cdk.Fn.join(',', this.vpc.publicSubnets.map(s => s.subnetId)),
       description: 'Public Subnet IDs',
       exportName: 'VakPublicSubnetIds',
-    });
-
-    new cdk.CfnOutput(this, 'EcrRepoUri', {
-      value: this.ecrRepo.repositoryUri,
-      description: 'ECR repository URI for VakServer image',
-      exportName: 'VakEcrRepoUri',
     });
 
     new cdk.CfnOutput(this, 'DeepgramEcrRepoUri', {

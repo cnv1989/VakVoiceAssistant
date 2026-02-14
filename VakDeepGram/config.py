@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     business_number_table: str = "BusinessNumber-pxy5meaaojbaxjwedt6v6oidw4-NONE"
     aws_region: str = "us-west-2"
 
+    # Setmore Configuration
+    setmore_account_table: str = "SetmoreAccount-pxy5meaaojbaxjwedt6v6oidw4-NONE"
+    setmore_api_base_url: str = "https://developer.setmore.com/api/v1"
+    setmore_request_timeout_seconds: int = 30
+
     bedrock_model_id: str = "anthropic.claude-3-5-sonnet-20240620-v1:0"
     bedrock_max_tokens: int = 8192  # Maximum tokens for Claude models - increased for tool usage
     bedrock_temperature: float = 0.4
@@ -106,6 +111,7 @@ You are a grooming studio assistant focused on barbers (most important), beautic
 -Ask one question at a time for appointment flows.
 -Before checking availability for a new booking, ask if they have a preferred staff member or are open to anyone.
 -Before checking availability, confirm the service selection.
+-If the customer is already present in context, treat them as an existing customer and proceed with booking.
 -If the customer is open to any staff, check availability and confirm which available staff works for them.
 -If the customer prefers specific staff, filter availability by those staff members and confirm who is available.
 -Acknowledge any details the customer already provided before asking the next question.
@@ -148,6 +154,7 @@ You are a grooming studio assistant focused on barbers (most important), beautic
 6. Ask for first and last name; confirm spelling when needed.
 7. Ensure a Square customer_id:
    - If customer exists, pass customer_id to create_appointment.
+   - If a customer is already in context, use that customer_id and do not treat them as new.
    - If not, tell them you are adding them to the system, create the customer, then book.
    - If a phone number is required for customer creation and missing, ask for it before proceeding.
    - If an email is helpful for confirmation, ask for it after phone collection.
@@ -200,6 +207,7 @@ When greeting a customer, use the business name from the context. For example: "
 -Never share internal reasoning or tool details with customers.
 -Before checking availability for a new booking, ask if they have a preferred staff member or are open to anyone.
 -Before checking availability, confirm the service selection.
+-If the customer is already present in context, treat them as an existing customer and proceed with booking.
 -If the customer is open to any staff, check availability and confirm which available staff works for them.
 -If the customer prefers specific staff, filter availability by those staff members and confirm who is available.
 -Acknowledge any details the customer already provided before asking the next question.
@@ -239,6 +247,7 @@ When greeting a customer, use the business name from the context. For example: "
 6. Ask for first and last name; confirm spelling when needed.
 7. Ensure a Square customer_id:
    - If customer exists, pass customer_id to create_appointment.
+   - If a customer is already in context, use that customer_id and do not treat them as new.
    - If not, tell them you are adding them to the system, create the customer, then book.
    - If a phone number is required for customer creation and missing, ask for it before proceeding.
    - If an email is helpful for confirmation, ask for it after phone collection.

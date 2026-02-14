@@ -1,0 +1,43 @@
+# Vak (Voice Assistant Kit) — Cursor steering
+
+## Monorepo layout
+
+- **VakDeepGram/** — Python FastAPI WebSocket server: Deepgram Voice Agents, Twilio, Square, Setmore. Voice AI logic and telephony.
+- **VakClient/** — React + Vite + TypeScript web client: WebSocket to API Gateway, real-time audio, TTS/STT UI.
+- **VakInfra/** — AWS CDK (TypeScript): VPC, ECS Fargate, ALB, API Gateway WebSocket, DynamoDB, S3, ECR.
+
+## VakDeepGram (Python)
+
+- **Runtime**: Python 3.x, venv in `VakDeepGram/venv`; use `requirements.txt` for deps
+- **Entry**: `main.py` — FastAPI app, `/ws` (WebSocket), `/twilio` (Twilio media), rate limiting, Twilio signature verification
+- **Voice**: `deepgram_handler.py` — Deepgram Voice Agent STS WebSocket; config in `config.py` (env: `DEEPGRAM_*`, ElevenLabs/Deepgram TTS)
+- **Agent/tools**: Strands agent in `strands_tools.py`, `agent_functions.py`; `connection_store.py` for connection/business context; Square/Setmore in `utils/` (e.g. `square_client.py`, `setmore_api.py`)
+- **Config**: `.env` from `.env.example`; `config.py` uses pydantic-settings
+- **Tests**: `tests/` — pytest, conftest; test Square responses, PII redaction, phone normalization, connection store
+- **Conventions**: Async where appropriate; PII-safe logging via `utils/logging.py`; normalize phone numbers via shared helpers; keep Twilio/Deepgram secrets in env or AWS Secrets Manager (see VakInfra docs)
+
+## VakClient (React)
+
+- **Stack**: React 18, Vite 5, TypeScript; WebSocket (`ws`), AWS SigV4 for API Gateway where used
+- **Role**: Connect to VakDeepGram (or API Gateway), send/receive audio, show transcripts and LLM output
+- **Commands**: `npm run dev`, `npm run build`, `npm run preview`
+
+## VakInfra (CDK)
+
+- **Stack**: AWS CDK v2, TypeScript; `cdk.json`, `lib/` for stack definitions
+- **Stacks**: VakNetworkStack (VPC, ECR), VakAppStack (ECS, ALB, DynamoDB, S3, etc.)
+- **Commands**: `npm run build`, `npx cdk deploy <StackName>`, `cdk diff`, `cdk synth`
+- **Deploy flow**: Deploy network → build/push VakDeepGram image to ECR → deploy app stack. See README and `VakInfra/` docs for WAF, certificates, secrets.
+
+## Do
+
+- Run VakDeepGram tests with pytest from `VakDeepGram/` (venv activated)
+- Add new env vars to `config.py` and `.env.example`; document in README
+- Keep API contracts (WebSocket message shapes) in sync between VakDeepGram and VakClient; refer to `schemas/` if present
+- Use existing `utils/` (Square, Setmore, Twilio, booking, phone) before adding duplicate logic
+
+## Avoid
+
+- Committing `.env` or secrets; use `.env.example` and VakInfra secrets docs
+- Adding sync blocking calls in FastAPI path/WebSocket handlers; use async and existing async helpers
+- Changing Deepgram/Twilio message formats without updating the client and any docs (e.g. README, AGENTS.md)

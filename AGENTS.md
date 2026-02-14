@@ -2,16 +2,16 @@
 
 ## Project Structure & Module Organization
 - `VakClient/` is the React + Vite frontend (TypeScript) and the primary UI entry point.
-- `VakServer/` is the Fastify + TypeScript backend that handles WebSocket traffic and AWS integrations.
+- `VakDeepGram/` is the FastAPI WebSocket server for Deepgram Voice Agents and Twilio media streams.
 - `VakInfra/` contains AWS CDK v2 stacks for networking and app deployment.
 - `VakDeepGram/` and `Twilio/` hold integration helpers and HTML-based test clients.
 - Root docs (`README.md`, `TROUBLESHOOTING.md`, `CONNECT_INTEGRATION.md`) explain setup and operational flows.
 
 ## Build, Test, and Development Commands
 - Client: `cd VakClient && npm install && npm run dev` (local dev server), `npm run build` (production build).
-- Server: `cd VakServer && npm install && npm run dev` (hot reload), `npm run build` then `npm start` (prod build/run).
+- Server: `cd VakDeepGram && pip install -r requirements.txt && python main.py` (local server).
 - Infra: `cd VakInfra && npm install && npm run synth` (CloudFormation), `npm run deploy` (CDK deploy).
-- Docker/ECR: `cd VakServer && npm run deploy:ecr` to build and push images.
+- Docker/ECR: `cd VakDeepGram && ./deploy-to-ecr.sh` to build and push images.
 
 ## Coding Style & Naming Conventions
 - TypeScript is used across client/server/infra; keep indentation at 2 spaces and follow existing semicolon usage.
@@ -30,6 +30,6 @@
 - For infra changes, call out affected AWS resources and any required environment variables.
 
 ## Security & Configuration Tips
-- Do not commit secrets. Use `.env` files as referenced in `VakClient/README.md` and `VakServer/README.md`.
-- Client config uses `VITE_WS_URL` and AWS credential env vars for signing; server config uses `WS_API_ENDPOINT`, `REGION`, and related settings.
+- Do not commit secrets. Use `.env` files as referenced in `VakClient/README.md` and `VakDeepGram/README.md`.
+- Client config uses `VITE_WS_URL` and AWS credential env vars for signing; server config uses `DEEPGRAM_API_KEY`, `TWILIO_AUTH_TOKEN`, and related settings.
 - Keep AWS CLI/CDK credentials local and out of source control.
