@@ -1,9 +1,15 @@
 """
-Strands tool wrappers for voice assistant functions.
-These tools can be used with Strands agents in the /chat endpoint.
+DEPRECATED — this module has been superseded by the providers/ package.
 
-Tools receive business context via tool_context parameter which is passed
-deterministically from the agent invocation.
+The provider-specific tools are now split into:
+    providers/square/tools.py   — Square-only tools
+    providers/setmore/tools.py  — Setmore-only tools
+    providers/common/tools.py   — shared tools (store info, selection, greeting)
+
+This file is kept for backward compatibility; new code should import from
+providers instead:
+
+    from providers import get_tools_for_provider
 """
 from datetime import datetime, timedelta, timezone
 import logging
@@ -28,6 +34,7 @@ from utils.square_helpers import (
     parse_square_response,
     extract_square_cursor,
 )
+from business_logic import send_booking_link_sms, build_setmore_booking_url
 
 logger = logging.getLogger(__name__)
 
@@ -556,6 +563,10 @@ async def create_appointment(
     5. If the customer exists, pass their customer_id; if not, create the customer first.
     If staff_id is omitted, the system picks an available staff member.
     Date should be in ISO format (YYYY-MM-DDTHH:MM:SS).
+
+    For Setmore: Instead of booking directly, sends the customer a text message with a booking
+    link and prefilled appointment details (service, staff, date/time). Tell the customer you
+    are sending them a text with the booking link to complete their appointment.
     """
     business_context = _get_business_context_from_tool(tool_context)
     if not all([first_name, last_name, date, service]):
@@ -564,10 +575,12 @@ async def create_appointment(
     if not phone_number:
         phone_number = caller_number or business_context.get("caller")
 
-    context_info = _get_access_context(business_context)
-    if not context_info.get("success"):
-        return context_info
     provider = _provider_from_context(business_context)
+    logger.info("create_appointment called: provider=%s service=%s date=%s phone=%s", provider, service, date, phone_number)
+    context_info = _get_access_context(business_context, require_location=(provider != "setmore"))
+    if not context_info.get("success"):
+        logger.error("create_appointment: access context failed: %s", context_info.get("error"))
+        return context_info
     if provider == "setmore":
         timezone_name = _resolve_location_timezone(business_context)
         tzinfo = ZoneInfo(timezone_name) if timezone_name else None
@@ -586,10 +599,10 @@ async def create_appointment(
             return response
 
         service_key = service_item.get("id")
-        duration_minutes = service_item.get("duration_minutes") or 30
         if not service_key:
             return {"success": False, "error": "Service key not found."}
 
+        # Ensure customer exists in Setmore so their info is prefilled
         resolved_customer_id = customer_id
         if not resolved_customer_id and phone_number:
             payload = {
@@ -602,36 +615,67 @@ async def create_appointment(
                 return {"success": False, "error": created.get("error")}
             resolved_customer_id = (created.get("customer") or {}).get("key")
 
-        if not resolved_customer_id:
-            return {"success": False, "error": "Customer not found and could not be created."}
-
         resolved_staff_id = staff_id or _setmore_resolve_staff_key(business_context, [staff_id] if staff_id else [])
-        if not resolved_staff_id:
-            return {"success": False, "error": "Staff not available for booking."}
+        staff_name = _staff_display_name(business_context, resolved_staff_id)
+        service_name = service_item.get("name") or service
 
-        start_utc = start_dt.astimezone(timezone.utc)
-        end_utc = start_utc + timedelta(minutes=duration_minutes)
-        payload = {
-            "staff_key": resolved_staff_id,
-            "service_key": service_key,
-            "customer_key": resolved_customer_id,
-            "start_time": start_utc.strftime("%Y-%m-%dT%H:%MZ"),
-            "end_time": end_utc.strftime("%Y-%m-%dT%H:%MZ"),
-        }
-        created = await setmore_api.create_appointment(context_info["access_token"], payload)
-        if not created.get("success"):
-            return {"success": False, "error": created.get("error")}
-        appointment = created.get("appointment") or {}
+        # Build prefilled booking URL
+        booking_page_url = business_context.get("bookingPageUrl") or business_context.get("booking_page_url")
+        if not booking_page_url:
+            logger.error("create_appointment: bookingPageUrl not set in business context")
+            return {"success": False, "error": "Booking page URL not configured for this business."}
+
+        to_number = normalize_phone_number(phone_number) if phone_number else None
+
+        prefilled_url = build_setmore_booking_url(
+            booking_page_url,
+            service_key=service_key,
+            staff_key=resolved_staff_id,
+            start_dt=start_dt,
+            customer_key=resolved_customer_id,
+        )
+        logger.info("create_appointment (setmore): prefilled_url=%s", prefilled_url)
+
+        # Try to send SMS if Twilio is configured; otherwise just return the URL
+        from_number = business_context.get("businessNumber")
+        sms_sent = False
+        if from_number and to_number:
+            try:
+                sms_result = send_booking_link_sms(
+                    from_number=from_number,
+                    to_number=to_number,
+                    booking_page_url=booking_page_url,
+                    service_name=service_name,
+                    staff_name=staff_name,
+                    start_dt=start_dt,
+                    customer_first_name=first_name,
+                    service_key=service_key,
+                    staff_key=resolved_staff_id,
+                    customer_key=resolved_customer_id,
+                )
+                sms_sent = sms_result.get("success", False)
+                if not sms_sent:
+                    logger.warning("create_appointment: SMS send failed: %s", sms_result.get("error"))
+            except Exception as exc:
+                logger.warning("create_appointment: SMS send exception: %s", exc)
+
         return {
             "success": True,
-            "appointment": {
-                "appointment_id": appointment.get("key"),
-                "date": appointment.get("start_time") or payload["start_time"],
-                "service": service_item.get("name"),
-                "staff_id": resolved_staff_id,
+            "booking_url": prefilled_url,
+            "sms_sent": sms_sent,
+            "appointment_details": {
+                "date": start_dt.isoformat(),
+                "service": service_name,
+                "service_key": service_key,
+                "staff_name": staff_name,
+                "staff_key": resolved_staff_id,
                 "customer_id": resolved_customer_id,
-                "status": "confirmed",
+                "customer_phone": to_number,
             },
+            "message": (
+                f"Booking link sent to {to_number} via text." if sms_sent
+                else "Share this booking link with the customer to complete their appointment."
+            ),
         }
 
     client = _get_square_client(context_info["access_token"])
@@ -962,14 +1006,77 @@ async def check_availability(
     if not service:
         return {"success": False, "error": "service is required"}
 
-    context_info = _get_access_context(business_context)
+    provider = _provider_from_context(business_context)
+    context_info = _get_access_context(business_context, require_location=(provider != "setmore"))
     if not context_info.get("success"):
         return context_info
-    client = _get_square_client(context_info["access_token"])
-    location_id = context_info["location_id"]
 
     timezone_name = _resolve_location_timezone(business_context)
     tzinfo = ZoneInfo(timezone_name) if timezone_name else None
+
+    # ---- Setmore availability via fetch_slots ----
+    if provider == "setmore":
+        start_at_local, _ = _resolve_date_range(start_date, end_date, tzinfo)
+        start_at_local, _ = _ensure_minimum_range(start_at_local, start_at_local + timedelta(days=1))
+        selected_date = _setmore_format_date(start_at_local)
+
+        service_item = _setmore_match_service(business_context, service)
+        if not service_item:
+            suggestions = booking_helpers.suggest_services(business_context, service)
+            response = {"success": False, "error": "Service not available for booking."}
+            if suggestions:
+                response["suggested_services"] = suggestions
+            return response
+        service_key = service_item.get("id")
+        if not service_key:
+            return {"success": False, "error": "Service key not found."}
+
+        resolved_staff_id = _setmore_resolve_staff_key(business_context, staff_ids or [])
+        if staff_ids and not resolved_staff_id:
+            return {
+                "success": False,
+                "error": "Requested staff not found. Please confirm the staff member name.",
+            }
+        if not resolved_staff_id:
+            return {"success": False, "error": "No staff available for booking."}
+
+        payload = {
+            "staff_key": resolved_staff_id,
+            "service_key": service_key,
+            "selected_date": selected_date,
+        }
+        if timezone_name:
+            payload["timezone"] = timezone_name
+        slots_result = await setmore_api.fetch_slots(context_info["access_token"], payload)
+        if not slots_result.get("success"):
+            return {"success": False, "error": slots_result.get("error")}
+        slots = []
+        for slot in slots_result.get("slots") or []:
+            iso_value = _setmore_slot_to_iso(start_at_local, slot, tzinfo)
+            if not iso_value:
+                continue
+            slots.append(
+                {
+                    "start_at": iso_value,
+                    "date": iso_value.split("T")[0],
+                    "time": iso_value.split("T")[-1][:5],
+                }
+            )
+        available_staff = [
+            member for member in business_context.get("staff") or [] if member.get("id") == resolved_staff_id
+        ]
+        return {
+            "success": True,
+            "availability_mode": "slots",
+            "slots": slots,
+            "ranges": [],
+            "available_staff": available_staff,
+        }
+
+    # ---- Square availability via search_availability ----
+    client = _get_square_client(context_info["access_token"])
+    location_id = context_info["location_id"]
+
     start_at_local, end_at_local = _resolve_date_range(start_date, end_date, tzinfo)
     start_at_local, end_at_local = _ensure_minimum_range(start_at_local, end_at_local)
     start_at = _isoformat_utc(start_at_local)
@@ -1198,3 +1305,30 @@ ALL_STRANDS_TOOLS = [
     get_greeting_message,
     get_current_local_time,
 ]
+
+# Provider-specific tool lists — Setmore does not support update_appointment or get_orders
+SQUARE_STRANDS_TOOLS = list(ALL_STRANDS_TOOLS)
+
+SETMORE_STRANDS_TOOLS = [
+    find_customer,
+    get_appointments,
+    create_customer,
+    create_appointment,
+    check_availability,
+    select_service,
+    selected_staff,
+    selected_appointment_date_and_time,
+    get_store_hours,
+    get_store_location,
+    get_services,
+    get_staff,
+    get_greeting_message,
+    get_current_local_time,
+]
+
+
+def get_strands_tools_for_provider(provider: str) -> list:
+    """Return the Strands tool list appropriate for the given provider."""
+    if provider == "setmore":
+        return SETMORE_STRANDS_TOOLS
+    return SQUARE_STRANDS_TOOLS

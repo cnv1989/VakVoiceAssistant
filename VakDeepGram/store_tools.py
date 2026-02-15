@@ -39,7 +39,27 @@ def get_store_location_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
     context_result = _get_context(params)
     if not context_result.get("success"):
         return {"success": False, "error": context_result.get("error"), "location": {}}
-    location = context_result["context"].get("location") or {}
+    ctx = context_result["context"]
+    location = ctx.get("location") or {}
+    provider = ctx.get("provider") or "square"
+
+    if provider == "setmore":
+        # Build a rich location response from account info stored in DynamoDB
+        return {
+            "success": True,
+            "location": {
+                "business_name": location.get("business_name"),
+                "phone_number": location.get("phone_number"),
+                "address": location.get("address"),
+                "email": location.get("email"),
+                "timezone": location.get("timezone"),
+                "business_number": ctx.get("businessNumber"),
+                "forwarding_number": ctx.get("forwardingNumber"),
+                "booking_page_url": ctx.get("bookingPageUrl"),
+            },
+        }
+
+    # Square — location already has a rich structure from the API
     return {"success": True, "location": location}
 
 

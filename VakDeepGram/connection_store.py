@@ -467,6 +467,9 @@ async def _fetch_setmore_account_record(
         if asyncio.iscoroutine(table):
             table = await table
         key_candidates = []
+        # Amplify Gen 2 schema uses "id" as partition key for SetmoreAccount
+        if account_id:
+            key_candidates.append({"id": account_id})
         if account_id and user_id:
             key_candidates.append({"accountId": account_id, "userId": user_id})
             key_candidates.append({"setmoreAccountId": account_id, "setmoreUserId": user_id})
@@ -474,35 +477,78 @@ async def _fetch_setmore_account_record(
             key_candidates.append({"accountId": account_id})
             key_candidates.append({"setmoreAccountId": account_id})
         if user_id:
+            key_candidates.append({"id": user_id})
             key_candidates.append({"userId": user_id})
             key_candidates.append({"setmoreUserId": user_id})
         for key in key_candidates:
-            response = await table.get_item(Key=key)
-            item = response.get("Item")
-            if item:
-                return item
+            try:
+                response = await table.get_item(Key=key)
+                item = response.get("Item")
+                if item:
+                    return item
+            except Exception as exc:
+                # Key structure may not match table schema — try next candidate
+                logger.debug(
+                    "Setmore account lookup failed for key %s: %s",
+                    list(key.keys()),
+                    exc,
+                )
+                continue
         return None
 
 
-def _normalize_setmore_services(services: Optional[list[Dict[str, Any]]]) -> list[Dict[str, Any]]:
+def _build_service_category_map(
+    categories: Optional[list[Dict[str, Any]]],
+) -> Dict[str, Dict[str, str]]:
+    """Build a mapping from service key to {category_id, category_name}.
+
+    Setmore returns a default "All Services" umbrella category that contains
+    every service.  When real categories exist we exclude the umbrella so
+    services are grouped by their meaningful category.
+    """
+    mapping: Dict[str, Dict[str, str]] = {}
+    if not categories:
+        return mapping
+    specific = [
+        cat for cat in categories
+        if (cat.get("category_name") or "").lower() != "all services"
+    ]
+    effective = specific if specific else categories
+    for cat in effective:
+        cat_key = cat.get("key") or ""
+        cat_name = cat.get("category_name") or "Uncategorized"
+        for service_key in cat.get("service_id_list") or []:
+            mapping[service_key] = {"category_id": cat_key, "category_name": cat_name}
+    return mapping
+
+
+def _normalize_setmore_services(
+    services: Optional[list[Dict[str, Any]]],
+    categories: Optional[list[Dict[str, Any]]] = None,
+) -> list[Dict[str, Any]]:
     if not services:
         return []
+    cat_map = _build_service_category_map(categories)
     normalized = []
     for service in services:
+        service_key = service.get("key")
         name = service.get("service_name") or service.get("name")
         duration = service.get("duration")
         price = service.get("cost")
         currency = service.get("currency")
+        cat_info = cat_map.get(service_key) or {}
         normalized.append(
             {
-                "id": service.get("key"),
+                "id": service_key,
                 "name": name,
                 "description": service.get("description"),
                 "duration_minutes": duration,
+                "category_id": cat_info.get("category_id"),
+                "category_name": cat_info.get("category_name"),
                 "staff_keys": service.get("staff_keys") or [],
                 "variations": [
                     {
-                        "id": service.get("key"),
+                        "id": service_key,
                         "name": name,
                         "duration_minutes": duration,
                         "price": {"amount": price, "currency": currency} if price is not None else None,
@@ -754,9 +800,9 @@ async def resolve_business_context(
             or record.get("refreshToken")
         )
 
-        account = None
+        # Always fetch the SetmoreAccount record to get business details
+        account = await _fetch_setmore_account_record(account_id, account_user_id)
         if not refresh_token:
-            account = await _fetch_setmore_account_record(account_id, account_user_id)
             refresh_token = (account or {}).get("refreshToken") or (account or {}).get("refresh_token")
         if not refresh_token:
             logger.warning("Setmore account missing refresh token (account_id=%s user_id=%s)", account_id, account_user_id)
@@ -767,44 +813,119 @@ async def resolve_business_context(
             return {"success": False, "error": token_result.get("error")}
         access_token = token_result.get("access_token")
 
-        services_result = await setmore_api.fetch_services(access_token)
+        # Fetch services, categories, staff, and appointments in parallel
+        now = datetime.now(timezone.utc)
+        appt_start = now.strftime("%d-%m-%Y")
+        appt_end = (now + timedelta(days=prefetch_availability_days)).strftime("%d-%m-%Y")
+
+        services_task = setmore_api.fetch_services(access_token)
+        categories_task = setmore_api.fetch_service_categories(access_token)
+        staff_task = setmore_api.fetch_staff(access_token)
+        appointments_task = setmore_api.fetch_appointments(
+            access_token,
+            start_date=appt_start,
+            end_date=appt_end,
+            customer_details=True,
+        )
+
+        services_result, categories_result, staff_result, appointments_result = await asyncio.gather(
+            services_task, categories_task, staff_task, appointments_task,
+            return_exceptions=True,
+        )
+
+        # Safely unpack results (gather with return_exceptions may return Exception objects)
+        if isinstance(services_result, Exception):
+            logger.warning("Setmore services lookup failed: %s", services_result)
+            services_result = {"success": False, "error": str(services_result)}
+        if isinstance(categories_result, Exception):
+            logger.warning("Setmore categories lookup failed: %s", categories_result)
+            categories_result = {"success": False, "error": str(categories_result)}
+        if isinstance(staff_result, Exception):
+            logger.warning("Setmore staff lookup failed: %s", staff_result)
+            staff_result = {"success": False, "error": str(staff_result)}
+        if isinstance(appointments_result, Exception):
+            logger.warning("Setmore appointments lookup failed: %s", appointments_result)
+            appointments_result = {"success": False, "error": str(appointments_result)}
+
         services_raw = services_result.get("services") if services_result.get("success") else []
         if not services_result.get("success"):
             logger.warning("Setmore services lookup failed: %s", services_result.get("error"))
-        services = _normalize_setmore_services(services_raw)
 
-        staff_result = await setmore_api.fetch_staff(access_token)
+        categories_raw = categories_result.get("service_categories") if categories_result.get("success") else []
+        if not categories_result.get("success"):
+            logger.warning("Setmore service categories lookup failed: %s", categories_result.get("error"))
+
+        services = _normalize_setmore_services(services_raw, categories_raw)
+
         staff_raw = staff_result.get("staffs") if staff_result.get("success") else []
         if not staff_result.get("success"):
             logger.warning("Setmore staff lookup failed: %s", staff_result.get("error"))
         staff = _normalize_setmore_staff(staff_raw)
 
+        appointments_raw = appointments_result.get("appointments") if appointments_result.get("success") else []
+        if not appointments_result.get("success"):
+            logger.warning("Setmore appointments lookup failed: %s", appointments_result.get("error"))
+
+        # Read business details from the SetmoreAccount record (user-provided at
+        # connect time) and fall back to the BusinessNumber record fields.
+        acct = account or {}
         timezone_name = (
-            record.get("timezone")
+            acct.get("timezone")
+            or record.get("timezone")
             or record.get("timeZone")
-            or (account or {}).get("timezone")
         )
+        booking_page_url = (
+            acct.get("bookingPageUrl")
+            or record.get("bookingPageUrl")
+            or record.get("booking_page_url")
+            or record.get("setmoreBookingPage")
+        )
+        business_name = (
+            acct.get("businessName")
+            or acct.get("accountLabel")
+            or record.get("businessName")
+            or record.get("business_name")
+        )
+        business_phone = (
+            acct.get("businessPhone")
+            or record.get("phoneNumber")
+            or record.get("phone_number")
+        )
+        business_address = (
+            acct.get("businessAddress")
+            or record.get("businessAddress")
+            or record.get("business_address")
+        )
+        business_email = acct.get("businessEmail") or record.get("businessEmail")
+        forwarding_number = record.get("forwardingNumber") or record.get("forwarding_number")
+
         location = {
             "timezone": timezone_name,
-            "business_name": record.get("businessName") or record.get("business_name"),
-            "phone_number": record.get("phoneNumber") or record.get("phone_number"),
+            "business_name": business_name,
+            "phone_number": business_phone,
+            "address": business_address,
+            "email": business_email,
         }
 
         result = {
             "success": True,
             "provider": "setmore",
             "businessNumber": matched_number,
+            "forwardingNumber": forwarding_number,
             "accessToken": access_token,
             "refreshToken": refresh_token,
-            "accountId": account_id or (account or {}).get("accountId"),
-            "userId": account_user_id or (account or {}).get("userId"),
+            "accountId": account_id or acct.get("accountId") or acct.get("id"),
+            "userId": account_user_id or acct.get("userId"),
             "location": location,
             "timezone": timezone_name,
             "services": services,
             "staff": staff,
+            "appointments": appointments_raw,
             "customer": None,
             "setmore_services": services_raw,
             "setmore_staff": staff_raw,
+            "setmore_appointments": appointments_raw,
+            "bookingPageUrl": booking_page_url,
         }
         return result
 

@@ -27,7 +27,7 @@ try:
 except ImportError:
     MaxTokensReachedException = None
 from deepgram_handler import deepgram_manager
-from strands_tools import ALL_STRANDS_TOOLS
+from providers import get_tools_for_provider, get_chat_prompt_for_provider, get_voice_prompt_for_provider
 import json
 
 
@@ -283,7 +283,13 @@ async def chat(
             logger.error("Failed to resolve business context: %s", exc, exc_info=True)
             business_context = {"success": False, "error": str(exc)}
 
-    system_prompt = payload.get("system_prompt") or config.settings.chat_agent_prompt or ""
+    # Resolve provider from business context for provider-specific tools and prompts
+    provider = (business_context.get("provider") or "square").lower()
+    logger.info("Chat provider resolved: %s", provider)
+    provider_tools = get_tools_for_provider(provider)
+    provider_prompt = get_chat_prompt_for_provider(provider)
+
+    system_prompt = payload.get("system_prompt") or provider_prompt or ""
     model_id = payload.get("model_id") or config.settings.bedrock_model_id
     max_tokens = payload.get("max_tokens") or config.settings.bedrock_max_tokens
     temperature = payload.get("temperature") or config.settings.bedrock_temperature
@@ -293,8 +299,8 @@ async def chat(
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid max_tokens or temperature.")
 
-    logger.info("Invoking Strands Agent chat (model=%s message_chars=%d max_tokens=%d)",
-                model_id, len(message), max_tokens)
+    logger.info("Invoking Strands Agent chat (model=%s provider=%s tools=%d message_chars=%d max_tokens=%d)",
+                model_id, provider, len(provider_tools), len(message), max_tokens)
     try:
         # Create Bedrock model with Strands
         bedrock_model = BedrockModel(
@@ -304,7 +310,7 @@ async def chat(
             region_name=config.settings.aws_region,
         )
 
-        # Create agent with system prompt and all voice assistant tools
+        # Create agent with provider-specific system prompt and tools
         # Pass business context via state so tools receive it deterministically
         # Add current local time to context for relative date inference
         business_context["current_local_time"] = get_localized_datetime_from_context(business_context)
@@ -316,7 +322,7 @@ async def chat(
         agent = Agent(
             model=bedrock_model,
             system_prompt=system_prompt if system_prompt else None,
-            tools=ALL_STRANDS_TOOLS,
+            tools=provider_tools,
             state={"business_context": serializable_context},
             session_manager=session_manager,
         )
@@ -502,7 +508,13 @@ async def twilio_chat(request: Request):
             logger.error("Failed to resolve business context: %s", exc, exc_info=True)
             business_context = {"success": False, "error": str(exc)}
 
-    system_prompt = payload.get("system_prompt") or config.settings.chat_agent_prompt or ""
+    # Resolve provider from business context for provider-specific tools and prompts
+    provider = (business_context.get("provider") or "square").lower()
+    logger.info("Twilio chat provider resolved: %s", provider)
+    provider_tools = get_tools_for_provider(provider)
+    provider_prompt = get_chat_prompt_for_provider(provider)
+
+    system_prompt = payload.get("system_prompt") or provider_prompt or ""
     model_id = payload.get("model_id") or config.settings.bedrock_model_id
     max_tokens = payload.get("max_tokens") or config.settings.bedrock_max_tokens
     temperature = payload.get("temperature") or config.settings.bedrock_temperature
@@ -512,8 +524,8 @@ async def twilio_chat(request: Request):
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid max_tokens or temperature.")
 
-    logger.info("Invoking Strands Agent for Twilio chat (model=%s message_chars=%d max_tokens=%d)",
-                model_id, len(message), max_tokens)
+    logger.info("Invoking Strands Agent for Twilio chat (model=%s provider=%s tools=%d message_chars=%d max_tokens=%d)",
+                model_id, provider, len(provider_tools), len(message), max_tokens)
     try:
         # Create Bedrock model with Strands
         bedrock_model = BedrockModel(
@@ -523,7 +535,7 @@ async def twilio_chat(request: Request):
             region_name=config.settings.aws_region,
         )
 
-        # Create agent with system prompt and all voice assistant tools
+        # Create agent with provider-specific system prompt and tools
         # Pass business context via state so tools receive it deterministically
         # Add current local time to context for relative date inference
         business_context["current_local_time"] = get_localized_datetime_from_context(business_context)
@@ -535,7 +547,7 @@ async def twilio_chat(request: Request):
         agent = Agent(
             model=bedrock_model,
             system_prompt=system_prompt if system_prompt else None,
-            tools=ALL_STRANDS_TOOLS,
+            tools=provider_tools,
             state={"business_context": serializable_context},
             session_manager=session_manager,
         )

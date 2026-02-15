@@ -12,7 +12,8 @@ from typing import Dict, Optional, Callable
 import websockets
 from websockets.protocol import State
 import config
-from agent_functions import FUNCTION_DEFINITIONS, FUNCTION_MAP
+from providers import get_voice_prompt_for_provider
+from agent_functions import FUNCTION_DEFINITIONS, FUNCTION_MAP, get_function_definitions_for_provider
 from connection_store import get_localized_datetime_for_connection, get_connection_context
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,13 @@ class DeepgramManager:
         self.sessions: Dict[str, DeepgramSession] = {}
         self.api_key = config.settings.deepgram_api_key
     
+    def _resolve_provider(self, connection_id: Optional[str]) -> str:
+        """Resolve the booking provider from the connection context."""
+        if not connection_id:
+            return "square"
+        context = get_connection_context(connection_id)
+        return (context.get("provider") or "square").lower() if context else "square"
+
     def _build_settings(self, use_mulaw: bool = False, connection_id: Optional[str] = None) -> dict:
         """Build the Settings message as JSON dict
         
@@ -66,7 +74,8 @@ class DeepgramManager:
             use_mulaw: If True, configure for mulaw (8kHz) - used for Twilio
                       If False, configure for linear16 (48kHz) - used for browser
         """
-        logger.debug("DeepgramManager._build_settings called (connection_id=%s use_mulaw=%s)", connection_id, use_mulaw)
+        provider = self._resolve_provider(connection_id)
+        logger.debug("DeepgramManager._build_settings called (connection_id=%s use_mulaw=%s provider=%s)", connection_id, use_mulaw, provider)
         # Build listen provider
         listen_provider = {
             "type": "deepgram",
@@ -96,12 +105,13 @@ class DeepgramManager:
                 "model": config.settings.deepgram_thinking_model or "gpt-4o-mini",
             }
         
-        # Build think config with functions (according to Deepgram documentation)
+        # Build think config with provider-specific functions and prompt
+        function_definitions = get_function_definitions_for_provider(provider)
         think_config = {
             "provider": think_provider,
-            "functions": FUNCTION_DEFINITIONS,
+            "functions": function_definitions,
         }
-        prompt = config.settings.deepgram_agent_prompt or ""
+        prompt = get_voice_prompt_for_provider(provider)
         if connection_id:
             localized_datetime = get_localized_datetime_for_connection(connection_id)
             prompt = f"Current date and time is {localized_datetime} (local time).\n{prompt}"
@@ -272,8 +282,10 @@ class DeepgramManager:
         # Start receiver task
         asyncio.create_task(self._sts_receiver(session))
         
+        provider = self._resolve_provider(connection_id)
         logger.info(
             f"Created Deepgram session for {connection_id}: "
+            f"provider={provider} "
             f"listening={config.settings.deepgram_listening_model} "
             f"thinking={config.settings.deepgram_thinking_provider}/{config.settings.deepgram_thinking_model} "
             f"speaking={'ElevenLabs' if config.settings.deepgram_speaking_provider == 'eleven_labs' else 'Deepgram'}"

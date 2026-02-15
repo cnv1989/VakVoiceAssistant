@@ -132,6 +132,34 @@ async def fetch_services(access_token: str) -> Dict[str, Any]:
     return {"success": True, "services": services}
 
 
+async def fetch_service_categories(access_token: str) -> Dict[str, Any]:
+    result = await request("GET", "/bookingapi/services/categories", access_token)
+    if not result.get("success"):
+        return result
+    raw = (result.get("data") or {}).get("service_categories") or []
+    all_categories = []
+    for cat in raw:
+        all_categories.append({
+            "key": cat.get("key") or cat.get("category_key") or "",
+            "category_name": cat.get("category_name") or cat.get("categoryName") or "Uncategorized",
+            "service_id_list": (
+                cat.get("service_id_list")
+                if isinstance(cat.get("service_id_list"), list)
+                else cat.get("serviceIdList")
+                if isinstance(cat.get("serviceIdList"), list)
+                else []
+            ),
+        })
+    # Setmore returns a default "All Services" umbrella; exclude it when real
+    # categories exist so services are grouped by their meaningful category.
+    specific = [
+        c for c in all_categories
+        if c["category_name"].lower() != "all services"
+    ]
+    categories = specific if specific else all_categories
+    return {"success": True, "service_categories": categories}
+
+
 async def fetch_staff(access_token: str) -> Dict[str, Any]:
     staffs: list[Dict[str, Any]] = []
     cursor = None
@@ -180,6 +208,8 @@ async def fetch_slots(access_token: str, payload: Dict[str, Any]) -> Dict[str, A
         return result
     data = result.get("data")
     slots = _extract_list(data) or []
+    if not slots and data is not None:
+        logger.debug("Setmore slots API returned no list; raw data: %s", data)
     return {"success": True, "slots": slots}
 
 
@@ -189,6 +219,32 @@ async def create_appointment(access_token: str, payload: Dict[str, Any]) -> Dict
         return result
     appointment = (result.get("data") or {}).get("appointment")
     return {"success": True, "appointment": appointment}
+
+
+async def fetch_company(access_token: str) -> Dict[str, Any]:
+    """Fetch company/business details from Setmore."""
+    result = await request("GET", "/bookingapi/company", access_token)
+    if not result.get("success"):
+        return result
+    data = result.get("data") or {}
+    # The company endpoint may nest under a "company" key or return flat
+    company = data.get("company") or data
+    return {
+        "success": True,
+        "company": {
+            "company_name": company.get("company_name") or company.get("companyName"),
+            "address": company.get("address"),
+            "city": company.get("city"),
+            "state": company.get("state"),
+            "zip": company.get("zip") or company.get("postal_code"),
+            "country": company.get("country"),
+            "phone": company.get("phone") or company.get("contact_number"),
+            "email": company.get("email") or company.get("contact_email"),
+            "website": company.get("website"),
+            "timezone": company.get("timezone"),
+            "logo_url": company.get("logo_url") or company.get("logoUrl"),
+        },
+    }
 
 
 async def fetch_appointments(

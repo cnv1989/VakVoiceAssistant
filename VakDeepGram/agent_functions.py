@@ -664,3 +664,19 @@ FUNCTION_MAP = {
     "selected_appointment_date_and_time": selected_appointment_date_and_time,
     "select_appointment_date_and_time": select_appointment_date_and_time,
 }
+
+# ---- Provider-specific function definition lists ----
+# Names of functions to exclude for Setmore (not supported by API)
+_SETMORE_EXCLUDED_FUNCTIONS = {"update_appointment", "get_orders"}
+
+SQUARE_FUNCTION_DEFINITIONS = list(FUNCTION_DEFINITIONS)
+SETMORE_FUNCTION_DEFINITIONS = [
+    fn for fn in FUNCTION_DEFINITIONS if fn.get("name") not in _SETMORE_EXCLUDED_FUNCTIONS
+]
+
+
+def get_function_definitions_for_provider(provider: str) -> list:
+    """Return Deepgram function definitions for the given provider."""
+    if provider == "setmore":
+        return SETMORE_FUNCTION_DEFINITIONS
+    return SQUARE_FUNCTION_DEFINITIONS

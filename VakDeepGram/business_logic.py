@@ -96,6 +96,149 @@ def _setmore_phone_fields(phone_number: Optional[str]) -> Dict[str, Optional[str
     return {"country_code": None, "cell_phone": normalized}
 
 
+def _normalize_setmore_booking_url(raw: str) -> str:
+    """Ensure the booking page URL is a full https://...setmore.com URL.
+
+    Accepts:
+      - Full URL: https://mybiz.setmore.com  →  as-is
+      - Missing scheme: mybiz.setmore.com    →  https://mybiz.setmore.com
+      - Bare slug: mybiz                     →  https://mybiz.setmore.com
+    """
+    import re
+    val = raw.strip().rstrip("/")
+    if not val:
+        return val
+    if re.match(r"^https?://", val, re.IGNORECASE):
+        return val
+    if ".setmore.com" in val.lower():
+        return f"https://{val}"
+    return f"https://{val}.setmore.com"
+
+
+def build_setmore_booking_url(
+    booking_page_url: str,
+    service_key: Optional[str] = None,
+    staff_key: Optional[str] = None,
+    start_dt: Optional[datetime] = None,
+    customer_key: Optional[str] = None,
+) -> str:
+    """Build a Setmore booking URL with prefilled query parameters.
+
+    Setmore booking pages accept these query parameters:
+        step       – "payment" to skip straight to confirmation
+        products   – service UUID
+        type       – "service"
+        staff      – staff UUID
+        slot       – appointment start time as Unix-epoch milliseconds
+        customer   – customer UUID
+
+    Example:
+        https://mybiz.setmore.com/book?step=payment&products=<svc>&type=service
+            &staff=<staff>&slot=<epoch_ms>&customer=<cust>
+    """
+    from urllib.parse import urlparse, urlencode
+
+    normalized = _normalize_setmore_booking_url(booking_page_url)
+
+    # Ensure the base URL ends with /book (or similar)
+    parsed = urlparse(normalized.rstrip("/"))
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    path = parsed.path.rstrip("/")
+    # If the stored URL doesn't already end in /book, append it
+    if not path.endswith("/book"):
+        path = f"{path}/book" if path else "/book"
+
+    params: Dict[str, str] = {"step": "payment", "type": "service"}
+    if service_key:
+        params["products"] = service_key
+    if staff_key:
+        params["staff"] = staff_key
+    if start_dt:
+        # Convert to epoch milliseconds (Setmore expects millis)
+        epoch_ms = int(start_dt.timestamp() * 1000)
+        params["slot"] = str(epoch_ms)
+    if customer_key:
+        params["customer"] = customer_key
+
+    return f"{base}{path}?{urlencode(params)}"
+
+
+def send_booking_link_sms(
+    from_number: str,
+    to_number: str,
+    booking_page_url: str,
+    service_name: str,
+    staff_name: Optional[str],
+    start_dt: datetime,
+    customer_first_name: Optional[str] = None,
+    service_key: Optional[str] = None,
+    staff_key: Optional[str] = None,
+    customer_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Send an SMS with a prefilled Setmore booking link.
+
+    When service_key, staff_key, slot time, and/or customer_key are provided
+    the booking URL is constructed with query parameters so the customer lands
+    on the confirmation page with everything already selected.
+    """
+    twilio_account_sid = config.settings.twilio_account_sid
+    twilio_auth_token = config.settings.twilio_auth_token
+    if not twilio_account_sid or not twilio_auth_token:
+        logger.error("Twilio credentials not configured for booking link SMS")
+        return {"success": False, "error": "Twilio credentials not configured."}
+
+    # Build prefilled URL when we have IDs; fall back to base URL
+    if service_key or staff_key or customer_key:
+        prefilled_url = build_setmore_booking_url(
+            booking_page_url,
+            service_key=service_key,
+            staff_key=staff_key,
+            start_dt=start_dt,
+            customer_key=customer_key,
+        )
+    else:
+        prefilled_url = booking_page_url
+
+    # Format date/time for the human-readable portion
+    date_str = start_dt.strftime("%A, %B %d, %Y")
+    time_str = start_dt.strftime("%I:%M %p").lstrip("0")
+
+    greeting = f"Hi {customer_first_name}! " if customer_first_name else ""
+    staff_line = f"\nStaff: {staff_name}" if staff_name else ""
+    body = (
+        f"{greeting}Here are your appointment details:\n"
+        f"\nService: {service_name}"
+        f"{staff_line}"
+        f"\nDate: {date_str}"
+        f"\nTime: {time_str}"
+        f"\n\nComplete your booking here:\n{prefilled_url}"
+    )
+
+    try:
+        client = TwilioClient(twilio_account_sid, twilio_auth_token)
+        sms_message = client.messages.create(
+            body=body,
+            from_=from_number,
+            to=to_number,
+        )
+        logger.info(
+            "Sent booking link SMS: sid=%s from=%s to=%s url=%s",
+            sms_message.sid,
+            from_number,
+            to_number,
+            prefilled_url,
+        )
+        return {
+            "success": True,
+            "sms_sid": sms_message.sid,
+            "message_body": body,
+            "booking_url": prefilled_url,
+        }
+    except Exception as exc:
+        logger.error("Failed to send booking link SMS: %s", exc, exc_info=True)
+        return {"success": False, "error": f"Failed to send SMS: {exc}"}
+
+
 def _select_team_member_id(context: Dict[str, Any]) -> Optional[str]:
     logger.info("business_logic._select_team_member_id called")
     staff = context.get("staff") or []
@@ -1001,11 +1144,11 @@ async def schedule_appointment_with_contact(
                 response["suggested_services"] = suggestions[:5]
             return response
 
-        duration_minutes = service_item.get("duration_minutes") or 30
         service_key = service_item.get("id")
         if not service_key:
             return {"success": False, "error": "Service key not found."}
 
+        # Ensure customer exists in Setmore so their info is prefilled
         resolved_customer_id = customer_id
         if not resolved_customer_id:
             phone_fields = _setmore_phone_fields(caller_phone)
@@ -1022,36 +1165,52 @@ async def schedule_appointment_with_contact(
                 return {"success": False, "error": created.get("error")}
             resolved_customer_id = (created.get("customer") or {}).get("key")
 
-        if not resolved_customer_id:
-            return {"success": False, "error": "Customer not found and could not be created."}
-
         resolved_staff_id = staff_id or _setmore_resolve_staff_key(context, [staff_id] if staff_id else [])
-        if not resolved_staff_id:
-            return {"success": False, "error": "Staff not available for booking."}
+        staff_name = _staff_display_name(context, resolved_staff_id)
+        service_name = service_item.get("name") or service
 
-        start_utc = start_dt.astimezone(timezone.utc)
-        end_utc = start_utc + timedelta(minutes=duration_minutes)
-        payload = {
-            "staff_key": resolved_staff_id,
-            "service_key": service_key,
-            "customer_key": resolved_customer_id,
-            "start_time": start_utc.strftime("%Y-%m-%dT%H:%MZ"),
-            "end_time": end_utc.strftime("%Y-%m-%dT%H:%MZ"),
-        }
-        created = await setmore_api.create_appointment(access_token, payload)
-        if not created.get("success"):
-            return {"success": False, "error": created.get("error")}
-        appointment = created.get("appointment") or {}
+        # Send booking link via SMS instead of creating the appointment directly
+        booking_page_url = context.get("bookingPageUrl") or context.get("booking_page_url")
+        if not booking_page_url:
+            return {"success": False, "error": "Booking page URL not configured for this business."}
+
+        to_number = normalize_phone_number(caller_phone) if caller_phone else None
+        from_number = context.get("businessNumber")
+        if not to_number:
+            return {"success": False, "error": "Customer phone number is required to send the booking link."}
+        if not from_number:
+            return {"success": False, "error": "Business phone number not available for sending SMS."}
+
+        sms_result = send_booking_link_sms(
+            from_number=from_number,
+            to_number=to_number,
+            booking_page_url=booking_page_url,
+            service_name=service_name,
+            staff_name=staff_name,
+            start_dt=start_dt,
+            customer_first_name=first_name,
+            service_key=service_key,
+            staff_key=resolved_staff_id,
+            customer_key=resolved_customer_id,
+        )
+        if not sms_result.get("success"):
+            return {"success": False, "error": sms_result.get("error")}
+
+        prefilled_url = sms_result.get("booking_url") or booking_page_url
         return {
             "success": True,
-            "appointment": {
-                "appointment_id": appointment.get("key"),
-                "date": appointment.get("start_time") or payload["start_time"],
-                "service": service_item.get("name"),
-                "staff_id": resolved_staff_id,
+            "booking_link_sent": True,
+            "booking_url": prefilled_url,
+            "appointment_details": {
+                "date": start_dt.isoformat(),
+                "service": service_name,
+                "service_key": service_key,
+                "staff_name": staff_name,
+                "staff_key": resolved_staff_id,
                 "customer_id": resolved_customer_id,
-                "status": "confirmed",
+                "customer_phone": to_number,
             },
+            "message": f"Booking link with prefilled details has been sent to {to_number} via text message.",
         }
 
     if not location_id:

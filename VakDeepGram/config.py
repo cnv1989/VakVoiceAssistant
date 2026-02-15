@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     setmore_api_base_url: str = "https://developer.setmore.com/api/v1"
     setmore_request_timeout_seconds: int = 30
 
-    bedrock_model_id: str = "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    bedrock_model_id: str = "us.anthropic.claude-opus-4-6-v1"
     bedrock_max_tokens: int = 8192  # Maximum tokens for Claude models - increased for tool usage
     bedrock_temperature: float = 0.4
     
@@ -287,3 +287,90 @@ When greeting a customer, use the business name from the context. For example: "
 
 
 settings = Settings()
+
+
+# ---------------------------------------------------------------------------
+# Provider-specific prompt helpers
+# ---------------------------------------------------------------------------
+
+_SQUARE_TO_GENERIC = {
+    "Square customer_id": "customer ID",
+    "Square customer": "customer",
+    "Square tool calls": "booking tool calls",
+    "a Square customer_id": "a customer ID",
+    "Ensure a Square customer_id:": "Ensure a customer ID:",
+}
+
+
+def _replace_square_refs(text: str) -> str:
+    """Replace Square-specific references with generic terms."""
+    for old, new in _SQUARE_TO_GENERIC.items():
+        text = text.replace(old, new)
+    return text
+
+
+def _setmore_voice_prompt_patch(prompt: str) -> str:
+    """Adapt the voice agent prompt for a Setmore provider business."""
+    prompt = _replace_square_refs(prompt)
+    # Remove the reschedule flow section — Setmore doesn't support updates
+    lines = prompt.split("\n")
+    filtered: list[str] = []
+    skip = False
+    for line in lines:
+        if line.strip().startswith("#Reschedule Flow"):
+            skip = True
+            continue
+        if skip and line.strip().startswith("#"):
+            skip = False
+        if skip:
+            continue
+        filtered.append(line)
+    prompt = "\n".join(filtered)
+    # Append Setmore-specific notes
+    prompt += """
+#Setmore Notes
+-Appointment rescheduling is not supported. If a customer asks to reschedule, let them know they need to cancel and rebook, or contact the store directly.
+-Customer lookup requires a first name. Always ask for the customer's first name before looking them up.
+"""
+    return prompt
+
+
+def _setmore_chat_prompt_patch(prompt: str) -> str:
+    """Adapt the chat agent prompt for a Setmore provider business."""
+    prompt = _replace_square_refs(prompt)
+    # Remove reschedule flow
+    lines = prompt.split("\n")
+    filtered: list[str] = []
+    skip = False
+    for line in lines:
+        if line.strip().startswith("#Reschedule Flow"):
+            skip = True
+            continue
+        if skip and line.strip().startswith("#"):
+            skip = False
+        if skip:
+            continue
+        filtered.append(line)
+    prompt = "\n".join(filtered)
+    prompt += """
+#Setmore Notes
+-Appointment rescheduling is not supported. If a customer asks to reschedule, let them know they need to cancel and rebook, or contact the store directly.
+-Customer lookup requires a first name. Always ask for the customer's first name before looking them up.
+"""
+    return prompt
+
+
+def get_voice_prompt_for_provider(provider: str) -> str:
+    """Return the Deepgram voice agent prompt tailored to the given provider."""
+    base = settings.deepgram_agent_prompt or ""
+    if provider == "setmore":
+        return _setmore_voice_prompt_patch(base)
+    return base
+
+
+def get_chat_prompt_for_provider(provider: str) -> str:
+    """Return the Strands chat agent prompt tailored to the given provider."""
+    base = settings.chat_agent_prompt or ""
+    if provider == "setmore":
+        return _setmore_chat_prompt_patch(base)
+    return base

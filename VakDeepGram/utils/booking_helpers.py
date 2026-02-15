@@ -123,6 +123,35 @@ def parse_datetime(value: str) -> datetime:
     return datetime.fromisoformat(normalize_iso(value))
 
 
+def _parse_date_flexible(value: str) -> Optional[datetime]:
+    """Try to parse a date string in various formats (e.g. 'Tuesday February 17 2026')."""
+    value = value.strip()
+    if not value:
+        return None
+    # ISO format first
+    try:
+        return datetime.fromisoformat(normalize_iso(value))
+    except ValueError:
+        pass
+    # Strip leading weekday (e.g. "Tuesday February 17 2026" -> "February 17 2026")
+    weekdays = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+    lower = value.lower()
+    for w in weekdays:
+        if lower.startswith(w + " "):
+            value = value[len(w) + 1 :].strip()
+            break
+        if lower.startswith("next " + w + " "):
+            value = value[len("next " + w) + 1 :].strip()
+            break
+    # Try common formats
+    for fmt in ("%B %d %Y", "%b %d %Y", "%d %B %Y", "%d %b %Y", "%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(value.strip(), fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def isoformat_utc(value: datetime) -> str:
     return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
@@ -559,7 +588,10 @@ def resolve_date_range(
     weekday_range = resolve_weekday_range(start_value, now)
     if weekday_range:
         return weekday_range
-    start_dt = parse_datetime(start_value)
+    # Try flexible date parsing (e.g. "Tuesday February 17 2026") before strict ISO
+    start_dt = _parse_date_flexible(start_value)
+    if start_dt is None:
+        start_dt = parse_datetime(start_value)
     if tzinfo and start_dt.tzinfo is None:
         start_dt = start_dt.replace(tzinfo=tzinfo)
     if end_value:
