@@ -875,7 +875,8 @@ async def resolve_business_context(
             or record.get("timeZone")
         )
         booking_page_url = (
-            acct.get("bookingPageUrl")
+            acct.get("bookingUrl")
+            or acct.get("bookingPageUrl")
             or record.get("bookingPageUrl")
             or record.get("booking_page_url")
             or record.get("setmoreBookingPage")
@@ -891,20 +892,35 @@ async def resolve_business_context(
             or record.get("phoneNumber")
             or record.get("phone_number")
         )
+        whatsapp_number = acct.get("whatsAppNumber")
         business_address = (
             acct.get("businessAddress")
             or record.get("businessAddress")
             or record.get("business_address")
         )
+        business_city = acct.get("businessCity")
+        business_state = acct.get("businessState")
+        business_zip = acct.get("businessZip")
+        business_hours = acct.get("businessHours")
         business_email = acct.get("businessEmail") or record.get("businessEmail")
         forwarding_number = record.get("forwardingNumber") or record.get("forwarding_number")
+
+        # Build full address from parts if not a single string
+        if not business_address and (business_city or business_state):
+            business_address = ", ".join(
+                p for p in [business_city, business_state, business_zip] if p
+            )
+        elif business_address and business_city:
+            business_address = f"{business_address}, {business_city}, {business_state or ''} {business_zip or ''}".strip()
 
         location = {
             "timezone": timezone_name,
             "business_name": business_name,
             "phone_number": business_phone,
+            "whatsapp_number": whatsapp_number,
             "address": business_address,
             "email": business_email,
+            "business_hours": business_hours,
         }
 
         result = {

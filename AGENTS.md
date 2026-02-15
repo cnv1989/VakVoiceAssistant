@@ -1,35 +1,57 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `VakClient/` is the React + Vite frontend (TypeScript) and the primary UI entry point.
-- `VakDeepGram/` is the FastAPI WebSocket server for Deepgram Voice Agents and Twilio media streams.
+- `VakClient/` is the React + Vite frontend (TypeScript) and primary UI entry point.
+  - Core files: `src/main.tsx`, `src/App.tsx`, `src/Layout.tsx`, `src/ChatPage.tsx`.
+  - WebSocket signing logic: `src/ws-signer.ts`.
+  - Styling lives in `src/*.css`.
+- `VakDeepGram/` is the FastAPI WebSocket server that connects to Deepgram Voice Agents.
+  - Entrypoint: `main.py`.
+  - Core behavior: `deepgram_handler.py`, `business_logic.py`, `agent_functions.py`, `store_tools.py`, `connection_store.py`.
+  - Config: `config.py`, `.env.example`.
+  - Tests: `tests/` with `pytest` configuration in `pytest.ini`.
+  - Manual client: `test_client.html`.
 - `VakInfra/` contains AWS CDK v2 stacks for networking and app deployment.
-- `VakDeepGram/` and `Twilio/` hold integration helpers and HTML-based test clients.
-- Root docs (`README.md`, `TROUBLESHOOTING.md`, `CONNECT_INTEGRATION.md`) explain setup and operational flows.
+  - Entrypoint: `bin/vak-infra.ts`.
+  - Stacks: `lib/vak-network-stack.ts`, `lib/vak-app-stack.ts`.
+  - Deployment helpers and docs live alongside the stacks.
+- Root docs (`README.md`, `TROUBLESHOOTING.md`, `CONNECT_INTEGRATION.md`, `DEBUG_WSS.md`) describe setup and operational flows.
 
 ## Build, Test, and Development Commands
-- Client: `cd VakClient && npm install && npm run dev` (local dev server), `npm run build` (production build).
-- Server: `cd VakDeepGram && pip install -r requirements.txt && python main.py` (local server).
-- Infra: `cd VakInfra && npm install && npm run synth` (CloudFormation), `npm run deploy` (CDK deploy).
-- Docker/ECR: `cd VakDeepGram && ./deploy-to-ecr.sh` to build and push images.
+- Client:
+  - `cd VakClient && npm install`
+  - `cd VakClient && npm run dev`
+  - `cd VakClient && npm run build`
+- Server:
+  - `cd VakDeepGram && python -m venv venv && source venv/bin/activate`
+  - `cd VakDeepGram && pip install -r requirements.txt`
+  - `cd VakDeepGram && python main.py`
+  - `cd VakDeepGram && uvicorn main:app --host 0.0.0.0 --port 8080 --reload`
+  - Docker: `cd VakDeepGram && ./docker-run.sh up -d`
+  - ECR build/push: `cd VakDeepGram && ./deploy-to-ecr.sh`
+- Infra:
+  - `cd VakInfra && npm install`
+  - `cd VakInfra && npm run synth`
+  - `cd VakInfra && npm run diff`
+  - `cd VakInfra && npm run deploy`
 
 ## Coding Style & Naming Conventions
-- TypeScript is used across client/server/infra; keep indentation at 2 spaces and follow existing semicolon usage.
-- Use `.tsx` for React components and `.ts` for server/infra modules.
-- Prefer descriptive, feature-based naming (e.g., `ws-signer.ts`, `deploy-to-ecr.sh`).
-- No repo-wide lint/format config is enforced; keep edits consistent with nearby files.
+- Client (TypeScript): 2-space indentation, React components in `.tsx`, follow existing CSS module patterns in `src/*.css`.
+- Server (Python): 4-space indentation, PEP 8 naming, keep configuration in `config.py` and environment variables.
+- Infra (TypeScript/CDK): keep stacks in `lib/`, avoid embedding secrets in code.
 
 ## Testing Guidelines
-- There is no automated test suite in this repo today.
-- Validate changes manually using local WebSocket flows; see `Twilio/test-websocket.html` and `VakDeepGram/test_client.html`.
-- If adding tests, document how to run them in the relevant package `README.md`.
+- `VakDeepGram` uses `pytest` with tests under `VakDeepGram/tests/`.
+  - Run with `cd VakDeepGram && pytest` after installing `requirements-dev.txt` if needed.
+- No automated tests are configured for `VakClient` or `VakInfra` yet.
 
 ## Commit & Pull Request Guidelines
-- Recent commits use short, capitalized, imperative sentences (e.g., “Update time handling”).
-- PRs should include a clear description, test steps, and UI screenshots when client changes are visible.
-- For infra changes, call out affected AWS resources and any required environment variables.
+- Prefer short, capitalized, imperative commit messages (e.g., "Update websocket handling").
+- PRs should include a clear description, test steps, and UI screenshots for client-visible changes.
+- For infra changes, call out affected AWS resources and any new environment variables.
 
 ## Security & Configuration Tips
-- Do not commit secrets. Use `.env` files as referenced in `VakClient/README.md` and `VakDeepGram/README.md`.
-- Client config uses `VITE_WS_URL` and AWS credential env vars for signing; server config uses `DEEPGRAM_API_KEY`, `TWILIO_AUTH_TOKEN`, and related settings.
-- Keep AWS CLI/CDK credentials local and out of source control.
+- Do not commit secrets. Use `.env` files or AWS Secrets Manager for sensitive values.
+- `VakDeepGram` relies on `DEEPGRAM_*` and `TWILIO_*` settings; keep them out of source control.
+- `VakClient` requires `VITE_WS_URL` and any AWS credential env vars for signing.
+- Keep AWS credentials local and out of git history.

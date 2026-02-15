@@ -238,6 +238,15 @@ To protect your ALB with static API key authentication using AWS WAF:
    cdk deploy
    ```
 
+## GitHub Actions (CI/CD)
+
+A workflow deploys both CDK stacks on push to `main` when files under `VakInfra/` change.
+
+- **Workflow**: `.github/workflows/deploy-vak-infra.yml`
+- **Trigger**: Push to `main` (path filter: `VakInfra/**`) or manual `workflow_dispatch`
+- **Required secret**: `AWS_ROLE_ARN` — IAM role ARN for OIDC (same as VakDeepGram deploy). The role must allow `sts:AssumeRoleWithWebIdentity` and have permissions to deploy the stacks (CloudFormation, EC2, ECS, ECR, etc.).
+- **One-time**: Run `cdk bootstrap aws://ACCOUNT_ID/us-west-2` in the target account/region if not already done.
+
 ## Outputs
 
 After deployment, the stack outputs:
