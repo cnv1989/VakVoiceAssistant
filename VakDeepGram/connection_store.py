@@ -818,14 +818,15 @@ async def resolve_business_context(
         appt_start = now.strftime("%d-%m-%Y")
         appt_end = (now + timedelta(days=prefetch_availability_days)).strftime("%d-%m-%Y")
 
-        services_task = setmore_api.fetch_services(access_token)
-        categories_task = setmore_api.fetch_service_categories(access_token)
-        staff_task = setmore_api.fetch_staff(access_token)
+        services_task = setmore_api.fetch_services(access_token, refresh_token=refresh_token)
+        categories_task = setmore_api.fetch_service_categories(access_token, refresh_token=refresh_token)
+        staff_task = setmore_api.fetch_staff(access_token, refresh_token=refresh_token)
         appointments_task = setmore_api.fetch_appointments(
             access_token,
             start_date=appt_start,
             end_date=appt_end,
             customer_details=True,
+            refresh_token=refresh_token,
         )
 
         services_result, categories_result, staff_result, appointments_result = await asyncio.gather(

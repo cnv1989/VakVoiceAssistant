@@ -239,6 +239,98 @@ def send_booking_link_sms(
         return {"success": False, "error": f"Failed to send SMS: {exc}"}
 
 
+def send_booking_link_whatsapp(
+    whatsapp_from: str,
+    to_number: str,
+    booking_page_url: str,
+    service_name: str,
+    staff_name: Optional[str],
+    start_dt: datetime,
+    customer_first_name: Optional[str] = None,
+    service_key: Optional[str] = None,
+    staff_key: Optional[str] = None,
+    customer_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Send a WhatsApp message with a prefilled Setmore booking link via Twilio.
+
+    Uses the same Twilio Messages API but prefixes both ``from`` and ``to``
+    numbers with ``whatsapp:`` so the message is delivered over WhatsApp
+    instead of SMS.
+
+    Parameters
+    ----------
+    whatsapp_from : str
+        The WhatsApp-enabled Twilio number (e.g. ``+14155238886``).
+        The ``whatsapp:`` prefix is added automatically if absent.
+    to_number : str
+        The customer phone number in E.164 format.  ``whatsapp:`` prefix is
+        added automatically if absent.
+    """
+    twilio_account_sid = config.settings.twilio_account_sid
+    twilio_auth_token = config.settings.twilio_auth_token
+    if not twilio_account_sid or not twilio_auth_token:
+        logger.error("Twilio credentials not configured for WhatsApp booking link")
+        return {"success": False, "error": "Twilio credentials not configured."}
+
+    # Build prefilled URL when we have IDs; fall back to base URL
+    if service_key or staff_key or customer_key:
+        prefilled_url = build_setmore_booking_url(
+            booking_page_url,
+            service_key=service_key,
+            staff_key=staff_key,
+            start_dt=start_dt,
+            customer_key=customer_key,
+        )
+    else:
+        prefilled_url = booking_page_url
+
+    # Format date/time for the human-readable portion
+    date_str = start_dt.strftime("%A, %B %d, %Y")
+    time_str = start_dt.strftime("%I:%M %p").lstrip("0")
+
+    greeting = f"Hi {customer_first_name}! " if customer_first_name else ""
+    staff_line = f"\nStaff: {staff_name}" if staff_name else ""
+    body = (
+        f"{greeting}Here are your appointment details:\n"
+        f"\nService: {service_name}"
+        f"{staff_line}"
+        f"\nDate: {date_str}"
+        f"\nTime: {time_str}"
+        f"\n\nComplete your booking here:\n{prefilled_url}"
+    )
+
+    # Normalize numbers to E.164 and ensure whatsapp: prefix
+    normalized_from = normalize_phone_number(whatsapp_from) or whatsapp_from
+    normalized_to = normalize_phone_number(to_number) or to_number
+    wa_from = normalized_from if normalized_from.startswith("whatsapp:") else f"whatsapp:{normalized_from}"
+    wa_to = normalized_to if normalized_to.startswith("whatsapp:") else f"whatsapp:{normalized_to}"
+
+    try:
+        client = TwilioClient(twilio_account_sid, twilio_auth_token)
+        wa_message = client.messages.create(
+            body=body,
+            from_=wa_from,
+            to=wa_to,
+        )
+        logger.info(
+            "Sent booking link via WhatsApp: sid=%s from=%s to=%s url=%s",
+            wa_message.sid,
+            wa_from,
+            wa_to,
+            prefilled_url,
+        )
+        return {
+            "success": True,
+            "message_sid": wa_message.sid,
+            "channel": "whatsapp",
+            "message_body": body,
+            "booking_url": prefilled_url,
+        }
+    except Exception as exc:
+        logger.error("Failed to send WhatsApp booking link: %s", exc, exc_info=True)
+        return {"success": False, "error": f"Failed to send WhatsApp message: {exc}"}
+
+
 def _select_team_member_id(context: Dict[str, Any]) -> Optional[str]:
     logger.info("business_logic._select_team_member_id called")
     staff = context.get("staff") or []
@@ -355,7 +447,8 @@ async def create_customer(
             payload["country_code"] = phone_fields["country_code"]
         if phone_fields.get("cell_phone"):
             payload["cell_phone"] = phone_fields["cell_phone"]
-        created = await setmore_api.create_customer(access_token, payload)
+        refresh_token = context.get("refreshToken") or context.get("refresh_token")
+        created = await setmore_api.create_customer(access_token, payload, refresh_token=refresh_token)
         if not created.get("success"):
             return {"success": False, "error": created.get("error")}
         return {"success": True, "customer": created.get("customer")}
@@ -910,11 +1003,13 @@ async def get_customer(
             if not first_name:
                 return {"success": False, "error": "first_name is required for Setmore customer lookup."}
             normalized_phone = normalize_phone_number(phone) if phone else None
+            refresh_token = context.get("refreshToken") or context.get("refresh_token")
             result = await setmore_api.fetch_customer(
                 access_token,
                 first_name=first_name,
                 phone=normalized_phone,
                 email=email,
+                refresh_token=refresh_token,
             )
             if result.get("success"):
                 customers = result.get("customers") or []
@@ -960,11 +1055,13 @@ async def get_customer_appointments(
         end_local = now + timedelta(days=90)
         start_date = start_local.strftime("%d-%m-%Y")
         end_date = end_local.strftime("%d-%m-%Y")
+        refresh_token = context.get("refreshToken") or context.get("refresh_token")
         result = await setmore_api.fetch_appointments(
             access_token,
             start_date=start_date,
             end_date=end_date,
             customer_details=True,
+            refresh_token=refresh_token,
         )
         if not result.get("success"):
             return {"success": False, "error": result.get("error")}
@@ -1160,7 +1257,8 @@ async def schedule_appointment_with_contact(
                 payload["country_code"] = phone_fields["country_code"]
             if phone_fields.get("cell_phone"):
                 payload["cell_phone"] = phone_fields["cell_phone"]
-            created = await setmore_api.create_customer(access_token, payload)
+            refresh_token = context.get("refreshToken") or context.get("refresh_token")
+            created = await setmore_api.create_customer(access_token, payload, refresh_token=refresh_token)
             if not created.get("success"):
                 return {"success": False, "error": created.get("error")}
             resolved_customer_id = (created.get("customer") or {}).get("key")
@@ -1629,7 +1727,8 @@ async def get_available_appointment_slots(
         }
         if timezone_name:
             payload["timezone"] = timezone_name
-        slots_result = await setmore_api.fetch_slots(access_token, payload)
+        refresh_token = context.get("refreshToken") or context.get("refresh_token")
+        slots_result = await setmore_api.fetch_slots(access_token, payload, refresh_token=refresh_token)
         if not slots_result.get("success"):
             return {"success": False, "error": slots_result.get("error")}
         slots = []

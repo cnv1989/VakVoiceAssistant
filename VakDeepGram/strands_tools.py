@@ -34,7 +34,7 @@ from utils.square_helpers import (
     parse_square_response,
     extract_square_cursor,
 )
-from business_logic import send_booking_link_sms, build_setmore_booking_url
+from business_logic import send_booking_link_sms, send_booking_link_whatsapp, build_setmore_booking_url
 
 logger = logging.getLogger(__name__)
 
@@ -116,11 +116,12 @@ def _update_business_context(tool_context: ToolContext, updates: dict) -> dict:
 def _get_access_context(business_context: dict, require_location: bool = True) -> dict:
     access_token = business_context.get("accessToken") or business_context.get("access_token")
     location_id = business_context.get("locationId") or business_context.get("location_id")
+    refresh_token = business_context.get("refreshToken") or business_context.get("refresh_token")
     if not access_token:
         return {"success": False, "error": "Missing Square access token."}
     if require_location and not location_id:
         return {"success": False, "error": "Missing Square location ID."}
-    return {"success": True, "access_token": access_token, "location_id": location_id}
+    return {"success": True, "access_token": access_token, "location_id": location_id, "refresh_token": refresh_token}
 
 
 def _get_square_client(access_token: str) -> AsyncSquare:
@@ -321,6 +322,7 @@ async def find_customer(
             first_name=first_name,
             phone=normalized,
             email=email,
+            refresh_token=context_info.get("refresh_token"),
         )
         if not result.get("success"):
             return {"success": False, "error": result.get("error")}
@@ -368,6 +370,7 @@ async def get_appointments(
             context_info["access_token"],
             start_date=start_date,
             end_date=end_date,
+            refresh_token=context_info.get("refresh_token"),
             customer_details=True,
         )
         if not result.get("success"):
@@ -507,7 +510,7 @@ async def create_customer(
         payload = {"first_name": first_name, "last_name": last_name}
         if normalized_phone:
             payload["cell_phone"] = normalized_phone
-        created = await setmore_api.create_customer(context_info["access_token"], payload)
+        created = await setmore_api.create_customer(context_info["access_token"], payload, refresh_token=context_info.get("refresh_token"))
         if not created.get("success"):
             return {"success": False, "error": created.get("error")}
         return {"success": True, "customer": created.get("customer")}
@@ -610,7 +613,7 @@ async def create_appointment(
                 "last_name": last_name,
                 "cell_phone": normalize_phone_number(phone_number) or phone_number,
             }
-            created = await setmore_api.create_customer(context_info["access_token"], payload)
+            created = await setmore_api.create_customer(context_info["access_token"], payload, refresh_token=context_info.get("refresh_token"))
             if not created.get("success"):
                 return {"success": False, "error": created.get("error")}
             resolved_customer_id = (created.get("customer") or {}).get("key")
@@ -636,33 +639,64 @@ async def create_appointment(
         )
         logger.info("create_appointment (setmore): prefilled_url=%s", prefilled_url)
 
-        # Try to send SMS if Twilio is configured; otherwise just return the URL
+        # Try WhatsApp first, then fall back to SMS
         from_number = business_context.get("businessNumber")
-        sms_sent = False
-        if from_number and to_number:
-            try:
-                sms_result = send_booking_link_sms(
-                    from_number=from_number,
-                    to_number=to_number,
-                    booking_page_url=booking_page_url,
-                    service_name=service_name,
-                    staff_name=staff_name,
-                    start_dt=start_dt,
-                    customer_first_name=first_name,
-                    service_key=service_key,
-                    staff_key=resolved_staff_id,
-                    customer_key=resolved_customer_id,
-                )
-                sms_sent = sms_result.get("success", False)
-                if not sms_sent:
-                    logger.warning("create_appointment: SMS send failed: %s", sms_result.get("error"))
-            except Exception as exc:
-                logger.warning("create_appointment: SMS send exception: %s", exc)
+        whatsapp_number = (business_context.get("location") or {}).get("whatsapp_number")
+        msg_sent = False
+        msg_channel = None
+        if to_number and (whatsapp_number or from_number):
+            # Prefer WhatsApp if the business has a WhatsApp number
+            if whatsapp_number:
+                try:
+                    wa_result = send_booking_link_whatsapp(
+                        whatsapp_from=whatsapp_number,
+                        to_number=to_number,
+                        booking_page_url=booking_page_url,
+                        service_name=service_name,
+                        staff_name=staff_name,
+                        start_dt=start_dt,
+                        customer_first_name=first_name,
+                        service_key=service_key,
+                        staff_key=resolved_staff_id,
+                        customer_key=resolved_customer_id,
+                    )
+                    msg_sent = wa_result.get("success", False)
+                    if msg_sent:
+                        msg_channel = "whatsapp"
+                    else:
+                        logger.warning("create_appointment: WhatsApp send failed: %s", wa_result.get("error"))
+                except Exception as exc:
+                    logger.warning("create_appointment: WhatsApp send exception: %s", exc)
+
+            # Fall back to SMS if WhatsApp was not available or failed
+            if not msg_sent and from_number:
+                try:
+                    sms_result = send_booking_link_sms(
+                        from_number=from_number,
+                        to_number=to_number,
+                        booking_page_url=booking_page_url,
+                        service_name=service_name,
+                        staff_name=staff_name,
+                        start_dt=start_dt,
+                        customer_first_name=first_name,
+                        service_key=service_key,
+                        staff_key=resolved_staff_id,
+                        customer_key=resolved_customer_id,
+                    )
+                    msg_sent = sms_result.get("success", False)
+                    if msg_sent:
+                        msg_channel = "sms"
+                    else:
+                        logger.warning("create_appointment: SMS send failed: %s", sms_result.get("error"))
+                except Exception as exc:
+                    logger.warning("create_appointment: SMS send exception: %s", exc)
 
         return {
             "success": True,
             "booking_url": prefilled_url,
-            "sms_sent": sms_sent,
+            "message_sent": msg_sent,
+            "message_channel": msg_channel,
+            "sms_sent": msg_sent and msg_channel == "sms",  # backward compat
             "appointment_details": {
                 "date": start_dt.isoformat(),
                 "service": service_name,
@@ -673,7 +707,8 @@ async def create_appointment(
                 "customer_phone": to_number,
             },
             "message": (
-                f"Booking link sent to {to_number} via text." if sms_sent
+                f"Booking link sent to {to_number} via WhatsApp." if msg_channel == "whatsapp"
+                else f"Booking link sent to {to_number} via text." if msg_channel == "sms"
                 else "Share this booking link with the customer to complete their appointment."
             ),
         }
@@ -1047,7 +1082,7 @@ async def check_availability(
         }
         if timezone_name:
             payload["timezone"] = timezone_name
-        slots_result = await setmore_api.fetch_slots(context_info["access_token"], payload)
+        slots_result = await setmore_api.fetch_slots(context_info["access_token"], payload, refresh_token=context_info.get("refresh_token"))
         if not slots_result.get("success"):
             return {"success": False, "error": slots_result.get("error")}
         slots = []

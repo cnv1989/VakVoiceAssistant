@@ -101,39 +101,87 @@ async def get_access_token(refresh_token: str) -> Dict[str, Any]:
     }
 
 
+def _invalidate_token_cache(refresh_token: str) -> None:
+    """Remove a cached token so the next get_access_token() forces a refresh."""
+    _TOKEN_CACHE.pop(refresh_token, None)
+
+
+def _is_unauthorized(response: httpx.Response, payload: Any) -> bool:
+    """Detect a 401/unauthorized response from Setmore (HTTP status or body)."""
+    if response.status_code == 401:
+        return True
+    if isinstance(payload, dict):
+        err = payload.get("error") or payload.get("msg") or ""
+        if isinstance(err, str) and "unauthorized" in err.lower():
+            return True
+    return False
+
+
 async def request(
     method: str,
     path: str,
     access_token: str,
     params: Optional[Dict[str, Any]] = None,
     json: Optional[Dict[str, Any]] = None,
+    *,
+    refresh_token: Optional[str] = None,
 ) -> Dict[str, Any]:
+    """Make a Setmore API request with optional automatic 401 retry.
+
+    If *refresh_token* is provided and the first request returns 401 /
+    ``unauthorized_request``, the token cache is invalidated, a fresh
+    access token is obtained, and the request is retried **once**.
+    """
     url = _booking_url(path)
-    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
     timeout = config.settings.setmore_request_timeout_seconds
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.request(method, url, params=params, json=json, headers=headers)
-    try:
-        payload = response.json()
-    except Exception:
+
+    async def _do_request(token: str) -> Tuple[httpx.Response, Any]:
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.request(method, url, params=params, json=json, headers=headers)
+        try:
+            body = resp.json()
+        except Exception:
+            body = None
+        return resp, body
+
+    # --- first attempt ---
+    response, payload = await _do_request(access_token)
+
+    # --- 401 retry ---
+    if refresh_token and _is_unauthorized(response, payload):
+        logger.warning(
+            "[SetmoreAPI] Got unauthorized on %s %s — refreshing token and retrying",
+            method, path,
+        )
+        _invalidate_token_cache(refresh_token)
+        token_result = await get_access_token(refresh_token)
+        if token_result.get("success"):
+            new_token = token_result["access_token"]
+            response, payload = await _do_request(new_token)
+        else:
+            return {"success": False, "error": token_result.get("error") or "Token refresh failed"}
+
+    if payload is None:
         logger.error("Failed to decode Setmore response (%s)", response.text)
         return {"success": False, "error": "Invalid Setmore response."}
+
     parsed = _parse_response(payload)
     if not parsed.get("success"):
         return {"success": False, "error": parsed.get("error")}
     return {"success": True, "data": parsed.get("data")}
 
 
-async def fetch_services(access_token: str) -> Dict[str, Any]:
-    result = await request("GET", "/bookingapi/services", access_token)
+async def fetch_services(access_token: str, *, refresh_token: Optional[str] = None) -> Dict[str, Any]:
+    result = await request("GET", "/bookingapi/services", access_token, refresh_token=refresh_token)
     if not result.get("success"):
         return result
     services = (result.get("data") or {}).get("services") or []
     return {"success": True, "services": services}
 
 
-async def fetch_service_categories(access_token: str) -> Dict[str, Any]:
-    result = await request("GET", "/bookingapi/services/categories", access_token)
+async def fetch_service_categories(access_token: str, *, refresh_token: Optional[str] = None) -> Dict[str, Any]:
+    result = await request("GET", "/bookingapi/services/categories", access_token, refresh_token=refresh_token)
     if not result.get("success"):
         return result
     raw = (result.get("data") or {}).get("service_categories") or []
@@ -160,12 +208,12 @@ async def fetch_service_categories(access_token: str) -> Dict[str, Any]:
     return {"success": True, "service_categories": categories}
 
 
-async def fetch_staff(access_token: str) -> Dict[str, Any]:
+async def fetch_staff(access_token: str, *, refresh_token: Optional[str] = None) -> Dict[str, Any]:
     staffs: list[Dict[str, Any]] = []
     cursor = None
     while True:
         params = {"cursor": cursor} if cursor else None
-        result = await request("GET", "/bookingapi/staffs", access_token, params=params)
+        result = await request("GET", "/bookingapi/staffs", access_token, params=params, refresh_token=refresh_token)
         if not result.get("success"):
             return result
         data = result.get("data") or {}
@@ -181,29 +229,31 @@ async def fetch_customer(
     first_name: str,
     phone: Optional[str] = None,
     email: Optional[str] = None,
+    *,
+    refresh_token: Optional[str] = None,
 ) -> Dict[str, Any]:
     params: Dict[str, Any] = {"firstname": first_name}
     if phone:
         params["phone"] = phone
     if email:
         params["email"] = email
-    result = await request("GET", "/bookingapi/customer", access_token, params=params)
+    result = await request("GET", "/bookingapi/customer", access_token, params=params, refresh_token=refresh_token)
     if not result.get("success"):
         return result
     customers = (result.get("data") or {}).get("customer") or []
     return {"success": True, "customers": customers}
 
 
-async def create_customer(access_token: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    result = await request("POST", "/bookingapi/customer/create", access_token, json=payload)
+async def create_customer(access_token: str, payload: Dict[str, Any], *, refresh_token: Optional[str] = None) -> Dict[str, Any]:
+    result = await request("POST", "/bookingapi/customer/create", access_token, json=payload, refresh_token=refresh_token)
     if not result.get("success"):
         return result
     customer = (result.get("data") or {}).get("customer")
     return {"success": True, "customer": customer}
 
 
-async def fetch_slots(access_token: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    result = await request("POST", "/bookingapi/slots", access_token, json=payload)
+async def fetch_slots(access_token: str, payload: Dict[str, Any], *, refresh_token: Optional[str] = None) -> Dict[str, Any]:
+    result = await request("POST", "/bookingapi/slots", access_token, json=payload, refresh_token=refresh_token)
     if not result.get("success"):
         return result
     data = result.get("data")
@@ -213,17 +263,17 @@ async def fetch_slots(access_token: str, payload: Dict[str, Any]) -> Dict[str, A
     return {"success": True, "slots": slots}
 
 
-async def create_appointment(access_token: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    result = await request("POST", "/bookingapi/appointment/create", access_token, json=payload)
+async def create_appointment(access_token: str, payload: Dict[str, Any], *, refresh_token: Optional[str] = None) -> Dict[str, Any]:
+    result = await request("POST", "/bookingapi/appointment/create", access_token, json=payload, refresh_token=refresh_token)
     if not result.get("success"):
         return result
     appointment = (result.get("data") or {}).get("appointment")
     return {"success": True, "appointment": appointment}
 
 
-async def fetch_company(access_token: str) -> Dict[str, Any]:
+async def fetch_company(access_token: str, *, refresh_token: Optional[str] = None) -> Dict[str, Any]:
     """Fetch company/business details from Setmore."""
-    result = await request("GET", "/bookingapi/company", access_token)
+    result = await request("GET", "/bookingapi/company", access_token, refresh_token=refresh_token)
     if not result.get("success"):
         return result
     data = result.get("data") or {}
@@ -253,6 +303,8 @@ async def fetch_appointments(
     end_date: str,
     staff_key: Optional[str] = None,
     customer_details: bool = False,
+    *,
+    refresh_token: Optional[str] = None,
 ) -> Dict[str, Any]:
     params: Dict[str, Any] = {
         "startDate": start_date,
@@ -268,7 +320,7 @@ async def fetch_appointments(
     while True:
         if cursor:
             params["cursor"] = cursor
-        result = await request("GET", "/bookingapi/appointments", access_token, params=params)
+        result = await request("GET", "/bookingapi/appointments", access_token, params=params, refresh_token=refresh_token)
         if not result.get("success"):
             return result
         data = result.get("data") or {}
