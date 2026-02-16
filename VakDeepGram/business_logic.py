@@ -83,7 +83,7 @@ def build_setmore_booking_url(
     """Build a Setmore booking URL with prefilled query parameters.
 
     Setmore booking pages accept these query parameters:
-        step       – "payment" to skip straight to confirmation
+        step       – "user-details" for the booking form (valid; "payment" returns 500)
         products   – service UUID
         type       – "service"
         staff      – staff UUID
@@ -91,7 +91,7 @@ def build_setmore_booking_url(
         customer   – customer UUID
 
     Example:
-        https://mybiz.setmore.com/book?step=payment&products=<svc>&type=service
+        https://mybiz.setmore.com/book?step=user-details&products=<svc>&type=service
             &staff=<staff>&slot=<epoch_ms>&customer=<cust>
     """
     from urllib.parse import urlparse, urlencode
@@ -106,11 +106,12 @@ def build_setmore_booking_url(
     if not path.endswith("/book"):
         path = f"{path}/book" if path else "/book"
 
-    params: Dict[str, str] = {"step": "payment", "type": "service"}
+    params: Dict[str, str] = {"step": "user-details", "type": "service"}
     if service_key:
         params["products"] = service_key
     if staff_key:
         params["staff"] = staff_key
+        params["staffSelected"] = "true"
     if start_dt:
         # Convert to epoch milliseconds (Setmore expects millis)
         epoch_ms = int(start_dt.timestamp() * 1000)
@@ -1240,7 +1241,11 @@ async def schedule_appointment_with_contact(
         staff_name = _staff_display_name(context, resolved_staff_id)
         service_name = service_item.get("name") or service
 
-        # Create appointment via Setmore API (required: staff_key, service_key, customer_key, start_time, end_time)
+        # Generate booking link (no appointment creation)
+        booking_page_url = context.get("bookingPageUrl") or context.get("booking_page_url")
+        if not booking_page_url:
+            return {"success": False, "error": "Booking page URL not configured for this business."}
+
         duration_minutes = service_item.get("duration_minutes") or service_item.get("duration") or 30
         end_dt = start_dt + timedelta(minutes=duration_minutes)
         start_time_local = start_dt.replace(tzinfo=None) if start_dt.tzinfo else start_dt
@@ -1254,35 +1259,10 @@ async def schedule_appointment_with_contact(
             "start_time": start_time_str,
             "end_time": end_time_str,
         }
-        refresh_token = context.get("refreshToken") or context.get("refresh_token")
-        appointment_result = await setmore_api.create_appointment(access_token, appointment_payload, refresh_token=refresh_token)
-        if not appointment_result.get("success"):
-            booking_page_url = context.get("bookingPageUrl") or context.get("booking_page_url")
-            if booking_page_url:
-                prefilled_url = build_setmore_booking_url(
-                    booking_page_url,
-                    service_key=service_key,
-                    staff_key=resolved_staff_id,
-                    start_dt=start_dt,
-                    customer_key=resolved_customer_id,
-                )
-                return {
-                    "success": False,
-                    "error": appointment_result.get("error") or "Failed to create appointment via API.",
-                    "booking_url": prefilled_url,
-                    "fallback": True,
-                }
-            return {"success": False, "error": appointment_result.get("error") or "Failed to create appointment."}
-
-        appointment = appointment_result.get("appointment")
-        booking_page_url = context.get("bookingPageUrl") or context.get("booking_page_url")
-        prefilled_url = build_setmore_booking_url(
-            booking_page_url,
-            service_key=service_key,
-            staff_key=resolved_staff_id,
-            start_dt=start_dt,
-            customer_key=resolved_customer_id,
-        ) if booking_page_url else None
+        link_result = setmore_api.generate_booking_link(booking_page_url, appointment_payload)
+        if not link_result.get("success"):
+            return {"success": False, "error": link_result.get("error") or "Failed to generate booking link."}
+        prefilled_url = link_result.get("booking_url")
 
         to_number = normalize_phone_number(caller_phone) if caller_phone else None
         from_number = context.get("businessNumber")
@@ -1304,8 +1284,8 @@ async def schedule_appointment_with_contact(
 
         return {
             "success": True,
-            "appointment": appointment,
-            "appointment_id": appointment.get("key") if appointment else None,
+            "appointment": None,
+            "appointment_id": None,
             "booking_link_sent": msg_sent,
             "booking_url": prefilled_url,
             "appointment_details": {
@@ -1319,7 +1299,7 @@ async def schedule_appointment_with_contact(
                 "customer_phone": to_number,
                 "duration_minutes": duration_minutes,
             },
-            "message": f"Appointment created successfully." + (f" Confirmation sent to {to_number} via text." if msg_sent else ""),
+            "message": "Here's your booking link!" + (f" Sent to {to_number} via text." if msg_sent else ""),
         }
 
     if not location_id:

@@ -199,11 +199,12 @@ def build_booking_url(
     if not path.endswith("/book"):
         path = f"{path}/book" if path else "/book"
 
-    params: Dict[str, str] = {"step": "payment", "type": "service"}
+    params: Dict[str, str] = {"step": "user-details", "type": "service"}
     if service_key:
         params["products"] = service_key
     if staff_key:
         params["staff"] = staff_key
+        params["staffSelected"] = "true"
     if start_dt:
         epoch_ms = int(start_dt.timestamp() * 1000)
         params["slot"] = str(epoch_ms)

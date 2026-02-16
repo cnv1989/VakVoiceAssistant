@@ -1,6 +1,9 @@
 import logging
+import re
 import time
+from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
+from urllib.parse import urlencode, urlparse
 
 import httpx
 
@@ -314,12 +317,58 @@ async def fetch_slots(access_token: str, payload: Dict[str, Any], *, refresh_tok
     return {"success": True, "slots": slots}
 
 
-async def create_appointment(access_token: str, payload: Dict[str, Any], *, refresh_token: Optional[str] = None) -> Dict[str, Any]:
-    result = await request("POST", "/bookingapi/appointment/create", access_token, json=payload, refresh_token=refresh_token)
-    if not result.get("success"):
-        return result
-    appointment = (result.get("data") or {}).get("appointment")
-    return {"success": True, "appointment": appointment}
+def _normalize_booking_page_url(raw: str) -> str:
+    """Ensure the booking page URL is a full https://…setmore.com URL."""
+    val = (raw or "").strip().rstrip("/")
+    if not val:
+        return val
+    if re.match(r"^https?://", val, re.IGNORECASE):
+        return val
+    if ".setmore.com" in val.lower():
+        return f"https://{val}"
+    return f"https://{val}.setmore.com"
+
+
+def generate_booking_link(
+    booking_page_url: str,
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Build a prefilled Setmore booking link from the given payload. Does not create an appointment.
+
+    Payload may include: service_key, staff_key, start_time (YYYY-MM-DDTHH:MM or ISO), customer_key.
+    """
+    normalized = _normalize_booking_page_url(booking_page_url)
+    if not normalized:
+        return {"success": False, "error": "Missing booking page URL."}
+    parsed = urlparse(normalized.rstrip("/"))
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    path = parsed.path.rstrip("/")
+    if not path.endswith("/book"):
+        path = f"{path}/book" if path else "/book"
+
+    params: Dict[str, str] = {"step": "user-details", "type": "service"}
+    if payload.get("service_key"):
+        params["products"] = str(payload["service_key"])
+    if payload.get("staff_key"):
+        params["staff"] = str(payload["staff_key"])
+        params["staffSelected"] = "true"
+    if payload.get("customer_key"):
+        params["customer"] = str(payload["customer_key"])
+
+    start_time = payload.get("start_time")
+    if start_time:
+        try:
+            if isinstance(start_time, str):
+                dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+            else:
+                dt = start_time
+            epoch_ms = int(dt.timestamp() * 1000)
+            params["slot"] = str(epoch_ms)
+        except (ValueError, TypeError, AttributeError):
+            pass
+
+    booking_url = f"{base}{path}?{urlencode(params)}"
+    return {"success": True, "booking_url": booking_url}
 
 
 async def fetch_company(access_token: str, *, refresh_token: Optional[str] = None) -> Dict[str, Any]:

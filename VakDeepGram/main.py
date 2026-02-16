@@ -28,6 +28,7 @@ except ImportError:
     MaxTokensReachedException = None
 from deepgram_handler import deepgram_manager
 from providers import get_tools_for_provider, get_chat_prompt_for_provider, get_voice_prompt_for_provider
+from providers.common.helpers import StateDict
 import json
 
 
@@ -48,6 +49,8 @@ def _make_json_serializable(obj):
         return _make_json_serializable(obj.to_dict())
     # Fallback to string representation
     return str(obj)
+
+
 from connection_store import (
     get_connection_context,
     resolve_business_context,
@@ -345,7 +348,7 @@ async def chat(
             model=bedrock_model,
             system_prompt=system_prompt if system_prompt else None,
             tools=provider_tools,
-            state={"business_context": serializable_context},
+            state=StateDict({"business_context": serializable_context}),
             session_manager=session_manager,
         )
 
@@ -385,7 +388,7 @@ async def chat(
                         model=bedrock_model,
                         system_prompt=system_prompt if system_prompt else None,
                         tools=provider_tools,
-                        state={"business_context": serializable_context},
+                        state=StateDict({"business_context": serializable_context}),
                         session_manager=session_manager,
                     )
                     continue
@@ -621,7 +624,7 @@ async def twilio_chat(request: Request):
             model=bedrock_model,
             system_prompt=system_prompt if system_prompt else None,
             tools=provider_tools,
-            state={"business_context": serializable_context},
+            state=StateDict({"business_context": serializable_context}),
             session_manager=session_manager,
         )
 
@@ -660,7 +663,7 @@ async def twilio_chat(request: Request):
                         model=bedrock_model,
                         system_prompt=system_prompt if system_prompt else None,
                         tools=provider_tools,
-                        state={"business_context": serializable_context},
+                        state=StateDict({"business_context": serializable_context}),
                         session_manager=session_manager,
                     )
                     continue

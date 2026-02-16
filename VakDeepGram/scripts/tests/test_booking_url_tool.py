@@ -36,7 +36,6 @@ async def main() -> int:
         def __init__(self, business_context: dict):
             self.agent = MockAgent({"business_context": business_context})
 
-    mock_tc = MockToolContext(ctx)
     # Use a service name that likely exists (e.g. first service from context)
     services = ctx.get("services") or []
     service_name = "Regular Haircut"
@@ -47,30 +46,37 @@ async def main() -> int:
         else:
             service_name = getattr(first_svc, "name", None) or getattr(first_svc, "item_data", {}).get("name", service_name)
 
-    print(f"Calling create_appointment (service={service_name}, date=2026-02-20T14:00:00) ...")
+    # Pass customer_id="" and phone so the tool creates the customer, then creates the appointment
+    ctx["caller"] = "+15105796565"
+    mock_tc = MockToolContext(ctx)
+    print(f"Calling create_appointment (service={service_name}, date=2026-02-20T14:00:00, create customer from phone) ...")
     result = await create_appointment(
         mock_tc,
         first_name="John",
         last_name="Smith",
-        customer_id="test-customer-key-123",
+        customer_id="",
         date="2026-02-20T14:00:00",
         service=service_name,
         staff_id=None,
         phone_number="+15105796565",
-        caller_number=None,
+        caller_number="+15105796565",
     )
 
     if not result.get("success"):
         print(f"FAIL: create_appointment returned: {result.get('error')}")
+        if result.get("booking_url"):
+            print(f"  (fallback booking_url present: {result.get('booking_url')[:70]}...)")
         return 1
 
     url = result.get("booking_url") or ""
     if "setmore.com" not in url or "/book" not in url:
-        print(f"FAIL: booking_url missing or invalid: {url[:80]}...")
+        print(f"FAIL: booking_url missing or invalid: {url[:80] if url else 'None'}...")
         return 1
 
     print(f"PASS: create_appointment returned booking_url ({len(url)} chars)")
     print(f"  URL: {url[:90]}...")
+    if result.get("appointment_id"):
+        print(f"  appointment_id: {result.get('appointment_id')}")
     return 0
 
 

@@ -32,7 +32,7 @@ def test_build_booking_url() -> None:
     url = build_booking_url("themissionbarber")
     assert "themissionbarber.setmore.com" in url
     assert "/book" in url
-    assert "step=payment" in url
+    assert "step=user-details" in url
     assert "type=service" in url
 
     # With service, staff, slot, customer
@@ -50,7 +50,7 @@ def test_build_booking_url() -> None:
     assert "staff=e6e0f716" in url or "staff=" in url
     assert "slot=" in url
     assert "customer=31a34811" in url or "customer=" in url
-    assert "step=payment" in url
+    assert "step=user-details" in url
 
 
 def test_slot_to_iso() -> None:

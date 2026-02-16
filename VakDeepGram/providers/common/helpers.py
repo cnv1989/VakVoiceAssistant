@@ -17,6 +17,19 @@ from utils.phone import normalize_phone_number
 logger = logging.getLogger(__name__)
 
 
+class StateDict(dict):
+    """Dict wrapper that supports .get() with no args (returns full dict).
+
+    Strands may call state.get() with no arguments expecting the full state;
+    Python's dict.get() requires at least one argument. This wrapper allows
+    .get() with no args to return a copy of the dict.
+    """
+    def get(self, key=None, default=None):
+        if key is None:
+            return dict(self)
+        return super().get(key, default)
+
+
 # ── Context access ────────────────────────────────────────────────────────────
 
 def get_business_context(tool_context: Optional[ToolContext]) -> dict:
@@ -27,12 +40,13 @@ def get_business_context(tool_context: Optional[ToolContext]) -> dict:
     agent = getattr(tool_context, "agent", None)
     if agent is not None:
         state = getattr(agent, "state", None) or {}
-        ctx = state.get("business_context")
-        if ctx is not None:
+        ctx = state.get("business_context") if hasattr(state, "get") else None
+        if ctx is not None and isinstance(ctx, dict):
             return ctx
     # Fallback: invocation_state (some Strands versions may pass state here)
     inv = getattr(tool_context, "invocation_state", None) or {}
-    return inv.get("business_context") or {}
+    ctx = inv.get("business_context") if hasattr(inv, "get") else None
+    return ctx if isinstance(ctx, dict) else {}
 
 
 def update_business_context(tool_context: ToolContext, updates: dict) -> dict:
@@ -76,19 +90,17 @@ def update_business_context(tool_context: ToolContext, updates: dict) -> dict:
     # Now update the mutable dict
     business_context.update(updates)
     
-    # Update state with the modified business_context
-    # Wrap in try/except in case state assignment fails (read-only state)
+    # Update state with the modified business_context.
+    # Use StateDict so Strands can call state.get() with no args on the next turn.
     try:
         state["business_context"] = business_context
-        tool_context.agent.state = state
+        tool_context.agent.state = StateDict(state)
     except (TypeError, ValueError) as e:
         # If state assignment fails, try to create a completely new state dict
         logger.warning("Failed to update state directly, creating new state dict: %s", e)
         try:
-            # Create a completely new state dict with updated business_context
             new_state = {}
             if agent_state:
-                # Copy all existing state keys except business_context
                 for k, v in agent_state.items():
                     if k != "business_context":
                         try:
@@ -96,10 +108,9 @@ def update_business_context(tool_context: ToolContext, updates: dict) -> dict:
                         except (TypeError, ValueError):
                             pass
             new_state["business_context"] = business_context
-            tool_context.agent.state = new_state
+            tool_context.agent.state = StateDict(new_state)
         except Exception as e2:
             logger.error("Failed to create new state dict: %s", e2, exc_info=True)
-            # Return business_context anyway - at least the update worked
     
     return business_context
 

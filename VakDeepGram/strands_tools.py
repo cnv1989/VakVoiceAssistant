@@ -35,7 +35,7 @@ from utils.square_helpers import (
     parse_square_response,
     extract_square_cursor,
 )
-from business_logic import send_booking_link_sms, send_booking_link_whatsapp, build_setmore_booking_url
+from business_logic import send_booking_link_sms, send_booking_link_whatsapp
 
 logger = logging.getLogger(__name__)
 
@@ -578,8 +578,7 @@ async def create_appointment(
     If staff_id is omitted, the system picks an available staff member.
     Date should be in ISO format (YYYY-MM-DDTHH:MM:SS).
 
-    For Setmore: Creates the appointment via the Setmore API (staff_key, service_key, customer_key,
-    start_time, end_time). After creation, may send a confirmation or booking link via WhatsApp/SMS.
+    For Setmore: Cannot create appointments directly. Generates a prefilled booking link. Chat: include the booking_url in your reply. Call: link is sent via WhatsApp; tell the customer to check WhatsApp.
     """
     business_context = _get_business_context_from_tool(tool_context)
     if not all([first_name, last_name, date, service]):
@@ -642,7 +641,11 @@ async def create_appointment(
         staff_name = _staff_display_name(business_context, resolved_staff_id)
         service_name = service_item.get("name") or service
 
-        # Required for Setmore API: staff_key, service_key, customer_key, start_time, end_time (yyyy-MM-dd'T'HH:mm)
+        # Generate booking link (no appointment creation)
+        booking_page_url = business_context.get("bookingPageUrl") or business_context.get("booking_page_url")
+        if not booking_page_url:
+            return {"success": False, "error": "Booking page URL not configured for this business."}
+
         duration_minutes = service_item.get("duration_minutes") or service_item.get("duration") or 30
         end_dt = start_dt + timedelta(minutes=duration_minutes)
         start_time_local = start_dt.replace(tzinfo=None) if start_dt.tzinfo else start_dt
@@ -657,41 +660,12 @@ async def create_appointment(
             "start_time": start_time_str,
             "end_time": end_time_str,
         }
-        logger.info("create_appointment (setmore): creating via API: %s", appointment_payload)
-        appointment_result = await setmore_api.create_appointment(
-            context_info["access_token"], appointment_payload, refresh_token=context_info.get("refresh_token")
-        )
-
-        if not appointment_result.get("success"):
-            logger.error("create_appointment (setmore): API failed: %s", appointment_result)
-            booking_page_url = business_context.get("bookingPageUrl") or business_context.get("booking_page_url")
-            if booking_page_url:
-                prefilled_url = build_setmore_booking_url(
-                    booking_page_url,
-                    service_key=service_key,
-                    staff_key=resolved_staff_id,
-                    start_dt=start_dt,
-                    customer_key=resolved_customer_id,
-                )
-                return {
-                    "success": False,
-                    "error": appointment_result.get("error") or "Failed to create appointment via API.",
-                    "booking_url": prefilled_url,
-                    "fallback": True,
-                }
-            return {"success": False, "error": appointment_result.get("error") or "Failed to create appointment."}
-
-        appointment = appointment_result.get("appointment")
-        logger.info("create_appointment (setmore): created appointment key=%s", appointment.get("key") if appointment else None)
-
-        booking_page_url = business_context.get("bookingPageUrl") or business_context.get("booking_page_url")
-        prefilled_url = build_setmore_booking_url(
-            booking_page_url,
-            service_key=service_key,
-            staff_key=resolved_staff_id,
-            start_dt=start_dt,
-            customer_key=resolved_customer_id,
-        ) if booking_page_url else None
+        logger.info("create_appointment (setmore): generating booking link: %s", appointment_payload)
+        link_result = setmore_api.generate_booking_link(booking_page_url, appointment_payload)
+        if not link_result.get("success"):
+            return {"success": False, "error": link_result.get("error") or "Failed to generate booking link."}
+        prefilled_url = link_result.get("booking_url")
+        logger.info("create_appointment (setmore): booking_url=%s", prefilled_url)
 
         to_number = normalize_phone_number(phone_number) if phone_number else None
         from_number = business_context.get("businessNumber")
@@ -744,8 +718,8 @@ async def create_appointment(
 
         return {
             "success": True,
-            "appointment": appointment,
-            "appointment_id": appointment.get("key") if appointment else None,
+            "appointment": None,
+            "appointment_id": None,
             "booking_url": prefilled_url,
             "message_sent": msg_sent,
             "message_channel": msg_channel,
@@ -762,9 +736,9 @@ async def create_appointment(
                 "duration_minutes": duration_minutes,
             },
             "message": (
-                f"Appointment created successfully! Confirmation sent to {to_number} via WhatsApp." if msg_channel == "whatsapp"
-                else f"Appointment created successfully! Confirmation sent to {to_number} via text." if msg_channel == "sms"
-                else "Appointment created successfully!"
+                f"Here's your booking link! Sent to {to_number} via WhatsApp." if msg_channel == "whatsapp"
+                else f"Here's your booking link! Sent to {to_number} via text." if msg_channel == "sms"
+                else "Here's your booking link!"
             ),
         }
 

@@ -16,6 +16,7 @@ Usage:
   cd VakDeepGram
   python -m scripts.tests.test_booking_url_flow
   python -m scripts.tests.test_booking_url_flow --base-url http://localhost:8080
+  python -m scripts.tests.test_booking_url_flow --timeout 120 --request-timeout 60
 """
 from __future__ import annotations
 
@@ -33,6 +34,8 @@ import httpx
 BUSINESS_NUMBER = "+15104054454"
 CUSTOMER_NUMBER = "+15105796565"
 DEFAULT_BASE_URL = "http://localhost:8080"
+# Total test timeout (all messages). Single request still limited by httpx timeout.
+DEFAULT_TEST_TIMEOUT_SEC = 300  # 5 min
 
 # Conversation aimed at reaching the booking URL.
 # Use Tuesday 17 Feb (known to return slots from Setmore API).
@@ -60,13 +63,14 @@ async def run(
     business_number: str,
     customer_number: str,
     session_id: str,
+    request_timeout: float = 90,
 ) -> tuple[bool, list[str], list[str]]:
     """Send booking messages; return (found_booking_url, all_replies, all_urls)."""
     url = f"{base_url}/chat"
     all_replies: list[str] = []
     all_urls: list[str] = []
 
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with httpx.AsyncClient(timeout=request_timeout) as client:
         for i, message in enumerate(BOOKING_MESSAGES):
             payload = {
                 "message": message,
@@ -113,15 +117,24 @@ async def main(args: argparse.Namespace) -> int:
     print(f"  Business : {args.business_number}")
     print(f"  Customer : {args.customer_number}")
     print(f"  Session  : {session_id}")
+    print(f"  Timeout  : {args.timeout}s total, {args.request_timeout}s per request")
     print("=" * 60)
     print()
 
-    found, replies, urls = await run(
-        base_url,
-        args.business_number,
-        args.customer_number,
-        session_id,
-    )
+    try:
+        found, replies, urls = await asyncio.wait_for(
+            run(
+                base_url,
+                args.business_number,
+                args.customer_number,
+                session_id,
+                request_timeout=args.request_timeout,
+            ),
+            timeout=args.timeout,
+        )
+    except asyncio.TimeoutError:
+        print(f"\nFAIL: Test timed out after {args.timeout}s.")
+        return 1
 
     print()
     if found:
@@ -143,6 +156,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--business-number", default=BUSINESS_NUMBER)
     p.add_argument("--customer-number", default=CUSTOMER_NUMBER)
     p.add_argument("--session-id", default=None)
+    p.add_argument("--timeout", type=float, default=DEFAULT_TEST_TIMEOUT_SEC, help="Total test timeout (seconds)")
+    p.add_argument("--request-timeout", type=float, default=90, help="Per-request HTTP timeout (seconds)")
     return p
 
 
