@@ -48,8 +48,15 @@ async def run_async_with_retry(
         Result of the first successful await.
     """
     last_exc: BaseException | None = None
+    # retry_if_exception_type accepts a single exception type or a tuple of types
+    # Pass the tuple directly (not unpacked)
+    if retry_exceptions:
+        retry_condition = retry_if_exception_type(retry_exceptions)
+    else:
+        # If no specific exceptions provided, retry on all exceptions
+        retry_condition = retry_if_exception_type(Exception)
     async for attempt in AsyncRetrying(
-        retry=retry_if_exception_type(*retry_exceptions),
+        retry=retry_condition,
         stop=stop,
         wait=wait,
         reraise=reraise,

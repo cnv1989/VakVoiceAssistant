@@ -152,10 +152,24 @@ async def create_customer(
         payload["cell_phone"] = pf["cell_phone"]
 
     refresh = _get_refresh_token(business_context)
+    logger.info("create_customer: Calling Setmore API (first_name=%s, last_name=%s, phone=%s)", first_name, last_name, phone)
     result = await setmore_api.create_customer(access_token, payload, refresh_token=refresh)
     if not result.get("success"):
+        logger.error("create_customer: Setmore API returned failure: %s", result)
         return result
-    customer = result.get("customer") or {}
+    customer = result.get("customer")
+    if not customer or not isinstance(customer, dict) or not customer.get("key"):
+        logger.error(
+            "create_customer: Setmore returned success but customer is missing/invalid: result=%s",
+            result,
+        )
+        return {
+            "success": False,
+            "error": "Customer creation succeeded but customer data is missing or invalid. Please try again.",
+        }
+    logger.info("create_customer: Successfully created customer with key=%s", customer.get("key"))
+    # Note: Setmore API may not return phone number in create response even if provided
+    # The phone number is stored but may need to be fetched separately if needed
     update_business_context(tool_context, {"customer": customer})
     return {"success": True, "customer": customer}
 
@@ -179,6 +193,7 @@ async def lookup_or_create_customer_using_caller(
     business_context = get_business_context(tool_context)
     caller = business_context.get("caller")
     if not caller:
+        logger.warning("lookup_or_create_customer_using_caller: No caller number in context")
         return {"success": False, "error": "No caller number available. Ask the customer for their phone number."}
     if customer_confirmed_use_of_caller_phone is not True:
         return {
@@ -188,6 +203,7 @@ async def lookup_or_create_customer_using_caller(
         }
 
     if first_name:
+        logger.info("lookup_or_create_customer_using_caller: Looking up customer (first_name=%s, caller=%s)", first_name, caller)
         result = await find_customer(
             tool_context,
             phone=caller,
@@ -195,10 +211,13 @@ async def lookup_or_create_customer_using_caller(
             customer_confirmed_use_of_caller_phone=True,
         )
         if not result.get("success"):
+            logger.warning("lookup_or_create_customer_using_caller: find_customer failed: %s", result)
             return result
         customer = result.get("customer")
         if customer:
+            logger.info("lookup_or_create_customer_using_caller: Customer found: %s", customer.get("key"))
             return {"success": True, "customer": customer, "new_customer": False}
+        logger.info("lookup_or_create_customer_using_caller: Customer not found, will create")
     else:
         return {
             "success": False,
@@ -213,6 +232,7 @@ async def lookup_or_create_customer_using_caller(
             "need_last_name": True,
         }
 
+    logger.info("lookup_or_create_customer_using_caller: Creating customer (first_name=%s, last_name=%s, caller=%s)", first_name, last_name, caller)
     result = await create_customer(
         tool_context,
         first_name=first_name,
@@ -220,6 +240,7 @@ async def lookup_or_create_customer_using_caller(
         phone_number=caller,
         customer_confirmed_use_of_caller_phone=True,
     )
+    logger.info("lookup_or_create_customer_using_caller: create_customer result: success=%s, error=%s", result.get("success"), result.get("error"))
     if result.get("success") and result.get("customer"):
         update_business_context(tool_context, {"customer": result["customer"]})
     return result
@@ -362,11 +383,11 @@ async def create_appointment(
     phone_number: Optional[str] = None,
     caller_number: Optional[str] = None,
 ) -> dict:
-    """Schedule a new appointment by generating a prefilled Setmore booking link.
+    """Schedule a new appointment by creating it via the Setmore API.
 
-    Instead of booking directly, this builds a booking URL with the service,
-    staff, date/time, and customer pre-selected, then optionally sends it via SMS.
-    Tell the customer you are providing them a booking link to complete their appointment.
+    Creates the appointment directly using the Setmore API with required fields:
+    staff_key, service_key, customer_key, start_time, and end_time.
+    After successful creation, optionally sends a booking confirmation via WhatsApp or SMS.
 
     Before calling:
     1. Check availability using check_availability.
@@ -417,29 +438,97 @@ async def create_appointment(
         if pf.get("cell_phone"):
             payload["cell_phone"] = pf["cell_phone"]
         refresh = _get_refresh_token(business_context)
+        logger.info("create_appointment: Creating customer (first_name=%s, last_name=%s, phone=%s)", first_name, last_name, phone)
         created = await setmore_api.create_customer(access_token, payload, refresh_token=refresh)
         if not created.get("success"):
+            logger.error("create_appointment: Setmore API returned failure: %s", created)
             return {"success": False, "error": created.get("error")}
-        resolved_customer_id = (created.get("customer") or {}).get("key")
+        customer = created.get("customer")
+        if not customer or not isinstance(customer, dict) or not customer.get("key"):
+            logger.error(
+                "create_appointment: Setmore returned success but customer is missing/invalid: result=%s",
+                created,
+            )
+            return {
+                "success": False,
+                "error": "Customer creation succeeded but customer data is missing or invalid. Please try again.",
+            }
+        resolved_customer_id = customer.get("key")
+        logger.info("create_appointment: Successfully created customer with key=%s", resolved_customer_id)
 
     resolved_staff = staff_id or resolve_staff_key(business_context, [staff_id] if staff_id else [])
+    if not resolved_staff:
+        return {"success": False, "error": "Staff is required for appointment creation."}
+    
     staff_name_str = staff_display_name(business_context, resolved_staff)
     service_name = service_item.get("name") or service
 
-    # Build prefilled URL
+    # Get service duration to calculate end_time
+    duration_minutes = service_item.get("duration_minutes") or service_item.get("duration")
+    if not duration_minutes:
+        # Default to 30 minutes if duration not specified
+        logger.warning("setmore.create_appointment: Service duration not found, defaulting to 30 minutes")
+        duration_minutes = 30
+    
+    # Calculate end_time
+    end_dt = start_dt + timedelta(minutes=duration_minutes)
+    
+    # Format times as ISO strings (Setmore expects yyyy-MM-dd'T'HH:mm format without seconds)
+    # Remove timezone info and format without seconds
+    start_time_local = start_dt.replace(tzinfo=None) if start_dt.tzinfo else start_dt
+    end_time_local = end_dt.replace(tzinfo=None) if end_dt.tzinfo else end_dt
+    start_time_str = start_time_local.strftime("%Y-%m-%dT%H:%M")
+    end_time_str = end_time_local.strftime("%Y-%m-%dT%H:%M")
+    
+    # Create appointment via Setmore API
+    appointment_payload = {
+        "staff_key": resolved_staff,
+        "service_key": service_key,
+        "customer_key": resolved_customer_id,
+        "start_time": start_time_str,
+        "end_time": end_time_str,
+    }
+    
+    refresh = _get_refresh_token(business_context)
+    logger.info("setmore.create_appointment: Creating appointment via API: %s", appointment_payload)
+    appointment_result = await setmore_api.create_appointment(access_token, appointment_payload, refresh_token=refresh)
+    
+    if not appointment_result.get("success"):
+        logger.error("setmore.create_appointment: API call failed: %s", appointment_result)
+        # Fall back to booking URL if API creation fails
+        booking_page_url = business_context.get("bookingPageUrl") or business_context.get("booking_page_url")
+        if booking_page_url:
+            prefilled_url = build_booking_url(
+                booking_page_url,
+                service_key=service_key,
+                staff_key=resolved_staff,
+                start_dt=start_dt,
+                customer_key=resolved_customer_id,
+            )
+            logger.warning("setmore.create_appointment: Falling back to booking URL: %s", prefilled_url)
+            return {
+                "success": False,
+                "error": appointment_result.get("error") or "Failed to create appointment via API.",
+                "booking_url": prefilled_url,
+                "fallback": True,
+            }
+        return {"success": False, "error": appointment_result.get("error") or "Failed to create appointment."}
+    
+    appointment = appointment_result.get("appointment")
+    logger.info("setmore.create_appointment: Successfully created appointment: %s", appointment.get("key") if appointment else "unknown")
+    
+    # Build prefilled URL for reference
     booking_page_url = business_context.get("bookingPageUrl") or business_context.get("booking_page_url")
-    if not booking_page_url:
-        logger.error("setmore.create_appointment: bookingPageUrl not set")
-        return {"success": False, "error": "Booking page URL not configured for this business."}
-
-    prefilled_url = build_booking_url(
-        booking_page_url,
-        service_key=service_key,
-        staff_key=resolved_staff,
-        start_dt=start_dt,
-        customer_key=resolved_customer_id,
-    )
-    logger.info("setmore.create_appointment: url=%s", prefilled_url)
+    prefilled_url = None
+    if booking_page_url:
+        prefilled_url = build_booking_url(
+            booking_page_url,
+            service_key=service_key,
+            staff_key=resolved_staff,
+            start_dt=start_dt,
+            customer_key=resolved_customer_id,
+        )
+        logger.info("setmore.create_appointment: booking_url=%s", prefilled_url)
 
     # Try WhatsApp first, then fall back to SMS
     to_number = normalize_phone_number(phone) if phone else None
@@ -496,23 +585,27 @@ async def create_appointment(
 
     return {
         "success": True,
+        "appointment": appointment,
+        "appointment_id": appointment.get("key") if appointment else None,
         "booking_url": prefilled_url,
         "message_sent": msg_sent,
         "message_channel": msg_channel,
         "sms_sent": msg_sent and msg_channel == "sms",  # backward compat
         "appointment_details": {
             "date": start_dt.isoformat(),
+            "end_time": end_time_str,
             "service": service_name,
             "service_key": service_key,
             "staff_name": staff_name_str,
             "staff_key": resolved_staff,
             "customer_id": resolved_customer_id,
             "customer_phone": to_number,
+            "duration_minutes": duration_minutes,
         },
         "message": (
-            f"Booking link sent to {to_number} via WhatsApp." if msg_channel == "whatsapp"
-            else f"Booking link sent to {to_number} via text." if msg_channel == "sms"
-            else "Share this booking link with the customer to complete their appointment."
+            f"Appointment created successfully! Booking confirmation sent to {to_number} via WhatsApp." if msg_channel == "whatsapp"
+            else f"Appointment created successfully! Booking confirmation sent to {to_number} via text." if msg_channel == "sms"
+            else "Appointment created successfully!"
         ),
     }
 

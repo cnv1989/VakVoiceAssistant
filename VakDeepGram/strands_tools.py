@@ -508,14 +508,23 @@ async def create_customer(
     provider = _provider_from_context(business_context)
 
     if provider == "setmore":
-        normalized_phone = normalize_phone_number(phone_number) or phone_number
+        from providers.setmore.helpers import phone_fields
+        pf = phone_fields(phone_number)
         payload = {"first_name": first_name, "last_name": last_name}
-        if normalized_phone:
-            payload["cell_phone"] = normalized_phone
+        if pf.get("country_code"):
+            payload["country_code"] = pf["country_code"]
+        if pf.get("cell_phone"):
+            payload["cell_phone"] = pf["cell_phone"]
         created = await setmore_api.create_customer(context_info["access_token"], payload, refresh_token=context_info.get("refresh_token"))
         if not created.get("success"):
             return {"success": False, "error": created.get("error")}
-        return {"success": True, "customer": created.get("customer")}
+        customer = created.get("customer")
+        if not customer or not isinstance(customer, dict) or not customer.get("key"):
+            return {
+                "success": False,
+                "error": "Customer creation succeeded but customer data is missing or invalid. Please try again.",
+            }
+        return {"success": True, "customer": customer}
 
     client = _get_square_client(context_info["access_token"])
 
@@ -569,9 +578,8 @@ async def create_appointment(
     If staff_id is omitted, the system picks an available staff member.
     Date should be in ISO format (YYYY-MM-DDTHH:MM:SS).
 
-    For Setmore: Instead of booking directly, sends the customer a text message with a booking
-    link and prefilled appointment details (service, staff, date/time). Tell the customer you
-    are sending them a text with the booking link to complete their appointment.
+    For Setmore: Creates the appointment via the Setmore API (staff_key, service_key, customer_key,
+    start_time, end_time). After creation, may send a confirmation or booking link via WhatsApp/SMS.
     """
     business_context = _get_business_context_from_tool(tool_context)
     if not all([first_name, last_name, date, service]):
@@ -607,53 +615,96 @@ async def create_appointment(
         if not service_key:
             return {"success": False, "error": "Service key not found."}
 
-        # Ensure customer exists in Setmore so their info is prefilled
+        # Ensure customer exists in Setmore
         resolved_customer_id = customer_id
         if not resolved_customer_id and phone_number:
-            payload = {
-                "first_name": first_name,
-                "last_name": last_name,
-                "cell_phone": normalize_phone_number(phone_number) or phone_number,
-            }
+            from providers.setmore.helpers import phone_fields as setmore_phone_fields
+            pf = setmore_phone_fields(phone_number)
+            payload = {"first_name": first_name, "last_name": last_name}
+            if pf.get("country_code"):
+                payload["country_code"] = pf["country_code"]
+            if pf.get("cell_phone"):
+                payload["cell_phone"] = pf["cell_phone"]
             created = await setmore_api.create_customer(context_info["access_token"], payload, refresh_token=context_info.get("refresh_token"))
             if not created.get("success"):
                 return {"success": False, "error": created.get("error")}
-            resolved_customer_id = (created.get("customer") or {}).get("key")
+            customer = created.get("customer")
+            if not customer or not isinstance(customer, dict) or not customer.get("key"):
+                return {
+                    "success": False,
+                    "error": "Customer creation succeeded but customer data is missing or invalid. Please try again.",
+                }
+            resolved_customer_id = customer.get("key")
 
         resolved_staff_id = staff_id or _setmore_resolve_staff_key(business_context, [staff_id] if staff_id else [])
+        if not resolved_staff_id:
+            return {"success": False, "error": "Staff is required for appointment creation."}
         staff_name = _staff_display_name(business_context, resolved_staff_id)
         service_name = service_item.get("name") or service
 
-        # Build prefilled booking URL
+        # Required for Setmore API: staff_key, service_key, customer_key, start_time, end_time (yyyy-MM-dd'T'HH:mm)
+        duration_minutes = service_item.get("duration_minutes") or service_item.get("duration") or 30
+        end_dt = start_dt + timedelta(minutes=duration_minutes)
+        start_time_local = start_dt.replace(tzinfo=None) if start_dt.tzinfo else start_dt
+        end_time_local = end_dt.replace(tzinfo=None) if end_dt.tzinfo else end_dt
+        start_time_str = start_time_local.strftime("%Y-%m-%dT%H:%M")
+        end_time_str = end_time_local.strftime("%Y-%m-%dT%H:%M")
+
+        appointment_payload = {
+            "staff_key": resolved_staff_id,
+            "service_key": service_key,
+            "customer_key": resolved_customer_id,
+            "start_time": start_time_str,
+            "end_time": end_time_str,
+        }
+        logger.info("create_appointment (setmore): creating via API: %s", appointment_payload)
+        appointment_result = await setmore_api.create_appointment(
+            context_info["access_token"], appointment_payload, refresh_token=context_info.get("refresh_token")
+        )
+
+        if not appointment_result.get("success"):
+            logger.error("create_appointment (setmore): API failed: %s", appointment_result)
+            booking_page_url = business_context.get("bookingPageUrl") or business_context.get("booking_page_url")
+            if booking_page_url:
+                prefilled_url = build_setmore_booking_url(
+                    booking_page_url,
+                    service_key=service_key,
+                    staff_key=resolved_staff_id,
+                    start_dt=start_dt,
+                    customer_key=resolved_customer_id,
+                )
+                return {
+                    "success": False,
+                    "error": appointment_result.get("error") or "Failed to create appointment via API.",
+                    "booking_url": prefilled_url,
+                    "fallback": True,
+                }
+            return {"success": False, "error": appointment_result.get("error") or "Failed to create appointment."}
+
+        appointment = appointment_result.get("appointment")
+        logger.info("create_appointment (setmore): created appointment key=%s", appointment.get("key") if appointment else None)
+
         booking_page_url = business_context.get("bookingPageUrl") or business_context.get("booking_page_url")
-        if not booking_page_url:
-            logger.error("create_appointment: bookingPageUrl not set in business context")
-            return {"success": False, "error": "Booking page URL not configured for this business."}
-
-        to_number = normalize_phone_number(phone_number) if phone_number else None
-
         prefilled_url = build_setmore_booking_url(
             booking_page_url,
             service_key=service_key,
             staff_key=resolved_staff_id,
             start_dt=start_dt,
             customer_key=resolved_customer_id,
-        )
-        logger.info("create_appointment (setmore): prefilled_url=%s", prefilled_url)
+        ) if booking_page_url else None
 
-        # Try WhatsApp first, then fall back to SMS
+        to_number = normalize_phone_number(phone_number) if phone_number else None
         from_number = business_context.get("businessNumber")
         whatsapp_number = (business_context.get("location") or {}).get("whatsapp_number")
         msg_sent = False
         msg_channel = None
         if to_number and (whatsapp_number or from_number):
-            # Prefer WhatsApp if the business has a WhatsApp number
             if whatsapp_number:
                 try:
                     wa_result = send_booking_link_whatsapp(
                         whatsapp_from=whatsapp_number,
                         to_number=to_number,
-                        booking_page_url=booking_page_url,
+                        booking_page_url=booking_page_url or "",
                         service_name=service_name,
                         staff_name=staff_name,
                         start_dt=start_dt,
@@ -669,14 +720,12 @@ async def create_appointment(
                         logger.warning("create_appointment: WhatsApp send failed: %s", wa_result.get("error"))
                 except Exception as exc:
                     logger.warning("create_appointment: WhatsApp send exception: %s", exc)
-
-            # Fall back to SMS if WhatsApp was not available or failed
             if not msg_sent and from_number:
                 try:
                     sms_result = send_booking_link_sms(
                         from_number=from_number,
                         to_number=to_number,
-                        booking_page_url=booking_page_url,
+                        booking_page_url=booking_page_url or "",
                         service_name=service_name,
                         staff_name=staff_name,
                         start_dt=start_dt,
@@ -695,23 +744,27 @@ async def create_appointment(
 
         return {
             "success": True,
+            "appointment": appointment,
+            "appointment_id": appointment.get("key") if appointment else None,
             "booking_url": prefilled_url,
             "message_sent": msg_sent,
             "message_channel": msg_channel,
-            "sms_sent": msg_sent and msg_channel == "sms",  # backward compat
+            "sms_sent": msg_sent and msg_channel == "sms",
             "appointment_details": {
                 "date": start_dt.isoformat(),
+                "end_time": end_time_str,
                 "service": service_name,
                 "service_key": service_key,
                 "staff_name": staff_name,
                 "staff_key": resolved_staff_id,
                 "customer_id": resolved_customer_id,
                 "customer_phone": to_number,
+                "duration_minutes": duration_minutes,
             },
             "message": (
-                f"Booking link sent to {to_number} via WhatsApp." if msg_channel == "whatsapp"
-                else f"Booking link sent to {to_number} via text." if msg_channel == "sms"
-                else "Share this booking link with the customer to complete their appointment."
+                f"Appointment created successfully! Confirmation sent to {to_number} via WhatsApp." if msg_channel == "whatsapp"
+                else f"Appointment created successfully! Confirmation sent to {to_number} via text." if msg_channel == "sms"
+                else "Appointment created successfully!"
             ),
         }
 

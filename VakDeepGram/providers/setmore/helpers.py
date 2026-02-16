@@ -122,13 +122,40 @@ def slot_to_iso(base_date: datetime, slot_str: str, tzinfo: Any = None) -> Optio
 # ── Phone helpers ─────────────────────────────────────────────────────────────
 
 def phone_fields(phone_number: Optional[str]) -> Dict[str, Optional[str]]:
-    """Split a phone number into country_code and cell_phone for Setmore API."""
+    """Split a phone number into country_code and cell_phone for Setmore API.
+    
+    Setmore expects:
+    - country_code: "+1" for US numbers
+    - cell_phone: 10-digit number without country code (e.g., "5105551234")
+    
+    Returns dict with country_code and cell_phone keys.
+    """
     if not phone_number:
         return {"country_code": None, "cell_phone": None}
     normalized = normalize_phone_number(phone_number) or phone_number
-    if normalized.startswith("+") and len(normalized) > 2:
-        country_code = normalized[:2] if normalized.startswith("+1") else normalized[:3]
-        return {"country_code": country_code, "cell_phone": normalized}
+    
+    # Handle US numbers (+1XXXXXXXXXX or 1XXXXXXXXXX)
+    if normalized.startswith("+1") and len(normalized) == 12:
+        # +15105551234 -> country_code: "+1", cell_phone: "5105551234"
+        return {"country_code": "+1", "cell_phone": normalized[2:]}
+    elif normalized.startswith("1") and len(normalized) == 11:
+        # 15105551234 -> country_code: "+1", cell_phone: "5105551234"
+        return {"country_code": "+1", "cell_phone": normalized[1:]}
+    elif len(normalized) == 10 and normalized.isdigit():
+        # 5105551234 -> country_code: None, cell_phone: "5105551234"
+        return {"country_code": None, "cell_phone": normalized}
+    elif normalized.startswith("+") and len(normalized) > 2:
+        # Other country codes: extract country code (2-3 chars) and rest as cell_phone
+        if normalized.startswith("+1"):
+            country_code = "+1"
+            cell_phone = normalized[2:] if len(normalized) > 2 else normalized
+        else:
+            # For non-US, try to extract 3-char country code
+            country_code = normalized[:3] if len(normalized) > 3 else normalized[:2]
+            cell_phone = normalized[len(country_code):]
+        return {"country_code": country_code, "cell_phone": cell_phone}
+    
+    # Fallback: return as-is without country code
     return {"country_code": None, "cell_phone": normalized}
 
 

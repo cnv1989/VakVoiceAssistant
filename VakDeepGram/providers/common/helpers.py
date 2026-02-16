@@ -39,11 +39,68 @@ def update_business_context(tool_context: ToolContext, updates: dict) -> dict:
     """Persist chat selections in the agent state."""
     if not tool_context or not getattr(tool_context, "agent", None):
         return {}
-    state = tool_context.agent.state or {}
+    
+    # Get state - ensure it's mutable
+    agent_state = tool_context.agent.state
+    if agent_state is None:
+        state = {}
+    elif not isinstance(agent_state, dict):
+        # Convert read-only state to mutable dict
+        try:
+            state = dict(agent_state)
+        except (TypeError, ValueError):
+            state = {}
+    else:
+        # Make a copy to ensure mutability (state might be a read-only dict)
+        try:
+            state = dict(agent_state)
+        except TypeError:
+            # If dict() fails, try to create new dict from items
+            state = {k: v for k, v in agent_state.items()}
+    
+    # Get business_context - ensure it's mutable
     business_context = state.get("business_context") or {}
+    if business_context:
+        # Convert read-only dict to mutable dict
+        try:
+            business_context = dict(business_context)
+        except (TypeError, ValueError):
+            # If dict() fails, try to create new dict from items
+            try:
+                business_context = {k: v for k, v in business_context.items()}
+            except (TypeError, AttributeError):
+                business_context = {}
+    else:
+        business_context = {}
+    
+    # Now update the mutable dict
     business_context.update(updates)
-    state["business_context"] = business_context
-    tool_context.agent.state = state
+    
+    # Update state with the modified business_context
+    # Wrap in try/except in case state assignment fails (read-only state)
+    try:
+        state["business_context"] = business_context
+        tool_context.agent.state = state
+    except (TypeError, ValueError) as e:
+        # If state assignment fails, try to create a completely new state dict
+        logger.warning("Failed to update state directly, creating new state dict: %s", e)
+        try:
+            # Create a completely new state dict with updated business_context
+            new_state = {}
+            if agent_state:
+                # Copy all existing state keys except business_context
+                for k, v in agent_state.items():
+                    if k != "business_context":
+                        try:
+                            new_state[k] = v
+                        except (TypeError, ValueError):
+                            pass
+            new_state["business_context"] = business_context
+            tool_context.agent.state = new_state
+        except Exception as e2:
+            logger.error("Failed to create new state dict: %s", e2, exc_info=True)
+            # Return business_context anyway - at least the update worked
+    
     return business_context
 
 

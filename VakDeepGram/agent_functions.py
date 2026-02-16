@@ -92,8 +92,8 @@ async def create_appointment(params):
     phone_number = params.get("phone_number")
     customer_id = params.get("customer_id")
     staff_id = params.get("staff_id")
-    if not all([first_name, last_name, date, service, customer_id, staff_id]):
-        return {"error": "first_name, last_name, date, service, customer_id, and staff_id are required"}
+    if not all([first_name, last_name, date, service, customer_id]):
+        return {"error": "first_name, last_name, date, service, and customer_id are required"}
     result = await schedule_appointment_with_contact(
         connection_id,
         first_name,
@@ -393,7 +393,9 @@ FUNCTION_DEFINITIONS = [
         3. Confirm date/time and service type with the customer (must be an available slot)
         4. Collect first and last name and confirm spelling before booking
         5. If the customer exists, pass their customer_id; if not, create the customer first.
-        Use the caller's phone number from context unless the customer provides a different number.""",
+        Use the caller's phone number from context unless the customer provides a different number.
+        For Setmore: Creates the appointment via API; a confirmation or booking link may be sent to the customer.
+        For Square: staff_id is required. For Setmore: staff_id is optional (system can pick available staff).""",
         "parameters": {
             "type": "object",
             "properties": {
@@ -411,11 +413,11 @@ FUNCTION_DEFINITIONS = [
                 },
                 "customer_id": {
                     "type": "string",
-                    "description": "Square customer ID. Required for booking.",
+                    "description": "Customer ID (Square customer ID or Setmore customer_key). Required for booking.",
                 },
                 "staff_id": {
                     "type": "string",
-                    "description": "Square team member ID for the appointment. Required for booking.",
+                    "description": "Staff/team member ID for the appointment. Required for Square; optional for Setmore (system picks if omitted).",
                 },
                 "date": {
                     "type": "string",
@@ -426,7 +428,7 @@ FUNCTION_DEFINITIONS = [
                     "description": "Type of service requested. Always validate against get_services results and clarify if needed.",
                 },
             },
-            "required": ["first_name", "last_name", "customer_id", "staff_id", "date", "service"],
+            "required": ["first_name", "last_name", "customer_id", "date", "service"],
         },
     },
     {

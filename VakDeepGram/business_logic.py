@@ -19,6 +19,12 @@ from utils.phone import normalize_phone_number
 from utils import setmore_api
 from utils import booking_helpers
 from utils.square_client import get_square_client
+from providers.setmore.helpers import (
+    format_date as _setmore_format_date,
+    slot_to_iso as _setmore_slot_to_iso,
+    match_service as _setmore_match_service,
+    resolve_staff_key as _setmore_resolve_staff_key,
+)
 from utils.square_helpers import (
     get_square_environment as _square_environment,
     parse_square_response as _parse_square_response,
@@ -38,64 +44,14 @@ def _provider_from_context(context: Dict[str, Any]) -> str:
     return (context.get("provider") or "square").lower()
 
 
-def _setmore_match_service(context: Dict[str, Any], service_name: str) -> Optional[Dict[str, Any]]:
-    if not service_name:
-        return None
-    target = service_name.strip().lower()
-    for service in context.get("services") or []:
-        name = (service.get("name") or "").strip().lower()
-        if name == target:
-            return service
-    for service in context.get("services") or []:
-        name = (service.get("name") or "").strip().lower()
-        if target in name:
-            return service
-    return None
-
-
-def _setmore_resolve_staff_key(context: Dict[str, Any], staff_ids: Optional[list[str]]) -> Optional[str]:
-    staff_list = context.get("staff") or []
-    if staff_ids:
-        requested = [value.lower() for value in staff_ids if isinstance(value, str)]
-        for staff in staff_list:
-            staff_id = (staff.get("id") or "").lower()
-            display_name = (staff.get("display_name") or "").lower()
-            if staff_id in requested or display_name in requested:
-                return staff.get("id")
-    if staff_list:
-        return staff_list[0].get("id")
-    return None
-
-
-def _setmore_format_date(dt_value: datetime) -> str:
-    return dt_value.strftime("%d/%m/%Y")
-
-
-def _setmore_slot_to_iso(date_value: datetime, slot: str, tzinfo) -> Optional[str]:
-    try:
-        if isinstance(slot, str):
-            parts = slot.replace(":", ".").split(".")
-            hour = int(parts[0])
-            minute = int(parts[1]) if len(parts) > 1 else 0
-        else:
-            return None
-        start_dt = date_value.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if tzinfo and start_dt.tzinfo is None:
-            start_dt = start_dt.replace(tzinfo=tzinfo)
-        return start_dt.isoformat(timespec="seconds")
-    except Exception:
-        return None
+# Use canonical Setmore helpers (imported above) instead of local implementations
+# These helpers handle 12-hour format slot strings from Setmore API (e.g. "9:00 AM")
 
 
 def _setmore_phone_fields(phone_number: Optional[str]) -> Dict[str, Optional[str]]:
-    if not phone_number:
-        return {"country_code": None, "cell_phone": None}
-    normalized = normalize_phone_number(phone_number) or phone_number
-    if normalized.startswith("+") and len(normalized) > 2:
-        # Best-effort split: country code is first 2-3 chars
-        country_code = normalized[:2] if normalized.startswith("+1") else normalized[:3]
-        return {"country_code": country_code, "cell_phone": normalized}
-    return {"country_code": None, "cell_phone": normalized}
+    """Use canonical phone_fields helper from providers.setmore.helpers."""
+    from providers.setmore.helpers import phone_fields
+    return phone_fields(phone_number)
 
 
 def _normalize_setmore_booking_url(raw: str) -> str:
@@ -453,7 +409,14 @@ async def create_customer(
         created = await setmore_api.create_customer(access_token, payload, refresh_token=refresh_token)
         if not created.get("success"):
             return {"success": False, "error": created.get("error")}
-        return {"success": True, "customer": created.get("customer")}
+        customer = created.get("customer")
+        if not customer or not isinstance(customer, dict) or not customer.get("key"):
+            return {
+                "success": False,
+                "error": "Customer creation succeeded but customer data is missing or invalid. Please try again.",
+            }
+        # Note: Setmore API may not return phone number in create response even if provided
+        return {"success": True, "customer": customer}
 
     lookup = await fetch_square_customer_by_phone(access_token, caller_phone)
     if lookup.get("success") and lookup.get("customer"):
@@ -1263,54 +1226,100 @@ async def schedule_appointment_with_contact(
             created = await setmore_api.create_customer(access_token, payload, refresh_token=refresh_token)
             if not created.get("success"):
                 return {"success": False, "error": created.get("error")}
-            resolved_customer_id = (created.get("customer") or {}).get("key")
+            customer = created.get("customer")
+            if not customer or not isinstance(customer, dict) or not customer.get("key"):
+                return {
+                    "success": False,
+                    "error": "Customer creation succeeded but customer data is missing or invalid. Please try again.",
+                }
+            resolved_customer_id = customer.get("key")
 
         resolved_staff_id = staff_id or _setmore_resolve_staff_key(context, [staff_id] if staff_id else [])
+        if not resolved_staff_id:
+            return {"success": False, "error": "Staff is required for appointment creation."}
         staff_name = _staff_display_name(context, resolved_staff_id)
         service_name = service_item.get("name") or service
 
-        # Send booking link via SMS instead of creating the appointment directly
+        # Create appointment via Setmore API (required: staff_key, service_key, customer_key, start_time, end_time)
+        duration_minutes = service_item.get("duration_minutes") or service_item.get("duration") or 30
+        end_dt = start_dt + timedelta(minutes=duration_minutes)
+        start_time_local = start_dt.replace(tzinfo=None) if start_dt.tzinfo else start_dt
+        end_time_local = end_dt.replace(tzinfo=None) if end_dt.tzinfo else end_dt
+        start_time_str = start_time_local.strftime("%Y-%m-%dT%H:%M")
+        end_time_str = end_time_local.strftime("%Y-%m-%dT%H:%M")
+        appointment_payload = {
+            "staff_key": resolved_staff_id,
+            "service_key": service_key,
+            "customer_key": resolved_customer_id,
+            "start_time": start_time_str,
+            "end_time": end_time_str,
+        }
+        refresh_token = context.get("refreshToken") or context.get("refresh_token")
+        appointment_result = await setmore_api.create_appointment(access_token, appointment_payload, refresh_token=refresh_token)
+        if not appointment_result.get("success"):
+            booking_page_url = context.get("bookingPageUrl") or context.get("booking_page_url")
+            if booking_page_url:
+                prefilled_url = build_setmore_booking_url(
+                    booking_page_url,
+                    service_key=service_key,
+                    staff_key=resolved_staff_id,
+                    start_dt=start_dt,
+                    customer_key=resolved_customer_id,
+                )
+                return {
+                    "success": False,
+                    "error": appointment_result.get("error") or "Failed to create appointment via API.",
+                    "booking_url": prefilled_url,
+                    "fallback": True,
+                }
+            return {"success": False, "error": appointment_result.get("error") or "Failed to create appointment."}
+
+        appointment = appointment_result.get("appointment")
         booking_page_url = context.get("bookingPageUrl") or context.get("booking_page_url")
-        if not booking_page_url:
-            return {"success": False, "error": "Booking page URL not configured for this business."}
+        prefilled_url = build_setmore_booking_url(
+            booking_page_url,
+            service_key=service_key,
+            staff_key=resolved_staff_id,
+            start_dt=start_dt,
+            customer_key=resolved_customer_id,
+        ) if booking_page_url else None
 
         to_number = normalize_phone_number(caller_phone) if caller_phone else None
         from_number = context.get("businessNumber")
-        if not to_number:
-            return {"success": False, "error": "Customer phone number is required to send the booking link."}
-        if not from_number:
-            return {"success": False, "error": "Business phone number not available for sending SMS."}
+        msg_sent = False
+        if to_number and from_number:
+            sms_result = send_booking_link_sms(
+                from_number=from_number,
+                to_number=to_number,
+                booking_page_url=booking_page_url or "",
+                service_name=service_name,
+                staff_name=staff_name,
+                start_dt=start_dt,
+                customer_first_name=first_name,
+                service_key=service_key,
+                staff_key=resolved_staff_id,
+                customer_key=resolved_customer_id,
+            )
+            msg_sent = sms_result.get("success", False)
 
-        sms_result = send_booking_link_sms(
-            from_number=from_number,
-            to_number=to_number,
-            booking_page_url=booking_page_url,
-            service_name=service_name,
-            staff_name=staff_name,
-            start_dt=start_dt,
-            customer_first_name=first_name,
-            service_key=service_key,
-            staff_key=resolved_staff_id,
-            customer_key=resolved_customer_id,
-        )
-        if not sms_result.get("success"):
-            return {"success": False, "error": sms_result.get("error")}
-
-        prefilled_url = sms_result.get("booking_url") or booking_page_url
         return {
             "success": True,
-            "booking_link_sent": True,
+            "appointment": appointment,
+            "appointment_id": appointment.get("key") if appointment else None,
+            "booking_link_sent": msg_sent,
             "booking_url": prefilled_url,
             "appointment_details": {
                 "date": start_dt.isoformat(),
+                "end_time": end_time_str,
                 "service": service_name,
                 "service_key": service_key,
                 "staff_name": staff_name,
                 "staff_key": resolved_staff_id,
                 "customer_id": resolved_customer_id,
                 "customer_phone": to_number,
+                "duration_minutes": duration_minutes,
             },
-            "message": f"Booking link with prefilled details has been sent to {to_number} via text message.",
+            "message": f"Appointment created successfully." + (f" Confirmation sent to {to_number} via text." if msg_sent else ""),
         }
 
     if not location_id:
