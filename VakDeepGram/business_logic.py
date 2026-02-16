@@ -1306,8 +1306,8 @@ async def schedule_appointment_with_contact(
         return {"success": False, "error": "Missing Square access token or location ID."}
 
     client = get_square_client(access_token)
-    timezone = _resolve_location_timezone(context)
-    tzinfo = ZoneInfo(timezone) if timezone and ZoneInfo else None
+    timezone_name = _resolve_location_timezone(context)
+    tzinfo = ZoneInfo(timezone_name) if timezone_name and ZoneInfo else None
     start_dt = _parse_datetime(date)
     if start_dt.tzinfo is None:
         start_dt = start_dt.replace(tzinfo=tzinfo or timezone.utc)
@@ -1776,8 +1776,8 @@ async def get_available_appointment_slots(
         )
         return {"success": False, "error": "Missing Square access token or location ID."}
     client = get_square_client(access_token)
-    timezone = _resolve_location_timezone(context)
-    tzinfo = ZoneInfo(timezone) if timezone and ZoneInfo else None
+    timezone_name = _resolve_location_timezone(context)
+    tzinfo = ZoneInfo(timezone_name) if timezone_name and ZoneInfo else None
     start_at_local, end_at_local = _resolve_date_range(start_date, end_date, tzinfo)
     start_at_local, end_at_local = _ensure_minimum_range(start_at_local, end_at_local)
     start_at = _isoformat_utc(start_at_local)
@@ -1786,7 +1786,7 @@ async def get_available_appointment_slots(
         "Availability range resolved (start=%s end=%s tz=%s start_local=%s end_local=%s)",
         start_at,
         end_at,
-        timezone,
+        timezone_name,
         start_at_local.isoformat(timespec="seconds"),
         end_at_local.isoformat(timespec="seconds"),
     )
