@@ -3,6 +3,7 @@ import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
 import { VakNetworkStack } from '../lib/vak-network-stack';
 import { VakAppStack } from '../lib/vak-app-stack';
+import { VakMonitoringStack } from '../lib/vak-monitoring-stack';
 
 const app = new cdk.App();
 
@@ -60,3 +61,10 @@ const appStack = new VakAppStack(app, 'VakAppStack', {
 
 // Add explicit dependency
 appStack.addDependency(networkStack);
+
+const monitoringStack = new VakMonitoringStack(app, 'VakMonitoringStack', {
+  env,
+  appStack,
+});
+
+monitoringStack.addDependency(appStack);

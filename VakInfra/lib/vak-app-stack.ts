@@ -63,6 +63,14 @@ export interface VakAppStackProps extends cdk.StackProps {
 }
 
 export class VakAppStack extends cdk.Stack {
+  public readonly cluster: ecs.Cluster;
+  public readonly service: ecs.FargateService;
+  public readonly alb: elbv2.ApplicationLoadBalancer;
+  public readonly targetGroup: elbv2.ApplicationTargetGroup;
+  public readonly sessionsTable: dynamodb.Table;
+  public readonly artifactsBucket: s3.Bucket;
+  public readonly serviceLogGroup: logs.LogGroup;
+
   constructor(scope: Construct, id: string, props: VakAppStackProps) {
     super(scope, id, props);
 
@@ -76,6 +84,7 @@ export class VakAppStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
+    this.sessionsTable = sessionsTable;
 
     // S3 bucket for artifacts
     const artifactsBucket = new s3.Bucket(this, 'ArtifactsBucket', {
@@ -83,12 +92,14 @@ export class VakAppStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
     });
+    this.artifactsBucket = artifactsBucket;
 
     // ECS Cluster
     const cluster = new ecs.Cluster(this, 'VakCluster', {
       vpc,
       clusterName: 'vak-cluster',
     });
+    this.cluster = cluster;
 
     // Task execution role
     const taskExecutionRole = new iam.Role(this, 'TaskExecutionRole', {
@@ -164,6 +175,7 @@ export class VakAppStack extends cdk.Stack {
       retention: logs.RetentionDays.ONE_MONTH,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
+    this.serviceLogGroup = serviceLogGroup;
 
     // Build secrets object conditionally
     const containerSecrets: { [key: string]: ecs.Secret } = {};
@@ -240,6 +252,7 @@ export class VakAppStack extends cdk.Stack {
       },
       healthCheckGracePeriod: cdk.Duration.seconds(60), // Grace period before health checks start counting failures
     });
+    this.service = service;
 
     // Application Load Balancer
     // Internet-facing ALB for direct WebSocket connections with IAM authentication
@@ -250,6 +263,7 @@ export class VakAppStack extends cdk.Stack {
         subnetType: ec2.SubnetType.PUBLIC,
       },
     });
+    this.alb = alb;
 
     // Configure ALB attributes for WebSocket support
     // Disable HTTP/2 (WebSocket upgrades require HTTP/1.1)
@@ -282,6 +296,7 @@ export class VakAppStack extends cdk.Stack {
         timeout: cdk.Duration.seconds(5),
       },
     });
+    this.targetGroup = targetGroup;
 
     service.attachToApplicationTargetGroup(targetGroup);
 
