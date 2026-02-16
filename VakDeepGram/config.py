@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     
     # Deepgram Configuration
     deepgram_api_key: str
-    deepgram_project_id: str = None
+    deepgram_project_id: Optional[str] = None
     # Optional: If not provided, agent will be created dynamically via API
     deepgram_agent_id: Optional[str] = None
     
@@ -67,7 +67,11 @@ class Settings(BaseSettings):
     bedrock_model_id: str = "us.anthropic.claude-opus-4-6-v1"
     bedrock_max_tokens: int = 8192  # Maximum tokens for Claude models - increased for tool usage
     bedrock_temperature: float = 0.4
-    
+
+    # Bedrock AgentCore Memory (optional – when set, chat uses AgentCore Memory for session storage)
+    agentcore_memory_id: Optional[str] = None  # Bedrock AgentCore Memory ID (create in AWS console)
+    agentcore_actor_id: str = "vak-chat-agent"  # Actor ID for the chat agent in memory
+
     # Server Configuration
     host: str = "0.0.0.0"
     port: int = 8080

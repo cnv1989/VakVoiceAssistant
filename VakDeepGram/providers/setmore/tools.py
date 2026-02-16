@@ -6,9 +6,10 @@ and availability checking through the Setmore API.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
-from datetime import timedelta, timezone
-from typing import Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
 
 from strands import tool
 from strands.types.tools import ToolContext
@@ -45,6 +46,13 @@ from providers.setmore.helpers import (
 logger = logging.getLogger(__name__)
 
 
+def _normalized_eq(a: Optional[str], b: Optional[str]) -> bool:
+    """True if both are truthy and normalize to the same phone number."""
+    if not a or not b:
+        return False
+    return (normalize_phone_number(a) or a) == (normalize_phone_number(b) or b)
+
+
 # ── Setmore access helper ────────────────────────────────────────────────────
 
 def _get_setmore_token(business_context: dict) -> Optional[str]:
@@ -57,6 +65,12 @@ def _get_refresh_token(business_context: dict) -> Optional[str]:
     return business_context.get("refreshToken") or business_context.get("refresh_token")
 
 
+# Message to ask the customer before using their caller/call-in number
+_ASK_CUSTOMER_USE_CALLER_PHONE = (
+    "Can I use the number you're calling or messaging from to look up your account or create one?"
+)
+
+
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
 @tool(context=True)
@@ -66,11 +80,12 @@ async def find_customer(
     caller_number: Optional[str] = None,
     first_name: Optional[str] = None,
     email: Optional[str] = None,
+    customer_confirmed_use_of_caller_phone: Optional[bool] = None,
 ) -> dict:
     """Look up a customer in Setmore by first name and optionally phone or email.
 
-    Setmore requires first_name for customer lookup.  If first_name is not
-    provided, ask the customer for their name before calling this tool.
+    Setmore requires first_name for customer lookup. Before using the caller's phone number,
+    confirm with the customer and pass customer_confirmed_use_of_caller_phone=True only after they agree.
     """
     business_context = get_business_context(tool_context)
     access_token = _get_setmore_token(business_context)
@@ -79,6 +94,16 @@ async def find_customer(
 
     if not first_name:
         return {"success": False, "error": "first_name is required for Setmore customer lookup."}
+
+    phone = phone or caller_number or business_context.get("caller")
+    caller_from_context = business_context.get("caller")
+    if caller_from_context and phone and _normalized_eq(phone, caller_from_context):
+        if customer_confirmed_use_of_caller_phone is not True:
+            return {
+                "success": False,
+                "error": "Confirm with the customer before using their phone number.",
+                "ask_customer": _ASK_CUSTOMER_USE_CALLER_PHONE,
+            }
 
     refresh = _get_refresh_token(business_context)
     result = await setmore_api.fetch_customer(access_token, first_name=first_name, phone=phone, email=email, refresh_token=refresh)
@@ -98,10 +123,13 @@ async def create_customer(
     last_name: str,
     phone_number: Optional[str] = None,
     caller_number: Optional[str] = None,
+    customer_confirmed_use_of_caller_phone: Optional[bool] = None,
 ) -> dict:
     """Create a new customer in Setmore.
 
     Use this when find_customer returns no match and the customer wants to book.
+    Before using the caller's phone number, confirm with the customer and pass
+    customer_confirmed_use_of_caller_phone=True only after they agree.
     """
     business_context = get_business_context(tool_context)
     access_token = _get_setmore_token(business_context)
@@ -109,6 +137,13 @@ async def create_customer(
         return {"success": False, "error": "Missing Setmore access token."}
 
     phone = phone_number or caller_number or business_context.get("caller")
+    if phone and business_context.get("caller") and _normalized_eq(phone, business_context.get("caller")):
+        if customer_confirmed_use_of_caller_phone is not True:
+            return {
+                "success": False,
+                "error": "Confirm with the customer before using their phone number.",
+                "ask_customer": _ASK_CUSTOMER_USE_CALLER_PHONE,
+            }
     pf = phone_fields(phone)
     payload: dict = {"first_name": first_name, "last_name": last_name}
     if pf.get("country_code"):
@@ -123,6 +158,71 @@ async def create_customer(
     customer = result.get("customer") or {}
     update_business_context(tool_context, {"customer": customer})
     return {"success": True, "customer": customer}
+
+
+@tool(context=True)
+async def lookup_or_create_customer_using_caller(
+    tool_context: ToolContext,
+    customer_confirmed_use_of_caller_phone: bool,
+    first_name: Optional[str] = None,
+    last_name: Optional[str] = None,
+) -> dict:
+    """Look up customer by the caller's phone number; if not found, create an account with that number.
+
+    Use this when the customer is calling or messaging and you want to find their account or create one.
+    You MUST confirm with the customer first (e.g. 'Can I use the number you're calling from to look up
+    your account or create one?'). Only pass customer_confirmed_use_of_caller_phone=True after they agree.
+    Setmore requires first_name for lookup. If found, returns the customer. If not found and first_name and
+    last_name are provided, creates a new customer with the caller's phone. If not found and name is missing,
+    returns a message asking for the missing name(s).
+    """
+    business_context = get_business_context(tool_context)
+    caller = business_context.get("caller")
+    if not caller:
+        return {"success": False, "error": "No caller number available. Ask the customer for their phone number."}
+    if customer_confirmed_use_of_caller_phone is not True:
+        return {
+            "success": False,
+            "error": "Confirm with the customer before using their phone number.",
+            "ask_customer": _ASK_CUSTOMER_USE_CALLER_PHONE,
+        }
+
+    if first_name:
+        result = await find_customer(
+            tool_context,
+            phone=caller,
+            first_name=first_name,
+            customer_confirmed_use_of_caller_phone=True,
+        )
+        if not result.get("success"):
+            return result
+        customer = result.get("customer")
+        if customer:
+            return {"success": True, "customer": customer, "new_customer": False}
+    else:
+        return {
+            "success": False,
+            "error": "To look you up I need your first name. What's your first name?",
+            "need_first_name": True,
+        }
+
+    if not last_name:
+        return {
+            "success": False,
+            "error": "Customer not found. To create an account I need your last name.",
+            "need_last_name": True,
+        }
+
+    result = await create_customer(
+        tool_context,
+        first_name=first_name,
+        last_name=last_name,
+        phone_number=caller,
+        customer_confirmed_use_of_caller_phone=True,
+    )
+    if result.get("success") and result.get("customer"):
+        update_business_context(tool_context, {"customer": result["customer"]})
+    return result
 
 
 @tool(context=True)
@@ -167,9 +267,10 @@ async def check_availability(
     end_date: Optional[str] = None,
     staff_ids: Optional[list] = None,
 ) -> dict:
-    """Check available appointment slots on a given date for a Setmore service.
+    """Check available appointment slots for a Setmore service across a date range.
 
-    Returns a list of available time slots.  start_date can be ISO format,
+    Uses the given start_date and optional end_date range; fetches slots for each day
+    concurrently and returns merged, sorted slots. start_date can be ISO format,
     a relative keyword (TODAY, TOMORROW, NEXT_WEEK), or a weekday name.
     """
     business_context = get_business_context(tool_context)
@@ -184,9 +285,8 @@ async def check_availability(
     timezone_name = resolve_location_timezone(business_context)
     tzinfo = ZoneInfo(timezone_name) if timezone_name and ZoneInfo else None
 
-    start_at_local, _ = booking_helpers.resolve_date_range(start_date, end_date, tzinfo)
-    start_at_local, _ = ensure_minimum_range(start_at_local, start_at_local + timedelta(days=1))
-    selected_date = format_date(start_at_local)
+    start_at_local, end_at_local = booking_helpers.resolve_date_range(start_date, end_date, tzinfo)
+    start_at_local, end_at_local = ensure_minimum_range(start_at_local, end_at_local)
 
     service_item = match_service(business_context, service)
     if not service_item:
@@ -200,32 +300,53 @@ async def check_availability(
     if not service_key:
         return {"success": False, "error": "Service key not found."}
 
-    resolved_staff = resolve_staff_key(business_context, staff_ids or [])
-    if staff_ids and not resolved_staff:
-        return {"success": False, "error": "Requested staff not found. Please confirm the staff member name."}
-    if not resolved_staff:
-        return {"success": False, "error": "No staff available for booking."}
-
-    payload: dict = {
-        "staff_key": resolved_staff,
-        "service_key": service_key,
-        "selected_date": selected_date,
-    }
-    if timezone_name:
-        payload["timezone"] = timezone_name
+    # Resolve staff: either the requested one or all staff for "any staff"
+    resolved_staff = resolve_staff_key(business_context, staff_ids or []) if staff_ids else None
+    if staff_ids:
+        if not resolved_staff:
+            return {"success": False, "error": "Requested staff not found. Please confirm the staff member name."}
+        staff_keys = [resolved_staff]
+    else:
+        staff_keys = [m.get("id") for m in (business_context.get("staff") or []) if m.get("id")]
+        if not staff_keys:
+            return {"success": False, "error": "No staff available for booking."}
 
     refresh = _get_refresh_token(business_context)
-    slots_result = await setmore_api.fetch_slots(access_token, payload, refresh_token=refresh)
-    if not slots_result.get("success"):
-        return {"success": False, "error": slots_result.get("error")}
+    start_date_only = start_at_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_date_only = end_at_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_dts = []
+    d = start_date_only
+    while d <= end_date_only and len(day_dts) < 10:
+        day_dts.append(d)
+        d += timedelta(days=1)
 
-    slots = []
-    for slot_str in slots_result.get("slots") or []:
-        iso_val = slot_to_iso(start_at_local, slot_str, tzinfo)
-        if iso_val:
-            slots.append({"start_at": iso_val, "date": iso_val.split("T")[0], "time": iso_val.split("T")[-1][:5]})
+    async def _fetch_slots_one_day_staff(day_dt: datetime, staff_key: str) -> tuple[datetime, str, dict]:
+        payload: dict = {
+            "staff_key": staff_key,
+            "service_key": service_key,
+            "selected_date": format_date(day_dt),
+        }
+        if timezone_name:
+            payload["timezone"] = timezone_name
+        result = await setmore_api.fetch_slots(access_token, payload, refresh_token=refresh)
+        return (day_dt, staff_key, result)
 
-    available_staff = [m for m in business_context.get("staff") or [] if m.get("id") == resolved_staff]
+    tasks = [_fetch_slots_one_day_staff(day_dt, staff_key) for day_dt in day_dts for staff_key in staff_keys]
+    results = await asyncio.gather(*tasks)
+    slots: list[dict[str, Any]] = []
+    for day_dt, staff_key, slots_result in results:
+        if not slots_result.get("success"):
+            return {"success": False, "error": slots_result.get("error")}
+        for slot_str in slots_result.get("slots") or []:
+            iso_val = slot_to_iso(day_dt, slot_str, tzinfo)
+            if iso_val:
+                slot_entry = {"start_at": iso_val, "date": iso_val.split("T")[0], "time": iso_val.split("T")[-1][:5]}
+                if len(staff_keys) > 1:
+                    slot_entry["staff_id"] = staff_key
+                slots.append(slot_entry)
+    slots.sort(key=lambda s: s["start_at"])
+    staff_id_set = set(staff_keys)
+    available_staff = [m for m in business_context.get("staff") or [] if m.get("id") in staff_id_set]
     return {"success": True, "availability_mode": "slots", "slots": slots, "ranges": [], "available_staff": available_staff}
 
 
@@ -401,6 +522,7 @@ async def create_appointment(
 TOOLS = [
     find_customer,
     create_customer,
+    lookup_or_create_customer_using_caller,
     get_appointments,
     check_availability,
     create_appointment,

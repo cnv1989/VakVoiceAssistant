@@ -1,6 +1,7 @@
 """
 Business logic for agent function calls.
 """
+import asyncio
 from datetime import datetime, timedelta, timezone
 import logging
 from typing import Any, Dict, Optional
@@ -17,6 +18,7 @@ from connection_store import (
 from utils.phone import normalize_phone_number
 from utils import setmore_api
 from utils import booking_helpers
+from utils.square_client import get_square_client
 from utils.square_helpers import (
     get_square_environment as _square_environment,
     parse_square_response as _parse_square_response,
@@ -462,7 +464,7 @@ async def create_customer(
             "message": "Customer already exists. Confirm before using existing record.",
         }
 
-    client = AsyncSquare(token=access_token, environment=_square_environment())
+    client = get_square_client(access_token)
     return await create_square_customer(
         client,
         first_name=first_name,
@@ -1096,7 +1098,7 @@ async def get_customer_appointments(
     if not location_id:
         return {"success": False, "error": "Missing Square location ID."}
 
-    client = AsyncSquare(token=access_token, environment=_square_environment())
+    client = get_square_client(access_token)
     start_at_min = _isoformat_utc(now - timedelta(days=1))
     end_at_max = _isoformat_utc(now + timedelta(days=90))
     appointments: list[Dict[str, Any]] = []
@@ -1314,7 +1316,7 @@ async def schedule_appointment_with_contact(
     if not location_id:
         return {"success": False, "error": "Missing Square access token or location ID."}
 
-    client = AsyncSquare(token=access_token, environment=_square_environment())
+    client = get_square_client(access_token)
     timezone = _resolve_location_timezone(context)
     tzinfo = ZoneInfo(timezone) if timezone and ZoneInfo else None
     start_dt = _parse_datetime(date)
@@ -1481,7 +1483,7 @@ async def update_appointment(
     if not location_id:
         return {"success": False, "error": "Missing Square access token or location ID."}
 
-    client = AsyncSquare(token=access_token, environment=_square_environment())
+    client = get_square_client(access_token)
     booking_response = await client.bookings.retrieve(booking_id=booking_id)
     booking_parsed = _parse_square_response(booking_response)
     if not booking_parsed.get("success"):
@@ -1696,9 +1698,8 @@ async def get_available_appointment_slots(
     if provider == "setmore":
         timezone_name = _resolve_location_timezone(context)
         tzinfo = ZoneInfo(timezone_name) if timezone_name and ZoneInfo else None
-        start_at_local, _ = _resolve_date_range(start_date, end_date, tzinfo)
-        start_at_local, _ = _ensure_minimum_range(start_at_local, start_at_local + timedelta(days=1))
-        selected_date = _setmore_format_date(start_at_local)
+        start_at_local, end_at_local = _resolve_date_range(start_date, end_date, tzinfo)
+        start_at_local, end_at_local = _ensure_minimum_range(start_at_local, end_at_local)
 
         service_item = _setmore_match_service(context, service)
         if not service_item:
@@ -1711,41 +1712,64 @@ async def get_available_appointment_slots(
         if not service_key:
             return {"success": False, "error": "Service key not found."}
 
-        resolved_staff_id = _setmore_resolve_staff_key(context, staff_ids or [])
-        if staff_ids and not resolved_staff_id:
-            return {
-                "success": False,
-                "error": "Requested staff not found. Please confirm the staff member name.",
-            }
-        if not resolved_staff_id:
-            return {"success": False, "error": "No staff available for booking."}
+        # Resolve staff: either the requested one or all staff for "any staff"
+        resolved_staff_id = _setmore_resolve_staff_key(context, staff_ids or []) if staff_ids else None
+        if staff_ids:
+            if not resolved_staff_id:
+                return {
+                    "success": False,
+                    "error": "Requested staff not found. Please confirm the staff member name.",
+                }
+            staff_keys = [resolved_staff_id]
+        else:
+            staff_keys = [s.get("id") for s in (context.get("staff") or []) if s.get("id")]
+            if not staff_keys:
+                return {"success": False, "error": "No staff available for booking."}
 
-        payload = {
-            "staff_key": resolved_staff_id,
-            "service_key": service_key,
-            "selected_date": selected_date,
-        }
-        if timezone_name:
-            payload["timezone"] = timezone_name
         refresh_token = context.get("refreshToken") or context.get("refresh_token")
-        slots_result = await setmore_api.fetch_slots(access_token, payload, refresh_token=refresh_token)
-        if not slots_result.get("success"):
-            return {"success": False, "error": slots_result.get("error")}
+
+        # Build one date per day in range (date-only), at most 10 days
+        start_date_only = start_at_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_date_only = end_at_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_dts = []
+        d = start_date_only
+        while d <= end_date_only and len(day_dts) < 10:
+            day_dts.append(d)
+            d += timedelta(days=1)
+
+        async def _fetch_slots_one_day_staff(day_dt: datetime, staff_key: str) -> tuple[datetime, str, Dict[str, Any]]:
+            payload = {
+                "staff_key": staff_key,
+                "service_key": service_key,
+                "selected_date": _setmore_format_date(day_dt),
+            }
+            if timezone_name:
+                payload["timezone"] = timezone_name
+            result = await setmore_api.fetch_slots(access_token, payload, refresh_token=refresh_token)
+            return (day_dt, staff_key, result)
+
+        tasks = [_fetch_slots_one_day_staff(day_dt, staff_key) for day_dt in day_dts for staff_key in staff_keys]
+        results = await asyncio.gather(*tasks)
+
         slots = []
-        for slot in slots_result.get("slots") or []:
-            iso_value = _setmore_slot_to_iso(start_at_local, slot, tzinfo)
-            if not iso_value:
-                continue
-            slots.append(
-                {
+        for day_dt, staff_key, slots_result in results:
+            if not slots_result.get("success"):
+                return {"success": False, "error": slots_result.get("error")}
+            for slot in slots_result.get("slots") or []:
+                iso_value = _setmore_slot_to_iso(day_dt, slot, tzinfo)
+                if not iso_value:
+                    continue
+                slot_entry = {
                     "start_at": iso_value,
                     "date": iso_value.split("T")[0],
                     "time": iso_value.split("T")[-1][:5],
                 }
-            )
-        available_staff = [
-            member for member in context.get("staff") or [] if member.get("id") == resolved_staff_id
-        ]
+                if len(staff_keys) > 1:
+                    slot_entry["staff_id"] = staff_key
+                slots.append(slot_entry)
+        slots.sort(key=lambda s: s["start_at"])
+        staff_id_set = set(staff_keys)
+        available_staff = [m for m in context.get("staff") or [] if m.get("id") in staff_id_set]
         return {
             "success": True,
             "availability_mode": "slots",
@@ -1762,7 +1786,7 @@ async def get_available_appointment_slots(
             bool(access_token),
         )
         return {"success": False, "error": "Missing Square access token or location ID."}
-    client = AsyncSquare(token=access_token, environment=_square_environment())
+    client = get_square_client(access_token)
     timezone = _resolve_location_timezone(context)
     tzinfo = ZoneInfo(timezone) if timezone and ZoneInfo else None
     start_at_local, end_at_local = _resolve_date_range(start_date, end_date, tzinfo)

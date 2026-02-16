@@ -1,16 +1,48 @@
 """
-Square client connection pooling for improved performance.
+Square client connection pooling and retry with exponential backoff.
 """
+import asyncio
 import logging
 import time
-from functools import lru_cache
-from typing import Optional
+from typing import Any, Optional
 
 from square import AsyncSquare
 
+from utils.retry import run_async_with_retry
 from utils.square_helpers import get_square_environment
 
 logger = logging.getLogger(__name__)
+
+# Transient errors we retry for Square API calls
+_SQUARE_RETRY_EXCEPTIONS = (OSError, ConnectionError, TimeoutError, asyncio.TimeoutError)
+
+
+class _RetryingSquareWrapper:
+    """Wraps an AsyncSquare (or any sub-object) to add exponential backoff retries to async methods."""
+
+    __slots__ = ("_client",)
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    def __getattr__(self, name: str) -> Any:
+        val = getattr(self._client, name)
+        if asyncio.iscoroutinefunction(val):
+            def retried(*args: Any, **kwargs: Any) -> Any:
+                return run_async_with_retry(
+                    lambda: val(*args, **kwargs),
+                    retry_exceptions=_SQUARE_RETRY_EXCEPTIONS,
+                )
+            return retried
+        return _RetryingSquareWrapper(val) if not _is_primitive(val) else val
+
+
+def _is_primitive(val: Any) -> bool:
+    """True if value should not be wrapped (primitives, None, modules)."""
+    if val is None:
+        return True
+    t = type(val)
+    return t in (str, int, float, bool, bytes) or t.__name__ == "module"
 
 
 class SquareClientPool:
@@ -60,9 +92,10 @@ class SquareClientPool:
         if len(self._clients) >= self._max_size:
             self._cleanup_oldest()
 
-        # Create new client
+        # Create new client with retry wrapper
         environment = get_square_environment()
-        client = AsyncSquare(token=access_token, environment=environment)
+        raw = AsyncSquare(token=access_token, environment=environment)
+        client = _RetryingSquareWrapper(raw)
         self._clients[key] = (client, now)
         logger.debug("Created new Square client for %s", key)
 

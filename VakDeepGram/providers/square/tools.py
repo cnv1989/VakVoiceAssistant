@@ -58,6 +58,12 @@ logger = logging.getLogger(__name__)
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
+# Message to ask the customer before using their caller/call-in number (used when confirmation not yet given)
+ASK_CUSTOMER_USE_CALLER_PHONE = (
+    "Can I use the number you're calling or messaging from to look up your account or create one?"
+)
+
+
 @tool(context=True)
 async def find_customer(
     tool_context: ToolContext,
@@ -65,10 +71,14 @@ async def find_customer(
     caller_number: Optional[str] = None,
     first_name: Optional[str] = None,
     email: Optional[str] = None,
+    customer_confirmed_use_of_caller_phone: Optional[bool] = None,
 ) -> dict:
     """Look up a customer's account information by phone number.
 
     Use this before appointments or order lookups when you need a customer ID.
+    Before using the caller's phone number (from the call or message), you MUST confirm with the customer
+    (e.g. ask: "Can I use the number you're calling from to look up your account?"). Only pass
+    customer_confirmed_use_of_caller_phone=True after they agree.
     Phone number: Format as +1XXXXXXXXXX (add +1 if not provided, remove spaces/dashes).
     """
     business_context = get_business_context(tool_context)
@@ -80,6 +90,16 @@ async def find_customer(
     phone = phone or caller_number
     if not phone:
         return {"error": "phone is required"}
+
+    # Require explicit confirmation before using caller's phone from context
+    caller_from_context = business_context.get("caller")
+    if caller_from_context and normalize_phone_number(phone) == normalize_phone_number(caller_from_context):
+        if customer_confirmed_use_of_caller_phone is not True:
+            return {
+                "success": False,
+                "error": "Confirm with the customer before using their phone number.",
+                "ask_customer": ASK_CUSTOMER_USE_CALLER_PHONE,
+            }
 
     ctx = get_access_context(business_context)
     if not ctx.get("success"):
@@ -100,10 +120,13 @@ async def create_customer(
     last_name: str,
     phone_number: Optional[str] = None,
     caller_number: Optional[str] = None,
+    customer_confirmed_use_of_caller_phone: Optional[bool] = None,
 ) -> dict:
     """Create a new customer in Square.
 
     Use this when find_customer returns no match and the customer wants to book.
+    Before using the caller's phone number, confirm with the customer and pass
+    customer_confirmed_use_of_caller_phone=True only after they agree.
     """
     business_context = get_business_context(tool_context)
     ctx = get_access_context(business_context)
@@ -112,6 +135,15 @@ async def create_customer(
     client = get_client(ctx["access_token"])
 
     phone = phone_number or caller_number or business_context.get("caller")
+    if phone:
+        caller_from_context = business_context.get("caller")
+        if caller_from_context and normalize_phone_number(phone) == normalize_phone_number(caller_from_context):
+            if customer_confirmed_use_of_caller_phone is not True:
+                return {
+                    "success": False,
+                    "error": "Confirm with the customer before using their phone number.",
+                    "ask_customer": ASK_CUSTOMER_USE_CALLER_PHONE,
+                }
     if phone:
         normalized = normalize_phone_number(phone) or phone
         existing = await find_customer_by_phone(client, normalized)
@@ -133,6 +165,63 @@ async def create_customer(
         return {"success": False, "error": parsed.get("error")}
     customer = parsed.get("payload", {}).get("customer")
     return {"success": True, "customer": as_dict(customer)}
+
+
+@tool(context=True)
+async def lookup_or_create_customer_using_caller(
+    tool_context: ToolContext,
+    customer_confirmed_use_of_caller_phone: bool,
+    first_name: Optional[str] = None,
+    last_name: Optional[str] = None,
+) -> dict:
+    """Look up customer by the caller's phone number; if not found, create an account with that number.
+
+    Use this when the customer is calling or messaging and you want to find their account or create one.
+    You MUST confirm with the customer first (e.g. 'Can I use the number you're calling from to look up
+    your account or create one?'). Only pass customer_confirmed_use_of_caller_phone=True after they agree.
+    If a customer is found, returns them. If not found and first_name and last_name are provided, creates
+    a new customer with the caller's phone and returns. If not found and name is missing, returns a message
+    asking for first and last name.
+    """
+    business_context = get_business_context(tool_context)
+    caller = business_context.get("caller")
+    if not caller:
+        return {"success": False, "error": "No caller number available. Ask the customer for their phone number."}
+    if customer_confirmed_use_of_caller_phone is not True:
+        return {
+            "success": False,
+            "error": "Confirm with the customer before using their phone number.",
+            "ask_customer": ASK_CUSTOMER_USE_CALLER_PHONE,
+        }
+
+    ctx = get_access_context(business_context)
+    if not ctx.get("success"):
+        return ctx
+    client = get_client(ctx["access_token"])
+    normalized = normalize_phone_number(caller) or caller
+    existing = await find_customer_by_phone(client, normalized)
+    if existing:
+        update_business_context(tool_context, {"customer": existing})
+        return {"success": True, "customer": existing, "new_customer": False}
+
+    if not first_name or not last_name:
+        return {
+            "success": False,
+            "error": "Customer not found. To create an account I need your first and last name.",
+            "need_first_name": not first_name,
+            "need_last_name": not last_name,
+        }
+
+    result = await create_customer(
+        tool_context,
+        first_name=first_name,
+        last_name=last_name,
+        phone_number=caller,
+        customer_confirmed_use_of_caller_phone=True,
+    )
+    if result.get("success") and result.get("customer"):
+        update_business_context(tool_context, {"customer": result["customer"]})
+    return result
 
 
 @tool(context=True)
@@ -586,6 +675,7 @@ async def update_appointment(
 TOOLS = [
     find_customer,
     create_customer,
+    lookup_or_create_customer_using_caller,
     get_appointments,
     get_orders,
     check_availability,

@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 from square import AsyncSquare
 
-from utils.square_helpers import get_square_environment
+from utils.square_client import get_square_client
 from utils.phone import normalize_phone_number, phone_digit_variants
 from providers.common.helpers import as_dict
 
@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 
 
 def get_client(access_token: str) -> AsyncSquare:
-    """Create an AsyncSquare client with the given access token."""
-    return AsyncSquare(token=access_token, environment=get_square_environment())
+    """Return a Square client (pooled, with exponential backoff retries)."""
+    return get_square_client(access_token)
 
 
 def get_access_context(business_context: dict) -> dict:

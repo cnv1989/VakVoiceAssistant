@@ -5,8 +5,18 @@ from typing import Any, Dict, Optional, Tuple
 import httpx
 
 import config
+from utils.retry import run_async_with_retry
 
 logger = logging.getLogger(__name__)
+
+# Raised for 5xx responses so retry with backoff can run
+class SetmoreServerError(Exception):
+    """Setmore API returned a server error (5xx)."""
+
+    def __init__(self, status_code: int, message: str = ""):
+        self.status_code = status_code
+        self.message = message or f"Setmore API error {status_code}"
+        super().__init__(self.message)
 
 _TOKEN_CACHE: Dict[str, Dict[str, Any]] = {}
 
@@ -49,6 +59,16 @@ def _extract_list(data: Any) -> Optional[list]:
     return None
 
 
+# Transient errors we retry with exponential backoff
+_SETMORE_RETRY_EXCEPTIONS = (
+    httpx.ConnectError,
+    httpx.TimeoutException,
+    httpx.RemoteProtocolError,
+    httpx.ReadError,
+    httpx.WriteError,
+)
+
+
 async def get_access_token(refresh_token: str) -> Dict[str, Any]:
     if not refresh_token:
         return {"success": False, "error": "Missing Setmore refresh token."}
@@ -67,8 +87,17 @@ async def get_access_token(refresh_token: str) -> Dict[str, Any]:
     url = _token_url()
     params = {"refreshToken": refresh_token}
     timeout = config.settings.setmore_request_timeout_seconds
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.get(url, params=params)
+
+    async def _fetch() -> httpx.Response:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            return await client.get(url, params=params)
+
+    try:
+        response = await run_async_with_retry(_fetch, retry_exceptions=_SETMORE_RETRY_EXCEPTIONS)
+    except Exception as e:
+        logger.error("Setmore token request failed after retries: %s", e)
+        return {"success": False, "error": str(e)}
+
     try:
         payload = response.json()
     except Exception:
@@ -126,11 +155,11 @@ async def request(
     *,
     refresh_token: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Make a Setmore API request with optional automatic 401 retry.
+    """Make a Setmore API request with exponential backoff retries and optional 401 retry.
 
-    If *refresh_token* is provided and the first request returns 401 /
-    ``unauthorized_request``, the token cache is invalidated, a fresh
-    access token is obtained, and the request is retried **once**.
+    Retries on connection errors, timeouts, and 5xx with exponential backoff (up to 5 attempts).
+    If *refresh_token* is provided and the first request returns 401 / unauthorized,
+    the token cache is invalidated, a fresh access token is obtained, and the request is retried once.
     """
     url = _booking_url(path)
     timeout = config.settings.setmore_request_timeout_seconds
@@ -139,16 +168,33 @@ async def request(
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.request(method, url, params=params, json=json, headers=headers)
+        if resp.status_code >= 500:
+            raise SetmoreServerError(resp.status_code, resp.text[:200] or "")
         try:
             body = resp.json()
         except Exception:
             body = None
         return resp, body
 
-    # --- first attempt ---
-    response, payload = await _do_request(access_token)
+    retry_exceptions: tuple = _SETMORE_RETRY_EXCEPTIONS + (SetmoreServerError,)
 
-    # --- 401 retry ---
+    async def _do_request_with_retry(token: str) -> Tuple[httpx.Response, Any]:
+        return await run_async_with_retry(
+            lambda: _do_request(token),
+            retry_exceptions=retry_exceptions,
+        )
+
+    # --- first attempt (with backoff retries) ---
+    try:
+        response, payload = await _do_request_with_retry(access_token)
+    except SetmoreServerError as e:
+        logger.error("Setmore API 5xx after retries: %s %s — %s", method, path, e)
+        return {"success": False, "error": e.message}
+    except Exception as e:
+        logger.error("Setmore API request failed after retries: %s %s — %s", method, path, e)
+        return {"success": False, "error": str(e)}
+
+    # --- 401 retry (one token refresh, then same backoff retries) ---
     if refresh_token and _is_unauthorized(response, payload):
         logger.warning(
             "[SetmoreAPI] Got unauthorized on %s %s — refreshing token and retrying",
@@ -158,7 +204,12 @@ async def request(
         token_result = await get_access_token(refresh_token)
         if token_result.get("success"):
             new_token = token_result["access_token"]
-            response, payload = await _do_request(new_token)
+            try:
+                response, payload = await _do_request_with_retry(new_token)
+            except SetmoreServerError as e:
+                return {"success": False, "error": e.message}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
         else:
             return {"success": False, "error": token_result.get("error") or "Token refresh failed"}
 

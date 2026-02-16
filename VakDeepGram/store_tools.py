@@ -8,7 +8,7 @@ from typing import Any, Dict
 from square import AsyncSquare
 
 from connection_store import get_connection_context
-from utils.square_helpers import get_square_environment
+from utils.square_client import get_square_client
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +166,7 @@ async def get_store_hours_from_square(params: Dict[str, Any]) -> Dict[str, Any]:
         return {"success": False, "error": "Missing Square access token or location ID."}
 
     logger.info("Fetching Square location for connection %s (locationId=%s)", connection_id, location_id)
-    client = AsyncSquare(token=access_token, environment=get_square_environment())
+    client = get_square_client(access_token)
 
     response = await client.locations.get(location_id)
     if hasattr(response, "is_error"):

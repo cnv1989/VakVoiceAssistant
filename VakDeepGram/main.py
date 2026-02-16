@@ -242,6 +242,28 @@ async def verify_chat_auth(
     return True
 
 
+def _get_chat_session_manager(session_id: str):
+    """Return session manager: AgentCore Memory if configured, else file-based."""
+    if config.settings.agentcore_memory_id:
+        try:
+            from bedrock_agentcore.memory.integrations.strands.session_manager import (
+                AgentCoreMemorySessionManager,
+            )
+            from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig
+            memory_config = AgentCoreMemoryConfig(
+                memory_id=config.settings.agentcore_memory_id,
+                session_id=session_id,
+                actor_id=config.settings.agentcore_actor_id,
+            )
+            return AgentCoreMemorySessionManager(
+                agentcore_memory_config=memory_config,
+                region_name=config.settings.aws_region,
+            )
+        except Exception as e:
+            logger.warning("AgentCore Memory session manager unavailable (%s), using file session", e)
+    return FileSessionManager(session_id=session_id)
+
+
 @app.post("/chat")
 @limiter.limit(lambda: f"{config.settings.rate_limit_per_minute}/minute")
 async def chat(
@@ -318,7 +340,7 @@ async def chat(
         serializable_context = _make_json_serializable(business_context)
         normalized_phone = normalize_phone_number(customer_phone) if customer_phone else None
         resolved_session_id = session_id or f"chat:{business_number}:{normalized_phone or uuid.uuid4().hex}"
-        session_manager = FileSessionManager(session_id=resolved_session_id)
+        session_manager = _get_chat_session_manager(resolved_session_id)
         agent = Agent(
             model=bedrock_model,
             system_prompt=system_prompt if system_prompt else None,
@@ -328,10 +350,59 @@ async def chat(
         )
 
         # Invoke agent in executor to avoid blocking async event loop
-        def invoke_agent():
-            return agent(message)
+        def invoke_agent(a, msg):
+            return a(msg)
 
-        response = await asyncio.to_thread(invoke_agent)
+        response = None
+        last_exc = None
+        for attempt in range(2):
+            try:
+                response = await asyncio.to_thread(invoke_agent, agent, message)
+                break
+            except Exception as exc:
+                last_exc = exc
+                error_msg = str(exc).lower()
+                # ConverseStream validation: toolResult blocks exceed toolUse (Strands session repair bug)
+                is_tool_result_exceeds = (
+                    ("validationexception" in error_msg or "conversestream" in error_msg)
+                    and "toolresult" in error_msg
+                    and "tooluse" in error_msg
+                    and "exceeds" in error_msg
+                )
+                if is_tool_result_exceeds and attempt == 0:
+                    logger.warning(
+                        "Strands session history has toolResult/toolUse mismatch; clearing session and retrying once: session_id=%s",
+                        resolved_session_id,
+                    )
+                    try:
+                        session_manager.delete_session(resolved_session_id)
+                    except Exception as e:
+                        logger.debug("Session delete failed (may not exist): %s", e)
+                    # Retry with fresh session (AgentCore Memory doesn't support delete, so use new session_id)
+                    retry_session_id = f"{resolved_session_id}:retry-{uuid.uuid4().hex[:8]}"
+                    session_manager = _get_chat_session_manager(retry_session_id)
+                    agent = Agent(
+                        model=bedrock_model,
+                        system_prompt=system_prompt if system_prompt else None,
+                        tools=provider_tools,
+                        state={"business_context": serializable_context},
+                        session_manager=session_manager,
+                    )
+                    continue
+                logger.error("Strands Agent invoke failed: %s", exc, exc_info=True)
+                # If retry already happened and same error, return user-friendly message
+                if is_tool_result_exceeds and attempt == 1:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=(
+                            "Conversation state is inconsistent. Please start a new conversation "
+                            "(use a new session_id or refresh the chat)."
+                        ),
+                    )
+                raise HTTPException(status_code=502, detail=f"Agent request failed: {str(exc)}")
+
+        if response is None:
+            raise HTTPException(status_code=502, detail=f"Agent request failed: {str(last_exc)}")
 
         # Extract reply from response
         if isinstance(response, str):
@@ -342,7 +413,9 @@ async def chat(
             reply = response.get("content") or response.get("reply") or str(response)
         else:
             reply = str(response)
-            
+
+    except HTTPException:
+        raise
     except Exception as exc:
         error_msg = str(exc)
         logger.error("Strands Agent invoke failed: %s", exc, exc_info=True)
@@ -543,7 +616,7 @@ async def twilio_chat(request: Request):
         serializable_context = _make_json_serializable(business_context)
         normalized_phone = normalize_phone_number(stripped_customer_phone) if stripped_customer_phone else None
         resolved_session_id = session_id or f"chat:{stripped_business_number}:{normalized_phone or uuid.uuid4().hex}"
-        session_manager = FileSessionManager(session_id=resolved_session_id)
+        session_manager = _get_chat_session_manager(resolved_session_id)
         agent = Agent(
             model=bedrock_model,
             system_prompt=system_prompt if system_prompt else None,
@@ -553,20 +626,62 @@ async def twilio_chat(request: Request):
         )
 
         # Invoke agent in executor to avoid blocking async event loop
-        def invoke_agent():
-            return agent(message)
+        def invoke_agent(a, msg):
+            return a(msg)
 
-        response = await asyncio.to_thread(invoke_agent)
+        response = None
+        last_exc = None
+        tool_result_exceeded_after_retry = False
+        for attempt in range(2):
+            try:
+                response = await asyncio.to_thread(invoke_agent, agent, message)
+                break
+            except Exception as exc:
+                last_exc = exc
+                error_msg = str(exc).lower()
+                is_tool_result_exceeds = (
+                    ("validationexception" in error_msg or "conversestream" in error_msg)
+                    and "toolresult" in error_msg
+                    and "tooluse" in error_msg
+                    and "exceeds" in error_msg
+                )
+                if is_tool_result_exceeds and attempt == 0:
+                    logger.warning(
+                        "Strands session history has toolResult/toolUse mismatch; clearing session and retrying once: session_id=%s",
+                        resolved_session_id,
+                    )
+                    try:
+                        session_manager.delete_session(resolved_session_id)
+                    except Exception as e:
+                        logger.debug("Session delete failed (may not exist): %s", e)
+                    retry_session_id = f"{resolved_session_id}:retry-{uuid.uuid4().hex[:8]}"
+                    session_manager = _get_chat_session_manager(retry_session_id)
+                    agent = Agent(
+                        model=bedrock_model,
+                        system_prompt=system_prompt if system_prompt else None,
+                        tools=provider_tools,
+                        state={"business_context": serializable_context},
+                        session_manager=session_manager,
+                    )
+                    continue
+                if is_tool_result_exceeds and attempt == 1:
+                    tool_result_exceeded_after_retry = True
+                    break
+                raise
 
-        # Extract reply from response
-        if isinstance(response, str):
-            reply = response
-        elif hasattr(response, "content"):
-            reply = response.content
-        elif isinstance(response, dict):
-            reply = response.get("content") or response.get("reply") or str(response)
+        if response is not None:
+            if isinstance(response, str):
+                reply = response
+            elif hasattr(response, "content"):
+                reply = response.content
+            elif isinstance(response, dict):
+                reply = response.get("content") or response.get("reply") or str(response)
+            else:
+                reply = str(response)
+        elif tool_result_exceeded_after_retry:
+            reply = "Sorry, the conversation state was inconsistent. Please start a new message thread."
         else:
-            reply = str(response)
+            reply = "Sorry, something went wrong. Please try again later."
 
     except Exception as exc:
         error_msg = str(exc)

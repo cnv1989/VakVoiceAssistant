@@ -19,6 +19,7 @@ except ImportError:  # pragma: no cover - py<3.9 fallback
 
 import config
 from utils import setmore_api
+from utils.square_client import get_square_client
 from utils.square_helpers import (
     get_square_environment as _square_environment,
     parse_square_response as _parse_square_response,
@@ -192,7 +193,7 @@ async def _fetch_square_bookings_for_month(
         start_at_min,
         start_at_max,
     )
-    client = AsyncSquare(token=access_token, environment=_square_environment())
+    client = get_square_client(access_token)
     bookings: list[Dict[str, Any]] = []
     cursor = None
     while True:
@@ -300,7 +301,7 @@ async def _prefetch_availability_for_services(
         logger.warning("No service variations found for availability prefetch")
         return {"success": False, "error": "No service variations found."}
 
-    client = AsyncSquare(token=access_token, environment=_square_environment())
+    client = get_square_client(access_token)
 
     # Fetch availability for each service variation
     by_service: Dict[str, Dict[str, list]] = {}
@@ -582,7 +583,7 @@ def _normalize_setmore_staff(staffs: Optional[list[Dict[str, Any]]]) -> list[Dic
 async def _fetch_square_location(access_token: str, location_id: str) -> Dict[str, Any]:
     logger.info("connection_store._fetch_square_location called (location_id=%s)", location_id)
     logger.info("Fetching Square location %s", location_id)
-    client = AsyncSquare(token=access_token, environment=_square_environment())
+    client = get_square_client(access_token)
     response = await client.locations.get(location_id)
     if hasattr(response, "is_error"):
         if response.is_error():
@@ -604,7 +605,7 @@ async def _fetch_square_location(access_token: str, location_id: str) -> Dict[st
 async def _fetch_square_services(access_token: str, location_id: str) -> Dict[str, Any]:
     logger.info("connection_store._fetch_square_services called (location_id=%s)", location_id)
     logger.info("Fetching Square services for locationId=%s", location_id)
-    client = AsyncSquare(token=access_token, environment=_square_environment())
+    client = get_square_client(access_token)
     items: list[Dict[str, Any]] = []
     cursor = None
     while True:
@@ -645,7 +646,7 @@ async def _fetch_square_staff(access_token: str, location_id: str) -> Dict[str, 
         return {"success": False, "error": "Square team member query types unavailable."}
 
     logger.info("Fetching Square staff for locationId=%s", location_id)
-    client = AsyncSquare(token=access_token, environment=_square_environment())
+    client = get_square_client(access_token)
     team_members: list[Dict[str, Any]] = []
     cursor = None
     while True:
@@ -681,7 +682,7 @@ async def _fetch_square_staff(access_token: str, location_id: str) -> Dict[str, 
 async def _fetch_square_customers(access_token: str) -> Dict[str, Any]:
     logger.info("connection_store._fetch_square_customers called")
     logger.info("Fetching Square customers")
-    client = AsyncSquare(token=access_token, environment=_square_environment())
+    client = get_square_client(access_token)
     customers: list[Dict[str, Any]] = []
     cursor = None
     while True:
