@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
+import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as sns from 'aws-cdk-lib/aws-sns';
@@ -29,8 +30,26 @@ export class VakMonitoringStack extends cdk.Stack {
 
     const cpuUtilization = service.metricCpuUtilization({ period });
     const memoryUtilization = service.metricMemoryUtilization({ period });
-    const runningTasks = service.metricRunningTaskCount({ period });
-    const desiredTasks = service.metricDesiredTaskCount({ period });
+    const runningTasks = new cloudwatch.Metric({
+      namespace: 'AWS/ECS',
+      metricName: 'RunningTaskCount',
+      dimensionsMap: {
+        ClusterName: service.cluster.clusterName,
+        ServiceName: service.serviceName,
+      },
+      statistic: 'Average',
+      period,
+    });
+    const desiredTasks = new cloudwatch.Metric({
+      namespace: 'AWS/ECS',
+      metricName: 'DesiredTaskCount',
+      dimensionsMap: {
+        ClusterName: service.cluster.clusterName,
+        ServiceName: service.serviceName,
+      },
+      statistic: 'Average',
+      period,
+    });
 
     const runningLessThanDesired = new cloudwatch.MathExpression({
       expression: 'running < desired',
@@ -54,12 +73,26 @@ export class VakMonitoringStack extends cdk.Stack {
     const ddbConsumedRead = sessionsTable.metricConsumedReadCapacityUnits({ period });
     const ddbConsumedWrite = sessionsTable.metricConsumedWriteCapacityUnits({ period });
 
-    const s3BucketSize = artifactsBucket.metricBucketSizeBytes({
-      period,
+    const s3BucketSize = new cloudwatch.Metric({
+      namespace: 'AWS/S3',
+      metricName: 'BucketSizeBytes',
+      dimensionsMap: {
+        BucketName: artifactsBucket.bucketName,
+        StorageType: 'StandardStorage',
+      },
       statistic: 'Average',
-      storageType: s3.StorageType.STANDARD_STORAGE,
+      period,
     });
-    const s3Requests = artifactsBucket.metricNumberOfObjects({ period, statistic: 'Average' });
+    const s3Requests = new cloudwatch.Metric({
+      namespace: 'AWS/S3',
+      metricName: 'NumberOfObjects',
+      dimensionsMap: {
+        BucketName: artifactsBucket.bucketName,
+        StorageType: 'AllStorageTypes',
+      },
+      statistic: 'Average',
+      period,
+    });
 
     const errorFilter = new logs.MetricFilter(this, 'VakServiceErrorFilter', {
       logGroup: serviceLogGroup,
@@ -223,7 +256,16 @@ export class VakMonitoringStack extends cdk.Stack {
     const albConnections = alb.metrics.activeConnectionCount({ period });
     const albNewConnections = alb.metrics.newConnectionCount({ period });
     const albProcessedBytes = alb.metrics.processedBytes({ period, statistic: 'Sum' });
-    const requestsPerTarget = targetGroup.metricRequestCountPerTarget({ period });
+    const requestsPerTarget = new cloudwatch.Metric({
+      namespace: 'AWS/ApplicationELB',
+      metricName: 'RequestCountPerTarget',
+      dimensionsMap: {
+        TargetGroup: targetGroup.targetGroupFullName,
+        LoadBalancer: alb.loadBalancerFullName,
+      },
+      statistic: 'Sum',
+      period,
+    });
 
     infraDashboard.addWidgets(
       new cloudwatch.TextWidget({
@@ -283,6 +325,6 @@ export class VakMonitoringStack extends cdk.Stack {
 
 function elbCode(code: '4xx' | '5xx') {
   return code === '4xx'
-    ? cloudwatch.HttpCodeTarget.TARGET_4XX_COUNT
-    : cloudwatch.HttpCodeTarget.TARGET_5XX_COUNT;
+    ? elbv2.HttpCodeTarget.TARGET_4XX_COUNT
+    : elbv2.HttpCodeTarget.TARGET_5XX_COUNT;
 }
