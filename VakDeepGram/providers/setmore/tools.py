@@ -7,6 +7,7 @@ and availability checking through the Setmore API.
 from __future__ import annotations
 
 import asyncio
+import time
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -42,8 +43,31 @@ from providers.setmore.helpers import (
     slot_to_iso,
     phone_fields,
 )
+from utils.metrics import emit_tool_metrics
 
 logger = logging.getLogger(__name__)
+
+
+def tool_metric(tool_name: str):
+    def decorator(func):
+        async def wrapper(*args, **kwargs):
+            tool_context = kwargs.get("tool_context") or (args[0] if args else None)
+            start = time.monotonic()
+            success = True
+            error_type = None
+            try:
+                result = await func(*args, **kwargs)
+                if isinstance(result, dict):
+                    success = bool(result.get("success", True))
+                return result
+            except Exception as exc:
+                success = False
+                error_type = type(exc).__name__
+                raise
+            finally:
+                emit_tool_metrics(tool_name, "setmore", (time.monotonic() - start) * 1000, success, error_type)
+        return wrapper
+    return decorator
 
 
 def _normalized_eq(a: Optional[str], b: Optional[str]) -> bool:
@@ -67,7 +91,16 @@ def _get_refresh_token(business_context: dict) -> Optional[str]:
 
 async def _ensure_setmore_token(tool_context: ToolContext, business_context: dict) -> Optional[str]:
     """Return access token; always prefer fresh token from DynamoDB when business number is in context."""
-    business_number = business_context.get("businessNumber") or business_context.get("business_number")
+    business_number = business_context.get("business_number") or business_context.get("businessNumber")
+    if not business_number and tool_context is not None and getattr(tool_context, "agent", None):
+        agent_state = tool_context.agent.state
+        if agent_state is not None and hasattr(agent_state, "get"):
+            business_number = agent_state.get("business_number") or agent_state.get("businessNumber")
+            state_ctx = agent_state.get("business_context")
+            if isinstance(state_ctx, dict) and not business_number:
+                business_number = state_ctx.get("business_number") or state_ctx.get("businessNumber")
+        if business_number:
+            update_business_context(tool_context, {"business_number": business_number})
     if business_number:
         logger.info("Setmore: fetching access token from DynamoDB for business_number=%s", business_number)
         result = await get_setmore_access_token_from_dynamodb(business_number)
@@ -84,10 +117,10 @@ async def _ensure_setmore_token(tool_context: ToolContext, business_context: dic
         )
     else:
         logger.warning(
-            "Setmore: no businessNumber in context (keys=%s); cannot fetch token from DynamoDB",
+            "Setmore: no businessNumber or business_number in context (keys=%s); cannot fetch token from DynamoDB",
             list(business_context.keys()) if isinstance(business_context, dict) else "n/a",
         )
-    # Fallback: use token or refresh from context (e.g. voice/connection flow without businessNumber)
+    # Fallback: use token or refresh from context (e.g. voice/connection flow without businessNumber or business_number)
     access_token = _get_setmore_token(business_context)
     if access_token:
         return access_token
@@ -115,6 +148,7 @@ _ASK_CUSTOMER_USE_CALLER_PHONE = (
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
 @tool(context=True)
+@tool_metric("find_customer")
 async def find_customer(
     tool_context: ToolContext,
     phone: Optional[str] = None,
@@ -158,6 +192,7 @@ async def find_customer(
 
 
 @tool(context=True)
+@tool_metric("create_customer")
 async def create_customer(
     tool_context: ToolContext,
     first_name: str,
@@ -216,6 +251,7 @@ async def create_customer(
 
 
 @tool(context=True)
+@tool_metric("lookup_or_create_customer_using_caller")
 async def lookup_or_create_customer_using_caller(
     tool_context: ToolContext,
     customer_confirmed_use_of_caller_phone: bool,
@@ -288,6 +324,7 @@ async def lookup_or_create_customer_using_caller(
 
 
 @tool(context=True)
+@tool_metric("get_appointments")
 async def get_appointments(
     tool_context: ToolContext,
     customer_id: str,
@@ -322,6 +359,7 @@ async def get_appointments(
 
 
 @tool(context=True)
+@tool_metric("check_availability")
 async def check_availability(
     tool_context: ToolContext,
     start_date: str,
@@ -425,6 +463,7 @@ async def check_availability(
 
 
 @tool(context=True)
+@tool_metric("create_appointment")
 async def create_appointment(
     tool_context: ToolContext,
     first_name: str,
@@ -552,7 +591,7 @@ async def create_appointment(
 
     # Try WhatsApp first, then fall back to SMS
     to_number = normalize_phone_number(phone) if phone else None
-    from_number = business_context.get("businessNumber")
+    from_number = business_context.get("business_number")
     whatsapp_number = (business_context.get("location") or {}).get("whatsapp_number")
     msg_sent = False
     msg_channel = None

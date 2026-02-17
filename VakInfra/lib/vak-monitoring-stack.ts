@@ -107,6 +107,58 @@ export class VakMonitoringStack extends cdk.Stack {
       statistic: 'Sum',
     });
 
+    const toolErrorSearch = new cloudwatch.MathExpression({
+      expression: "SEARCH('{VakDeepGram,ToolCallErrorCount} MetricName=\"ToolCallErrorCount\"', 'Sum', 300)",
+      period,
+      label: 'Tool errors (all)',
+    });
+
+    const toolLatencyP95 = new cloudwatch.MathExpression({
+      expression: "MAX(SEARCH('{VakDeepGram,ToolCallLatencyMs} MetricName=\"ToolCallLatencyMs\"', 'p95', 300))",
+      period,
+      label: 'Tool latency p95 (max)',
+    });
+
+    const forwardedCallErrors = new cloudwatch.Metric({
+      namespace: 'VakDeepGram',
+      metricName: 'ForwardedCallErrorCount',
+      dimensionsMap: { endpoint: 'twilio' },
+      statistic: 'Sum',
+      period,
+    });
+
+    const callDurationWsP95 = new cloudwatch.Metric({
+      namespace: 'VakDeepGram',
+      metricName: 'CallDurationMs',
+      dimensionsMap: { endpoint: 'ws' },
+      statistic: 'p95',
+      period,
+    });
+
+    const callDurationTwilioP95 = new cloudwatch.Metric({
+      namespace: 'VakDeepGram',
+      metricName: 'CallDurationMs',
+      dimensionsMap: { endpoint: 'twilio_ws' },
+      statistic: 'p95',
+      period,
+    });
+
+    const userMessagesPerSessionChat = new cloudwatch.Metric({
+      namespace: 'VakDeepGram',
+      metricName: 'UserMessagesPerSession',
+      dimensionsMap: { endpoint: 'chat' },
+      statistic: 'Average',
+      period,
+    });
+
+    const userMessagesPerSessionTwilio = new cloudwatch.Metric({
+      namespace: 'VakDeepGram',
+      metricName: 'UserMessagesPerSession',
+      dimensionsMap: { endpoint: 'twilio_chat' },
+      statistic: 'Average',
+      period,
+    });
+
     const alarmTopic = new sns.Topic(this, 'VakMonitoringAlarms', {
       topicName: 'vak-monitoring-alarms',
       displayName: 'Vak Monitoring Alarms',
@@ -192,6 +244,48 @@ export class VakMonitoringStack extends cdk.Stack {
     });
     logErrorAlarm.addAlarmAction(alarmAction);
 
+    const toolErrorAlarm = new cloudwatch.Alarm(this, 'VakToolErrors', {
+      metric: toolErrorSearch,
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmDescription: 'Tool invocation errors detected.',
+    });
+    toolErrorAlarm.addAlarmAction(alarmAction);
+
+    const toolLatencyAlarm = new cloudwatch.Alarm(this, 'VakToolLatencyHigh', {
+      metric: toolLatencyP95,
+      threshold: 2000,
+      evaluationPeriods: 2,
+      datapointsToAlarm: 2,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmDescription: 'Tool p95 latency is high.',
+    });
+    toolLatencyAlarm.addAlarmAction(alarmAction);
+
+    const forwardedErrorAlarm = new cloudwatch.Alarm(this, 'VakForwardedCallErrors', {
+      metric: forwardedCallErrors,
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmDescription: 'Forwarded call errors detected.',
+    });
+    forwardedErrorAlarm.addAlarmAction(alarmAction);
+
+    const callDurationAlarm = new cloudwatch.Alarm(this, 'VakCallDurationHigh', {
+      metric: callDurationTwilioP95,
+      threshold: 5400000,
+      evaluationPeriods: 2,
+      datapointsToAlarm: 2,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmDescription: 'Twilio call duration p95 is unusually high (possible stuck sessions).',
+    });
+    callDurationAlarm.addAlarmAction(alarmAction);
+
     const ddbThrottleAlarm = new cloudwatch.Alarm(this, 'VakSessionsDdbThrottles', {
       metric: ddbThrottles,
       threshold: 1,
@@ -245,6 +339,31 @@ export class VakMonitoringStack extends cdk.Stack {
       new cloudwatch.GraphWidget({
         title: 'Log Errors',
         left: [errorMetric],
+        width: 24,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Tool Errors (All)',
+        left: [toolErrorSearch],
+        width: 24,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Tool Latency p95 (Max)',
+        left: [toolLatencyP95],
+        width: 24,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Forwarded Call Errors',
+        left: [forwardedCallErrors],
+        width: 24,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Call Duration p95 (WS vs Twilio)',
+        left: [callDurationWsP95, callDurationTwilioP95],
+        width: 24,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'User Messages per Session (Avg)',
+        left: [userMessagesPerSessionChat, userMessagesPerSessionTwilio],
         width: 24,
       }),
     );

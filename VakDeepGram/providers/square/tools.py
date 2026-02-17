@@ -7,6 +7,7 @@ and availability checking through the Square API.
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
@@ -52,8 +53,30 @@ from providers.square.helpers import (
     find_customer_by_phone,
     collect_async_pager,
 )
+from utils.metrics import emit_tool_metrics
 
 logger = logging.getLogger(__name__)
+
+
+def tool_metric(tool_name: str):
+    def decorator(func):
+        async def wrapper(*args, **kwargs):
+            start = time.monotonic()
+            success = True
+            error_type = None
+            try:
+                result = await func(*args, **kwargs)
+                if isinstance(result, dict):
+                    success = bool(result.get("success", True))
+                return result
+            except Exception as exc:
+                success = False
+                error_type = type(exc).__name__
+                raise
+            finally:
+                emit_tool_metrics(tool_name, "square", (time.monotonic() - start) * 1000, success, error_type)
+        return wrapper
+    return decorator
 
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
@@ -65,6 +88,7 @@ ASK_CUSTOMER_USE_CALLER_PHONE = (
 
 
 @tool(context=True)
+@tool_metric("find_customer")
 async def find_customer(
     tool_context: ToolContext,
     phone: Optional[str] = None,
@@ -114,6 +138,7 @@ async def find_customer(
 
 
 @tool(context=True)
+@tool_metric("create_customer")
 async def create_customer(
     tool_context: ToolContext,
     first_name: str,
@@ -168,6 +193,7 @@ async def create_customer(
 
 
 @tool(context=True)
+@tool_metric("lookup_or_create_customer_using_caller")
 async def lookup_or_create_customer_using_caller(
     tool_context: ToolContext,
     customer_confirmed_use_of_caller_phone: bool,
@@ -225,6 +251,7 @@ async def lookup_or_create_customer_using_caller(
 
 
 @tool(context=True)
+@tool_metric("get_appointments")
 async def get_appointments(
     tool_context: ToolContext,
     customer_id: str,
@@ -299,6 +326,7 @@ async def get_appointments(
 
 
 @tool(context=True)
+@tool_metric("get_orders")
 async def get_orders(
     tool_context: ToolContext,
     customer_id: str,
@@ -324,6 +352,7 @@ async def get_orders(
 
 
 @tool(context=True)
+@tool_metric("check_availability")
 async def check_availability(
     tool_context: ToolContext,
     start_date: str,
@@ -398,6 +427,7 @@ async def check_availability(
 
 
 @tool(context=True)
+@tool_metric("create_appointment")
 async def create_appointment(
     tool_context: ToolContext,
     first_name: str,
@@ -544,6 +574,7 @@ async def create_appointment(
 
 
 @tool(context=True)
+@tool_metric("update_appointment")
 async def update_appointment(
     tool_context: ToolContext,
     booking_id: str,

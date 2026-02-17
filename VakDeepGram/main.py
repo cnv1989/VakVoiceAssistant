@@ -6,6 +6,7 @@ import logging
 import uuid
 import base64
 import asyncio
+import time
 from typing import Optional
 
 from twilio.rest import Client as TwilioClient
@@ -28,8 +29,8 @@ except ImportError:
     MaxTokensReachedException = None
 from deepgram_handler import deepgram_manager
 from providers import get_tools_for_provider, get_chat_prompt_for_provider, get_voice_prompt_for_provider
-from providers.common.helpers import StateDict
-import json
+from utils.case import to_snake_case
+from utils.metrics import emit_call_duration, emit_user_message_count
 
 
 def _make_json_serializable(obj):
@@ -49,6 +50,16 @@ def _make_json_serializable(obj):
         return _make_json_serializable(obj.to_dict())
     # Fallback to string representation
     return str(obj)
+
+
+def _seed_agent_state(agent: Agent, context: dict) -> None:
+    """Initialize Strands agent state using state.set for all keys."""
+    state = getattr(agent, "state", None)
+    if state is None or not hasattr(state, "set"):
+        return
+    state.set("business_context", context)
+    for key, value in context.items():
+        state.set(key, value)
 
 
 from connection_store import (
@@ -77,6 +88,7 @@ security = HTTPBearer(auto_error=False)
 
 # Track WebSocket connections per IP for rate limiting
 _websocket_connections: dict[str, int] = {}
+_chat_message_counts: dict[str, int] = {}
 
 
 def verify_twilio_signature(request_url: str, params: dict, signature: str) -> bool:
@@ -342,15 +354,20 @@ async def chat(
         # Convert to JSON-serializable format (Square SDK objects aren't serializable)
         serializable_context = _make_json_serializable(business_context)
         normalized_phone = normalize_phone_number(customer_phone) if customer_phone else None
-        resolved_session_id = session_id or f"chat:{business_number}:{normalized_phone or uuid.uuid4().hex}"
+    resolved_session_id = session_id or f"chat:{business_number}:{normalized_phone or uuid.uuid4().hex}"
+    _chat_message_counts[resolved_session_id] = _chat_message_counts.get(resolved_session_id, 0) + 1
+    emit_user_message_count("chat", resolved_session_id, _chat_message_counts[resolved_session_id])
         session_manager = _get_chat_session_manager(resolved_session_id)
+        serializable_context = to_snake_case(serializable_context)
+        initial_state = {"business_context": serializable_context, **serializable_context}
         agent = Agent(
             model=bedrock_model,
             system_prompt=system_prompt if system_prompt else None,
             tools=provider_tools,
-            state=StateDict({"business_context": serializable_context}),
+            state=initial_state,
             session_manager=session_manager,
         )
+        _seed_agent_state(agent, serializable_context)
 
         # Invoke agent in executor to avoid blocking async event loop
         def invoke_agent(a, msg):
@@ -384,13 +401,15 @@ async def chat(
                     # Retry with fresh session (AgentCore Memory doesn't support delete, so use new session_id)
                     retry_session_id = f"{resolved_session_id}:retry-{uuid.uuid4().hex[:8]}"
                     session_manager = _get_chat_session_manager(retry_session_id)
+                    initial_state = {"business_context": serializable_context, **serializable_context}
                     agent = Agent(
                         model=bedrock_model,
                         system_prompt=system_prompt if system_prompt else None,
                         tools=provider_tools,
-                        state=StateDict({"business_context": serializable_context}),
+                        state=initial_state,
                         session_manager=session_manager,
                     )
+                    _seed_agent_state(agent, serializable_context)
                     continue
                 logger.error("Strands Agent invoke failed: %s", exc, exc_info=True)
                 # If retry already happened and same error, return user-friendly message
@@ -619,14 +638,19 @@ async def twilio_chat(request: Request):
         serializable_context = _make_json_serializable(business_context)
         normalized_phone = normalize_phone_number(stripped_customer_phone) if stripped_customer_phone else None
         resolved_session_id = session_id or f"chat:{stripped_business_number}:{normalized_phone or uuid.uuid4().hex}"
+        _chat_message_counts[resolved_session_id] = _chat_message_counts.get(resolved_session_id, 0) + 1
+        emit_user_message_count("twilio_chat", resolved_session_id, _chat_message_counts[resolved_session_id])
         session_manager = _get_chat_session_manager(resolved_session_id)
+        serializable_context = to_snake_case(serializable_context)
+        initial_state = {"business_context": serializable_context, **serializable_context}
         agent = Agent(
             model=bedrock_model,
             system_prompt=system_prompt if system_prompt else None,
             tools=provider_tools,
-            state=StateDict({"business_context": serializable_context}),
+            state=initial_state,
             session_manager=session_manager,
         )
+        _seed_agent_state(agent, serializable_context)
 
         # Invoke agent in executor to avoid blocking async event loop
         def invoke_agent(a, msg):
@@ -659,13 +683,15 @@ async def twilio_chat(request: Request):
                         logger.debug("Session delete failed (may not exist): %s", e)
                     retry_session_id = f"{resolved_session_id}:retry-{uuid.uuid4().hex[:8]}"
                     session_manager = _get_chat_session_manager(retry_session_id)
+                    initial_state = {"business_context": serializable_context, **serializable_context}
                     agent = Agent(
                         model=bedrock_model,
                         system_prompt=system_prompt if system_prompt else None,
                         tools=provider_tools,
-                        state=StateDict({"business_context": serializable_context}),
+                        state=initial_state,
                         session_manager=session_manager,
                     )
+                    _seed_agent_state(agent, serializable_context)
                     continue
                 if is_tool_result_exceeds and attempt == 1:
                     tool_result_exceeded_after_retry = True
@@ -782,6 +808,7 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     connection_id = f"ws-{uuid.uuid4().hex[:12]}"
     logger.info(f"WebSocket connection established: {connection_id}")
+    connection_start = time.monotonic()
 
     business_number = websocket.query_params.get("businessNumber")
     customer_phone = websocket.query_params.get("customerPhone")
@@ -902,6 +929,7 @@ async def websocket_endpoint(websocket: WebSocket):
             await deepgram_manager.close_session(connection_id)
         clear_connection_context(connection_id)
         _decrement_websocket_count(client_ip)
+        emit_call_duration("ws", (time.monotonic() - connection_start) * 1000)
         logger.info("Cleaned up connection: %s", connection_id)
 
 
@@ -1000,6 +1028,7 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     connection_id = f"twilio-{uuid.uuid4().hex[:12]}"
     logger.info(f"Twilio WebSocket connection established: {connection_id}")
+    connection_start = time.monotonic()
     
     stream_sid_ref = {"value": None}  # Use dict to allow modification in nested functions
     session_ref = {"value": None}
@@ -1269,6 +1298,7 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
             await deepgram_manager.close_session(connection_id)
         clear_connection_context(connection_id)
         _decrement_websocket_count(client_ip)
+        emit_call_duration("twilio_ws", (time.monotonic() - connection_start) * 1000)
         logger.info("Cleaned up Twilio connection: %s", connection_id)
 
 
