@@ -16,6 +16,7 @@ from utils.errors import (
     BusinessContextError,
 )
 from utils.logging import PIIRedactingFormatter, configure_pii_safe_logging
+from utils.case import to_snake_case, to_snake_case_key
 
 __all__ = [
     # Phone utilities
@@ -36,4 +37,7 @@ __all__ = [
     # Logging
     "PIIRedactingFormatter",
     "configure_pii_safe_logging",
+    # Case helpers
+    "to_snake_case",
+    "to_snake_case_key",
 ]
