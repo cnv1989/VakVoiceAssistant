@@ -30,7 +30,14 @@ except ImportError:
 from deepgram_handler import deepgram_manager
 from providers import get_tools_for_provider, get_chat_prompt_for_provider, get_voice_prompt_for_provider
 from utils.case import to_snake_case
-from utils.metrics import emit_call_duration, emit_user_message_count
+from utils.metrics import (
+    emit_call_duration,
+    emit_user_message_count,
+    emit_agent_metrics,
+    emit_max_tokens_reached,
+    emit_active_connections,
+    emit_message_delivery,
+)
 
 
 def _make_json_serializable(obj):
@@ -338,6 +345,7 @@ async def chat(
 
     logger.info("Invoking Strands Agent chat (model=%s provider=%s tools=%d message_chars=%d max_tokens=%d)",
                 model_id, provider, len(provider_tools), len(message), max_tokens)
+    agent_start = time.monotonic()
     try:
         # Create Bedrock model with Strands
         bedrock_model = BedrockModel(
@@ -354,9 +362,9 @@ async def chat(
         # Convert to JSON-serializable format (Square SDK objects aren't serializable)
         serializable_context = _make_json_serializable(business_context)
         normalized_phone = normalize_phone_number(customer_phone) if customer_phone else None
-    resolved_session_id = session_id or f"chat:{business_number}:{normalized_phone or uuid.uuid4().hex}"
-    _chat_message_counts[resolved_session_id] = _chat_message_counts.get(resolved_session_id, 0) + 1
-    emit_user_message_count("chat", resolved_session_id, _chat_message_counts[resolved_session_id])
+        resolved_session_id = session_id or f"chat:{business_number}:{normalized_phone or uuid.uuid4().hex}"
+        _chat_message_counts[resolved_session_id] = _chat_message_counts.get(resolved_session_id, 0) + 1
+        emit_user_message_count("chat", resolved_session_id, _chat_message_counts[resolved_session_id])
         session_manager = _get_chat_session_manager(resolved_session_id)
         serializable_context = to_snake_case(serializable_context)
         initial_state = {"business_context": serializable_context, **serializable_context}
@@ -374,13 +382,17 @@ async def chat(
             return a(msg)
 
         response = None
+        agent_error_type = None
+        agent_success = False
         last_exc = None
         for attempt in range(2):
             try:
                 response = await asyncio.to_thread(invoke_agent, agent, message)
+                agent_success = True
                 break
             except Exception as exc:
                 last_exc = exc
+                agent_error_type = type(exc).__name__
                 error_msg = str(exc).lower()
                 # ConverseStream validation: toolResult blocks exceed toolUse (Strands session repair bug)
                 is_tool_result_exceeds = (
@@ -424,6 +436,13 @@ async def chat(
                 raise HTTPException(status_code=502, detail=f"Agent request failed: {str(exc)}")
 
         if response is None:
+            emit_agent_metrics(
+                endpoint="chat",
+                provider=provider,
+                duration_ms=(time.monotonic() - agent_start) * 1000,
+                success=False,
+                error_type=agent_error_type or "UnknownError",
+            )
             raise HTTPException(status_code=502, detail=f"Agent request failed: {str(last_exc)}")
 
         # Extract reply from response
@@ -436,11 +455,26 @@ async def chat(
         else:
             reply = str(response)
 
+        emit_agent_metrics(
+            endpoint="chat",
+            provider=provider,
+            duration_ms=(time.monotonic() - agent_start) * 1000,
+            success=agent_success,
+            error_type=agent_error_type if not agent_success else None,
+        )
+
     except HTTPException:
         raise
     except Exception as exc:
         error_msg = str(exc)
         logger.error("Strands Agent invoke failed: %s", exc, exc_info=True)
+        emit_agent_metrics(
+            endpoint="chat",
+            provider=provider,
+            duration_ms=(time.monotonic() - agent_start) * 1000,
+            success=False,
+            error_type=type(exc).__name__,
+        )
         raise HTTPException(status_code=502, detail=f"Agent request failed: {error_msg}")
 
     return {"reply": reply, "model_id": model_id}
@@ -621,6 +655,7 @@ async def twilio_chat(request: Request):
 
     logger.info("Invoking Strands Agent for Twilio chat (model=%s provider=%s tools=%d message_chars=%d max_tokens=%d)",
                 model_id, provider, len(provider_tools), len(message), max_tokens)
+    agent_start = time.monotonic()
     try:
         # Create Bedrock model with Strands
         bedrock_model = BedrockModel(
@@ -657,14 +692,18 @@ async def twilio_chat(request: Request):
             return a(msg)
 
         response = None
+        agent_error_type = None
+        agent_success = False
         last_exc = None
         tool_result_exceeded_after_retry = False
         for attempt in range(2):
             try:
                 response = await asyncio.to_thread(invoke_agent, agent, message)
+                agent_success = True
                 break
             except Exception as exc:
                 last_exc = exc
+                agent_error_type = type(exc).__name__
                 error_msg = str(exc).lower()
                 is_tool_result_exceeds = (
                     ("validationexception" in error_msg or "conversestream" in error_msg)
@@ -712,6 +751,13 @@ async def twilio_chat(request: Request):
         else:
             reply = "Sorry, something went wrong. Please try again later."
 
+        emit_agent_metrics(
+            endpoint="twilio_chat",
+            provider=provider,
+            duration_ms=(time.monotonic() - agent_start) * 1000,
+            success=agent_success,
+            error_type=agent_error_type if not agent_success else None,
+        )
     except Exception as exc:
         error_msg = str(exc)
         is_max_tokens_error = (
@@ -724,9 +770,24 @@ async def twilio_chat(request: Request):
 
         if is_max_tokens_error:
             logger.warning("Strands Agent hit max_tokens limit (max_tokens=%d).", max_tokens)
+            emit_max_tokens_reached("twilio_chat", provider)
+            emit_agent_metrics(
+                endpoint="twilio_chat",
+                provider=provider,
+                duration_ms=(time.monotonic() - agent_start) * 1000,
+                success=False,
+                error_type="MaxTokensReached",
+            )
             reply = "Sorry, I couldn't complete my response. Please try a simpler question."
         else:
             logger.error("Strands Agent invoke failed: %s", exc, exc_info=True)
+            emit_agent_metrics(
+                endpoint="twilio_chat",
+                provider=provider,
+                duration_ms=(time.monotonic() - agent_start) * 1000,
+                success=False,
+                error_type=type(exc).__name__,
+            )
             reply = "Sorry, something went wrong. Please try again later."
 
     # Send SMS reply directly using Twilio client
@@ -751,9 +812,11 @@ async def twilio_chat(request: Request):
 
         logger.info("Sent SMS reply via Twilio: sid=%s from=%s to=%s",
                     sms_message.sid, business_number, customer_phone)
+        emit_message_delivery("sms", True)
 
     except Exception as sms_exc:
         logger.error("Failed to send SMS via Twilio: %s", sms_exc, exc_info=True)
+        emit_message_delivery("sms", False)
         raise HTTPException(status_code=502, detail=f"Failed to send SMS: {str(sms_exc)}")
 
     # Return empty TwiML response (we already sent the SMS directly)
@@ -777,16 +840,20 @@ def _check_websocket_rate_limit(client_ip: str) -> bool:
     return current < max_connections
 
 
-def _increment_websocket_count(client_ip: str) -> None:
+def _increment_websocket_count(client_ip: str, endpoint: str) -> None:
     """Increment WebSocket connection count for IP."""
     _websocket_connections[client_ip] = _websocket_connections.get(client_ip, 0) + 1
+    total = sum(_websocket_connections.values())
+    emit_active_connections(endpoint, total)
 
 
-def _decrement_websocket_count(client_ip: str) -> None:
+def _decrement_websocket_count(client_ip: str, endpoint: str) -> None:
     """Decrement WebSocket connection count for IP."""
     current = _websocket_connections.get(client_ip, 0)
     if current > 0:
         _websocket_connections[client_ip] = current - 1
+    total = sum(_websocket_connections.values())
+    emit_active_connections(endpoint, total)
 
 
 @app.websocket("/ws")
@@ -804,7 +871,7 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.close(code=1008, reason="Connection limit exceeded")
         return
 
-    _increment_websocket_count(client_ip)
+    _increment_websocket_count(client_ip, "ws")
     await websocket.accept()
     connection_id = f"ws-{uuid.uuid4().hex[:12]}"
     logger.info(f"WebSocket connection established: {connection_id}")
@@ -928,7 +995,7 @@ async def websocket_endpoint(websocket: WebSocket):
         if session:
             await deepgram_manager.close_session(connection_id)
         clear_connection_context(connection_id)
-        _decrement_websocket_count(client_ip)
+        _decrement_websocket_count(client_ip, "ws")
         emit_call_duration("ws", (time.monotonic() - connection_start) * 1000)
         logger.info("Cleaned up connection: %s", connection_id)
 
@@ -1024,7 +1091,7 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
     
     logger.info("Twilio signature verified for connection from %s", websocket.client)
 
-    _increment_websocket_count(client_ip)
+    _increment_websocket_count(client_ip, "twilio_ws")
     await websocket.accept()
     connection_id = f"twilio-{uuid.uuid4().hex[:12]}"
     logger.info(f"Twilio WebSocket connection established: {connection_id}")
@@ -1297,7 +1364,7 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
         if session_ref["value"]:
             await deepgram_manager.close_session(connection_id)
         clear_connection_context(connection_id)
-        _decrement_websocket_count(client_ip)
+        _decrement_websocket_count(client_ip, "twilio_ws")
         emit_call_duration("twilio_ws", (time.monotonic() - connection_start) * 1000)
         logger.info("Cleaned up Twilio connection: %s", connection_id)
 
