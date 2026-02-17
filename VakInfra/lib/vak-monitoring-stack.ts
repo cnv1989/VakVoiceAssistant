@@ -188,7 +188,7 @@ export class VakMonitoringStack extends cdk.Stack {
       period,
     });
     const agentLatencyP95 = new cloudwatch.MathExpression({
-      expression: 'MAX(chatSquare, chatSetmore, twilioSquare, twilioSetmore)',
+      expression: 'MAX(MAX(chatSquare, chatSetmore), MAX(twilioSquare, twilioSetmore))',
       usingMetrics: {
         chatSquare: agentLatencyChatSquare,
         chatSetmore: agentLatencyChatSetmore,
