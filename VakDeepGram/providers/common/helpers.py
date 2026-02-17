@@ -36,6 +36,20 @@ def get_business_context(tool_context: Optional[ToolContext]) -> dict:
     """Extract business context from tool_context.agent.state or invocation_state."""
     if not tool_context:
         return {}
+    def _looks_like_business_context(value: Any) -> bool:
+        if not isinstance(value, dict):
+            return False
+        return any(
+            key in value
+            for key in (
+                "provider",
+                "services",
+                "staff",
+                "businessNumber",
+                "business_number",
+                "bookingProvider",
+            )
+        )
     # Prefer agent.state (set when creating the Agent in main.py)
     agent = getattr(tool_context, "agent", None)
     if agent is not None:
@@ -43,10 +57,24 @@ def get_business_context(tool_context: Optional[ToolContext]) -> dict:
         ctx = state.get("business_context") if hasattr(state, "get") else None
         if ctx is not None and isinstance(ctx, dict):
             return ctx
+        if _looks_like_business_context(state):
+            return state
     # Fallback: invocation_state (some Strands versions may pass state here)
     inv = getattr(tool_context, "invocation_state", None) or {}
     ctx = inv.get("business_context") if hasattr(inv, "get") else None
-    return ctx if isinstance(ctx, dict) else {}
+    if isinstance(ctx, dict):
+        return ctx
+    if _looks_like_business_context(inv):
+        return inv
+    # Last resort: some tool_context variants expose state directly
+    direct_state = getattr(tool_context, "state", None) or getattr(tool_context, "_state", None) or {}
+    if isinstance(direct_state, dict):
+        ctx = direct_state.get("business_context")
+        if isinstance(ctx, dict):
+            return ctx
+        if _looks_like_business_context(direct_state):
+            return direct_state
+    return {}
 
 
 def update_business_context(tool_context: ToolContext, updates: dict) -> dict:

@@ -20,6 +20,7 @@ except ImportError:  # pragma: no cover
     ZoneInfo = None  # type: ignore[assignment,misc]
 
 import config
+from connection_store import get_setmore_access_token_from_dynamodb
 from utils import setmore_api, booking_helpers
 from utils.phone import normalize_phone_number
 from business_logic import send_booking_link_sms, send_booking_link_whatsapp
@@ -64,6 +65,47 @@ def _get_refresh_token(business_context: dict) -> Optional[str]:
     return business_context.get("refreshToken") or business_context.get("refresh_token")
 
 
+async def _ensure_setmore_token(tool_context: ToolContext, business_context: dict) -> Optional[str]:
+    """Return access token; always prefer fresh token from DynamoDB when business number is in context."""
+    business_number = business_context.get("businessNumber") or business_context.get("business_number")
+    if business_number:
+        logger.info("Setmore: fetching access token from DynamoDB for business_number=%s", business_number)
+        result = await get_setmore_access_token_from_dynamodb(business_number)
+        if result.get("success") and result.get("access_token"):
+            access_token = result["access_token"]
+            update_business_context(tool_context, {"accessToken": access_token})
+            logger.info("Setmore: access token loaded from DynamoDB for %s", business_number)
+            return access_token
+        logger.warning(
+            "Setmore: token from DynamoDB failed for %s: %s (success=%s)",
+            business_number,
+            result.get("error"),
+            result.get("success"),
+        )
+    else:
+        logger.warning(
+            "Setmore: no businessNumber in context (keys=%s); cannot fetch token from DynamoDB",
+            list(business_context.keys()) if isinstance(business_context, dict) else "n/a",
+        )
+    # Fallback: use token or refresh from context (e.g. voice/connection flow without businessNumber)
+    access_token = _get_setmore_token(business_context)
+    if access_token:
+        return access_token
+    refresh = _get_refresh_token(business_context)
+    if not refresh:
+        return None
+    logger.info("Setmore access token missing; refreshing from context refresh_token.")
+    token_result = await setmore_api.get_access_token(refresh)
+    if not token_result.get("success"):
+        logger.warning("Setmore token refresh failed: %s", token_result.get("error"))
+        return None
+    new_token = token_result.get("access_token")
+    if new_token:
+        update_business_context(tool_context, {"accessToken": new_token})
+        logger.info("Setmore access token refreshed and context updated.")
+    return new_token
+
+
 # Message to ask the customer before using their caller/call-in number
 _ASK_CUSTOMER_USE_CALLER_PHONE = (
     "Can I use the number you're calling or messaging from to look up your account or create one?"
@@ -87,7 +129,7 @@ async def find_customer(
     confirm with the customer and pass customer_confirmed_use_of_caller_phone=True only after they agree.
     """
     business_context = get_business_context(tool_context)
-    access_token = _get_setmore_token(business_context)
+    access_token = await _ensure_setmore_token(tool_context, business_context)
     if not access_token:
         return {"success": False, "error": "Missing Setmore access token."}
 
@@ -131,7 +173,7 @@ async def create_customer(
     customer_confirmed_use_of_caller_phone=True only after they agree.
     """
     business_context = get_business_context(tool_context)
-    access_token = _get_setmore_token(business_context)
+    access_token = await _ensure_setmore_token(tool_context, business_context)
     if not access_token:
         return {"success": False, "error": "Missing Setmore access token."}
 
@@ -255,7 +297,7 @@ async def get_appointments(
     Returns appointments within the next 30 days that match the customer key.
     """
     business_context = get_business_context(tool_context)
-    access_token = _get_setmore_token(business_context)
+    access_token = await _ensure_setmore_token(tool_context, business_context)
     if not access_token:
         return {"success": False, "error": "Missing Setmore access token."}
 
@@ -294,7 +336,7 @@ async def check_availability(
     a relative keyword (TODAY, TOMORROW, NEXT_WEEK), or a weekday name.
     """
     business_context = get_business_context(tool_context)
-    access_token = _get_setmore_token(business_context)
+    access_token = await _ensure_setmore_token(tool_context, business_context)
     if not access_token:
         logger.error("check_availability: Missing Setmore access token")
         return {"success": False, "error": "Missing Setmore access token."}
@@ -408,7 +450,7 @@ async def create_appointment(
     Date should be in ISO format (YYYY-MM-DDTHH:MM:SS).
     """
     business_context = get_business_context(tool_context)
-    access_token = _get_setmore_token(business_context)
+    access_token = await _ensure_setmore_token(tool_context, business_context)
     if not access_token:
         return {"success": False, "error": "Missing Setmore access token."}
 
