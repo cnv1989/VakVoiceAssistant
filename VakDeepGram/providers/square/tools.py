@@ -53,7 +53,7 @@ from providers.square.helpers import (
     find_customer_by_phone,
     collect_async_pager,
 )
-from utils.metrics import emit_tool_metrics
+from utils.metrics import emit_tool_metrics, emit_api_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +77,46 @@ def tool_metric(tool_name: str):
                 emit_tool_metrics(tool_name, "square", (time.monotonic() - start) * 1000, success, error_type)
         return wrapper
     return decorator
+
+
+def _square_status_code(response: Any) -> Optional[int]:
+    if response is None:
+        return None
+    for attr in ("status_code", "statusCode"):
+        value = getattr(response, attr, None)
+        if isinstance(value, int):
+            return value
+    for container in ("http_response", "_http_response", "_response", "response"):
+        inner = getattr(response, container, None)
+        if inner is None:
+            continue
+        value = getattr(inner, "status_code", None) or getattr(inner, "statusCode", None)
+        if isinstance(value, int):
+            return value
+    return None
+
+
+async def _square_call(api_name: str, coro):
+    start = time.monotonic()
+    try:
+        response = await coro
+        emit_api_metrics(
+            "square",
+            api_name,
+            (time.monotonic() - start) * 1000,
+            True,
+            status_code=_square_status_code(response),
+        )
+        return response
+    except Exception as exc:
+        emit_api_metrics(
+            "square",
+            api_name,
+            (time.monotonic() - start) * 1000,
+            False,
+            error_type=type(exc).__name__,
+        )
+        raise
 
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
@@ -177,11 +217,14 @@ async def create_customer(
 
     normalized_phone = normalize_phone_number(phone) if phone else None
     try:
-        response = await client.customers.create(
+        response = await _square_call(
+            "customers.create",
+            client.customers.create(
             idempotency_key=str(uuid.uuid4()),
             given_name=first_name,
             family_name=last_name,
             phone_number=normalized_phone,
+            ),
         )
     except Exception as exc:
         return {"success": False, "error": str(exc)}
@@ -279,12 +322,15 @@ async def get_appointments(
     appointments: list[Dict[str, Any]] = []
     cursor = None
     while True:
-        response = await client.bookings.list(
+        response = await _square_call(
+            "bookings.list",
+            client.bookings.list(
             customer_id=customer_id,
             start_at_min=start_at_min,
             start_at_max=end_at_max,
             cursor=cursor,
             limit=200,
+            ),
         )
         parsed = parse_square_response(response)
         if not parsed.get("success"):
@@ -405,7 +451,10 @@ async def check_availability(
     if resolved_staff:
         filter_payload["segment_filters"][0]["team_member_id_filter"] = {"any": resolved_staff}
 
-    response = await client.bookings.search_availability(query={"filter": filter_payload})
+    response = await _square_call(
+        "bookings.search_availability",
+        client.bookings.search_availability(query={"filter": filter_payload}),
+    )
     parsed = parse_square_response(response)
     if not parsed.get("success"):
         return {"success": False, "error": parsed.get("error")}
@@ -469,11 +518,14 @@ async def create_appointment(
             resolved_customer_id = existing.get("id")
         else:
             try:
-                created = await client.customers.create(
-                    idempotency_key=str(uuid.uuid4()),
-                    given_name=first_name,
-                    family_name=last_name,
-                    phone_number=normalized,
+                created = await _square_call(
+                    "customers.create",
+                    client.customers.create(
+                        idempotency_key=str(uuid.uuid4()),
+                        given_name=first_name,
+                        family_name=last_name,
+                        phone_number=normalized,
+                    ),
                 )
             except Exception as exc:
                 return {"success": False, "error": str(exc)}
@@ -512,7 +564,10 @@ async def create_appointment(
         "location_id": location_id,
         "segment_filters": [{"service_variation_id": service_variation_id}],
     }
-    avail_resp = await client.bookings.search_availability(query={"filter": avail_filter})
+    avail_resp = await _square_call(
+        "bookings.search_availability",
+        client.bookings.search_availability(query={"filter": avail_filter}),
+    )
     avail_parsed = parse_square_response(avail_resp)
     if not avail_parsed.get("success"):
         return {"success": False, "error": avail_parsed.get("error")}
@@ -550,7 +605,10 @@ async def create_appointment(
         "customer_id": resolved_customer_id,
         "appointment_segments": [segment],
     }
-    created_booking = await client.bookings.create(booking=booking_payload, idempotency_key=str(uuid.uuid4()))
+    created_booking = await _square_call(
+        "bookings.create",
+        client.bookings.create(booking=booking_payload, idempotency_key=str(uuid.uuid4())),
+    )
     created_parsed = parse_square_response(created_booking)
     if not created_parsed.get("success"):
         return {"success": False, "error": created_parsed.get("error")}
@@ -601,7 +659,10 @@ async def update_appointment(
     client = get_client(ctx["access_token"])
     location_id = ctx["location_id"]
 
-    booking_resp = await client.bookings.retrieve(booking_id=booking_id)
+    booking_resp = await _square_call(
+        "bookings.retrieve",
+        client.bookings.retrieve(booking_id=booking_id),
+    )
     booking_parsed = parse_square_response(booking_resp)
     if not booking_parsed.get("success"):
         return {"success": False, "error": booking_parsed.get("error")}
@@ -652,7 +713,10 @@ async def update_appointment(
         "location_id": location_id,
         "segment_filters": [{"service_variation_id": svi, "team_member_id_filter": {"any": [staff_id]}}],
     }
-    avail_resp = await client.bookings.search_availability(query={"filter": avail_filter})
+    avail_resp = await _square_call(
+        "bookings.search_availability",
+        client.bookings.search_availability(query={"filter": avail_filter}),
+    )
     avail_parsed = parse_square_response(avail_resp)
     if not avail_parsed.get("success"):
         return {"success": False, "error": avail_parsed.get("error")}
@@ -682,7 +746,10 @@ async def update_appointment(
     if cid:
         update_payload["customer_id"] = cid
 
-    update_resp = await client.bookings.update(booking_id=booking_id, booking=update_payload)
+    update_resp = await _square_call(
+        "bookings.update",
+        client.bookings.update(booking_id=booking_id, booking=update_payload),
+    )
     update_parsed = parse_square_response(update_resp)
     if not update_parsed.get("success"):
         return {"success": False, "error": update_parsed.get("error")}

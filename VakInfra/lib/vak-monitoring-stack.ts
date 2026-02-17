@@ -119,6 +119,130 @@ export class VakMonitoringStack extends cdk.Stack {
       label: 'Tool latency p95 (max)',
     });
 
+    const agentErrorSearch = new cloudwatch.MathExpression({
+      expression: "SEARCH('{VakDeepGram,AgentInvokeErrorCount} MetricName=\"AgentInvokeErrorCount\"', 'Sum', 300)",
+      period,
+      label: 'Agent errors (all)',
+    });
+
+    const agentLatencyP95 = new cloudwatch.MathExpression({
+      expression: "MAX(SEARCH('{VakDeepGram,AgentResponseLatencyMs} MetricName=\"AgentResponseLatencyMs\"', 'p95', 300))",
+      period,
+      label: 'Agent latency p95 (max)',
+    });
+
+    const maxTokensReached = new cloudwatch.MathExpression({
+      expression: "SEARCH('{VakDeepGram,MaxTokensReachedCount} MetricName=\"MaxTokensReachedCount\"', 'Sum', 300)",
+      period,
+      label: 'Max tokens reached',
+    });
+
+    const setmoreApiErrors = new cloudwatch.MathExpression({
+      expression: "SEARCH('{VakDeepGram,SetmoreApiErrorCount} MetricName=\"SetmoreApiErrorCount\"', 'Sum', 300)",
+      period,
+      label: 'Setmore API errors',
+    });
+
+    const setmoreApiLatencyP95 = new cloudwatch.MathExpression({
+      expression: "MAX(SEARCH('{VakDeepGram,SetmoreApiLatencyMs} MetricName=\"SetmoreApiLatencyMs\"', 'p95', 300))",
+      period,
+      label: 'Setmore API latency p95',
+    });
+
+    const squareApiErrors = new cloudwatch.MathExpression({
+      expression: "SEARCH('{VakDeepGram,SquareApiErrorCount} MetricName=\"SquareApiErrorCount\"', 'Sum', 300)",
+      period,
+      label: 'Square API errors',
+    });
+
+    const squareApiLatencyP95 = new cloudwatch.MathExpression({
+      expression: "MAX(SEARCH('{VakDeepGram,SquareApiLatencyMs} MetricName=\"SquareApiLatencyMs\"', 'p95', 300))",
+      period,
+      label: 'Square API latency p95',
+    });
+
+    const deepgramSessionErrors = new cloudwatch.MathExpression({
+      expression: "SEARCH('{VakDeepGram,DeepgramSessionErrorCount} MetricName=\"DeepgramSessionErrorCount\"', 'Sum', 300)",
+      period,
+      label: 'Deepgram session errors',
+    });
+
+    const deepgramSessionStarts = new cloudwatch.MathExpression({
+      expression: "SEARCH('{VakDeepGram,DeepgramSessionStartCount} MetricName=\"DeepgramSessionStartCount\"', 'Sum', 300)",
+      period,
+      label: 'Deepgram session starts',
+    });
+
+    const contextResolveErrors = new cloudwatch.MathExpression({
+      expression: "SEARCH('{VakDeepGram,BusinessContextResolveErrorCount} MetricName=\"BusinessContextResolveErrorCount\"', 'Sum', 300)",
+      period,
+      label: 'Business context resolve errors',
+    });
+
+    const contextResolveLatencyP95 = new cloudwatch.MathExpression({
+      expression: "MAX(SEARCH('{VakDeepGram,BusinessContextResolveLatencyMs} MetricName=\"BusinessContextResolveLatencyMs\"', 'p95', 300))",
+      period,
+      label: 'Business context resolve latency p95',
+    });
+
+    const missingBusinessNumber = new cloudwatch.MathExpression({
+      expression: "SEARCH('{VakDeepGram,MissingBusinessNumberCount} MetricName=\"MissingBusinessNumberCount\"', 'Sum', 300)",
+      period,
+      label: 'Missing business number',
+    });
+
+    const smsErrors = new cloudwatch.MathExpression({
+      expression: "SEARCH('{VakDeepGram,SmsSendErrorCount} MetricName=\"SmsSendErrorCount\"', 'Sum', 300)",
+      period,
+      label: 'SMS send errors',
+    });
+
+    const whatsappErrors = new cloudwatch.MathExpression({
+      expression: "SEARCH('{VakDeepGram,WhatsappSendErrorCount} MetricName=\"WhatsappSendErrorCount\"', 'Sum', 300)",
+      period,
+      label: 'WhatsApp send errors',
+    });
+
+    const smsSends = new cloudwatch.MathExpression({
+      expression: "SEARCH('{VakDeepGram,SmsSendCount} MetricName=\"SmsSendCount\"', 'Sum', 300)",
+      period,
+      label: 'SMS sends',
+    });
+
+    const whatsappSends = new cloudwatch.MathExpression({
+      expression: "SEARCH('{VakDeepGram,WhatsappSendCount} MetricName=\"WhatsappSendCount\"', 'Sum', 300)",
+      period,
+      label: 'WhatsApp sends',
+    });
+
+    const audioBytesIn = new cloudwatch.MathExpression({
+      expression: "SEARCH('{VakDeepGram,AudioBytesIn} MetricName=\"AudioBytesIn\"', 'Sum', 300)",
+      period,
+      label: 'Audio bytes in',
+    });
+
+    const audioBytesOut = new cloudwatch.MathExpression({
+      expression: "SEARCH('{VakDeepGram,AudioBytesOut} MetricName=\"AudioBytesOut\"', 'Sum', 300)",
+      period,
+      label: 'Audio bytes out',
+    });
+
+    const activeConnectionsWs = new cloudwatch.Metric({
+      namespace: 'VakDeepGram',
+      metricName: 'ActiveConnections',
+      dimensionsMap: { endpoint: 'ws' },
+      statistic: 'Average',
+      period,
+    });
+
+    const activeConnectionsTwilio = new cloudwatch.Metric({
+      namespace: 'VakDeepGram',
+      metricName: 'ActiveConnections',
+      dimensionsMap: { endpoint: 'twilio_ws' },
+      statistic: 'Average',
+      period,
+    });
+
     const forwardedCallErrors = new cloudwatch.Metric({
       namespace: 'VakDeepGram',
       metricName: 'ForwardedCallErrorCount',
@@ -265,6 +389,87 @@ export class VakMonitoringStack extends cdk.Stack {
     });
     toolLatencyAlarm.addAlarmAction(alarmAction);
 
+    const agentErrorAlarm = new cloudwatch.Alarm(this, 'VakAgentErrors', {
+      metric: agentErrorSearch,
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmDescription: 'Agent invocation errors detected.',
+    });
+    agentErrorAlarm.addAlarmAction(alarmAction);
+
+    const agentLatencyAlarm = new cloudwatch.Alarm(this, 'VakAgentLatencyHigh', {
+      metric: agentLatencyP95,
+      threshold: 3000,
+      evaluationPeriods: 2,
+      datapointsToAlarm: 2,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmDescription: 'Agent response latency p95 is high.',
+    });
+    agentLatencyAlarm.addAlarmAction(alarmAction);
+
+    const setmoreApiAlarm = new cloudwatch.Alarm(this, 'VakSetmoreApiErrors', {
+      metric: setmoreApiErrors,
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmDescription: 'Setmore API errors detected.',
+    });
+    setmoreApiAlarm.addAlarmAction(alarmAction);
+
+    const squareApiAlarm = new cloudwatch.Alarm(this, 'VakSquareApiErrors', {
+      metric: squareApiErrors,
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmDescription: 'Square API errors detected.',
+    });
+    squareApiAlarm.addAlarmAction(alarmAction);
+
+    const deepgramErrorAlarm = new cloudwatch.Alarm(this, 'VakDeepgramSessionErrors', {
+      metric: deepgramSessionErrors,
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmDescription: 'Deepgram session errors detected.',
+    });
+    deepgramErrorAlarm.addAlarmAction(alarmAction);
+
+    const contextResolveAlarm = new cloudwatch.Alarm(this, 'VakBusinessContextResolveErrors', {
+      metric: contextResolveErrors,
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmDescription: 'Business context resolution errors detected.',
+    });
+    contextResolveAlarm.addAlarmAction(alarmAction);
+
+    const smsErrorAlarm = new cloudwatch.Alarm(this, 'VakSmsSendErrors', {
+      metric: smsErrors,
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmDescription: 'SMS delivery errors detected.',
+    });
+    smsErrorAlarm.addAlarmAction(alarmAction);
+
+    const whatsappErrorAlarm = new cloudwatch.Alarm(this, 'VakWhatsappSendErrors', {
+      metric: whatsappErrors,
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmDescription: 'WhatsApp delivery errors detected.',
+    });
+    whatsappErrorAlarm.addAlarmAction(alarmAction);
+
     const forwardedErrorAlarm = new cloudwatch.Alarm(this, 'VakForwardedCallErrors', {
       metric: forwardedCallErrors,
       threshold: 1,
@@ -347,6 +552,41 @@ export class VakMonitoringStack extends cdk.Stack {
         width: 24,
       }),
       new cloudwatch.GraphWidget({
+        title: 'Agent Errors / Max Tokens',
+        left: [agentErrorSearch, maxTokensReached],
+        width: 24,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Agent Latency p95 (Max)',
+        left: [agentLatencyP95],
+        width: 24,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'API Errors (Setmore vs Square)',
+        left: [setmoreApiErrors, squareApiErrors],
+        width: 24,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'API Latency p95 (Setmore vs Square)',
+        left: [setmoreApiLatencyP95, squareApiLatencyP95],
+        width: 24,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Deepgram Sessions (Starts / Errors)',
+        left: [deepgramSessionStarts, deepgramSessionErrors],
+        width: 24,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Business Context Resolve (Errors / p95)',
+        left: [contextResolveErrors, contextResolveLatencyP95],
+        width: 24,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Missing Business Number',
+        left: [missingBusinessNumber],
+        width: 24,
+      }),
+      new cloudwatch.GraphWidget({
         title: 'Tool Latency p95 (Max)',
         left: [toolLatencyP95],
         width: 24,
@@ -357,6 +597,16 @@ export class VakMonitoringStack extends cdk.Stack {
         width: 24,
       }),
       new cloudwatch.GraphWidget({
+        title: 'Active Connections (WS / Twilio)',
+        left: [activeConnectionsWs, activeConnectionsTwilio],
+        width: 24,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Audio Bytes (In / Out)',
+        left: [audioBytesIn, audioBytesOut],
+        width: 24,
+      }),
+      new cloudwatch.GraphWidget({
         title: 'Call Duration p95 (WS vs Twilio)',
         left: [callDurationWsP95, callDurationTwilioP95],
         width: 24,
@@ -364,6 +614,16 @@ export class VakMonitoringStack extends cdk.Stack {
       new cloudwatch.GraphWidget({
         title: 'User Messages per Session (Avg)',
         left: [userMessagesPerSessionChat, userMessagesPerSessionTwilio],
+        width: 24,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Outbound Messages (SMS / WhatsApp)',
+        left: [smsSends, whatsappSends],
+        width: 24,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Outbound Message Errors (SMS / WhatsApp)',
+        left: [smsErrors, whatsappErrors],
         width: 24,
       }),
     );

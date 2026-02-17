@@ -36,6 +36,7 @@ from utils.square_helpers import (
     extract_square_cursor,
 )
 from business_logic import send_booking_link_sms, send_booking_link_whatsapp
+from providers.common.helpers import get_business_context, update_business_context
 
 logger = logging.getLogger(__name__)
 
@@ -94,24 +95,13 @@ def _setmore_slot_to_iso(date_value: datetime, slot: str, tzinfo) -> Optional[st
 
 
 def _get_business_context_from_tool(tool_context: Optional[ToolContext]) -> dict:
-    """Extract business context from tool_context.agent.state."""
-    if not tool_context:
-        return {}
-
-    # Primary path: tool_context.agent.state contains business_context
-    return tool_context.agent.state.get("business_context")
+    """Extract business context from tool_context.agent.state (initial context + tool-added keys)."""
+    return get_business_context(tool_context)
 
 
 def _update_business_context(tool_context: ToolContext, updates: dict) -> dict:
-    """Persist chat selections in the agent state."""
-    if not tool_context or not getattr(tool_context, "agent", None):
-        return {}
-    state = tool_context.agent.state or {}
-    business_context = state.get("business_context") or {}
-    business_context.update(updates)
-    state["business_context"] = business_context
-    tool_context.agent.state = state
-    return business_context
+    """Add new keys via state.set(). Does not update the initial business_context."""
+    return update_business_context(tool_context, updates)
 
 
 def _get_access_context(business_context: dict, require_location: bool = True) -> dict:
@@ -668,7 +658,7 @@ async def create_appointment(
         logger.info("create_appointment (setmore): booking_url=%s", prefilled_url)
 
         to_number = normalize_phone_number(phone_number) if phone_number else None
-        from_number = business_context.get("businessNumber")
+        from_number = business_context.get("business_number")
         whatsapp_number = (business_context.get("location") or {}).get("whatsapp_number")
         msg_sent = False
         msg_channel = None
@@ -1346,6 +1336,7 @@ async def get_greeting_message(
         location.get("business_name")
         or location.get("name")
         or business_context.get("business_name")
+        or business_context.get("businessName")
     )
     if business_name:
         greeting = f"Hi, welcome to {business_name}. How can I help you today?"

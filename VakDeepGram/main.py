@@ -468,12 +468,21 @@ async def chat(
     except Exception as exc:
         error_msg = str(exc)
         logger.error("Strands Agent invoke failed: %s", exc, exc_info=True)
+        is_max_tokens_error = (
+            MaxTokensReachedException and isinstance(exc, MaxTokensReachedException)
+        ) or (
+            "max_tokens" in error_msg.lower()
+            or "MaxTokensReachedException" in str(type(exc))
+            or "unrecoverable state due to max_tokens" in error_msg.lower()
+        )
+        if is_max_tokens_error:
+            emit_max_tokens_reached("chat", provider)
         emit_agent_metrics(
             endpoint="chat",
             provider=provider,
             duration_ms=(time.monotonic() - agent_start) * 1000,
             success=False,
-            error_type=type(exc).__name__,
+            error_type="MaxTokensReached" if is_max_tokens_error else type(exc).__name__,
         )
         raise HTTPException(status_code=502, detail=f"Agent request failed: {error_msg}")
 

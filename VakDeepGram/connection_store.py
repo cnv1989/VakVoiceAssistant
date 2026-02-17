@@ -19,6 +19,8 @@ except ImportError:  # pragma: no cover - py<3.9 fallback
 
 import config
 from utils import setmore_api
+from utils.case import to_snake_case
+from utils.metrics import emit_context_resolve_metrics
 from utils.square_client import get_square_client
 from utils.square_helpers import (
     get_square_environment as _square_environment,
@@ -44,6 +46,10 @@ _connection_contexts: Dict[str, Dict[str, Any]] = {}
 _connection_timestamps: Dict[str, float] = {}
 _business_context_cache: Dict[tuple, Dict[str, Any]] = {}
 _business_context_timestamps: Dict[tuple, float] = {}
+# Setmore access token cache: key = normalized business number, TTL 5 minutes
+_setmore_token_cache: Dict[str, Dict[str, Any]] = {}
+_setmore_token_cache_timestamps: Dict[str, float] = {}
+_SETMORE_TOKEN_CACHE_TTL_SECONDS = 300  # 5 minutes
 _SERVICE_PRODUCT_TYPES = ["APPOINTMENTS_SERVICE", "LEGACY_SQUARE_ONLINE_SERVICE"]
 _cleanup_task_started = False
 
@@ -498,6 +504,126 @@ async def _fetch_setmore_account_record(
         return None
 
 
+async def _update_setmore_account_tokens(
+    account_id: str,
+    access_token: str,
+    expires_at_ts: float,
+    refresh_token: Optional[str] = None,
+) -> None:
+    """Update SetmoreAccount in DynamoDB with refreshed access token (and optionally refresh token)."""
+    if not account_id:
+        return
+    expires_at_iso = datetime.fromtimestamp(expires_at_ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    session = aioboto3.Session()
+    async with session.resource("dynamodb", region_name=config.settings.aws_region) as dynamodb:
+        table = dynamodb.Table(config.settings.setmore_account_table)
+        if asyncio.iscoroutine(table):
+            table = await table
+        update_expr = "SET accessToken = :at, expiresAt = :ea"
+        expr_values = {":at": access_token, ":ea": expires_at_iso}
+        if refresh_token:
+            update_expr += ", refreshToken = :rt"
+            expr_values[":rt"] = refresh_token
+        try:
+            await table.update_item(
+                Key={"id": account_id},
+                UpdateExpression=update_expr,
+                ExpressionAttributeValues=expr_values,
+            )
+            logger.info(
+                "Updated SetmoreAccount tokens in DynamoDB (account_id=%s, refresh_token_updated=%s)",
+                account_id,
+                bool(refresh_token),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to update SetmoreAccount tokens in DynamoDB (account_id=%s): %s",
+                account_id,
+                exc,
+            )
+
+
+async def get_setmore_access_token_from_dynamodb(business_number: str) -> Dict[str, Any]:
+    """Fetch a fresh Setmore access token using the refresh token stored in DynamoDB.
+
+    Looks up the BusinessNumber record by business_number, then the SetmoreAccount
+    if needed for refresh_token, and calls Setmore token API. Result is cached for
+    5 minutes (TTL) to reduce DynamoDB and token API calls.
+    """
+    if not business_number or not business_number.strip():
+        return {"success": False, "error": "Business number is required."}
+    candidates = _candidate_numbers(business_number.strip())
+    if not candidates:
+        logger.warning("get_setmore_access_token_from_dynamodb: invalid business number %s", business_number)
+        return {"success": False, "error": "Invalid business number."}
+    cache_key = candidates[0]
+    now = time.time()
+    ts = _setmore_token_cache_timestamps.get(cache_key)
+    if ts is not None and (now - ts) <= _SETMORE_TOKEN_CACHE_TTL_SECONDS:
+        cached = _setmore_token_cache.get(cache_key)
+        if cached and cached.get("success") and cached.get("access_token"):
+            expires_at = cached.get("expires_at")
+            if expires_at is None or expires_at > now + 60:
+                logger.debug("get_setmore_access_token_from_dynamodb: cache hit for %s", cache_key)
+                return copy.deepcopy(cached)
+            logger.debug("get_setmore_access_token_from_dynamodb: cached token expired, refreshing")
+        _setmore_token_cache.pop(cache_key, None)
+        _setmore_token_cache_timestamps.pop(cache_key, None)
+    record = None
+    for candidate in candidates:
+        record = await _fetch_business_number_record(candidate)
+        if record:
+            break
+    if not record:
+        logger.warning("get_setmore_access_token_from_dynamodb: no record for %s", business_number)
+        return {"success": False, "error": "Business number not found."}
+    provider = (record.get("provider") or record.get("bookingProvider") or "square").lower()
+    if provider != "setmore":
+        return {"success": False, "error": "Not a Setmore business."}
+    account_id = (
+        record.get("setmoreAccountId")
+        or record.get("setmore_account_id")
+        or record.get("accountId")
+    )
+    account_user_id = (
+        record.get("setmoreUserId")
+        or record.get("setmore_user_id")
+        or record.get("userId")
+        or record.get("ownerId")
+    )
+    refresh_token = (
+        record.get("setmoreRefreshToken")
+        or record.get("setmore_refresh_token")
+        or record.get("refreshToken")
+    )
+    if not refresh_token:
+        account = await _fetch_setmore_account_record(account_id, account_user_id)
+        refresh_token = (account or {}).get("refreshToken") or (account or {}).get("refresh_token")
+    if not refresh_token:
+        logger.warning("get_setmore_access_token_from_dynamodb: no refresh token (account_id=%s)", account_id)
+        return {"success": False, "error": "Setmore refresh token not found."}
+    token_result = await setmore_api.get_access_token(refresh_token)
+    if not token_result.get("success"):
+        return {"success": False, "error": token_result.get("error") or "Setmore token refresh failed."}
+    access_token = token_result.get("access_token")
+    if not access_token:
+        return {"success": False, "error": "Setmore access token missing."}
+    expires_at_ts = token_result.get("expires_at") or (time.time() + int(token_result.get("expires_in") or 3600))
+    # When we actually refreshed (not from setmore_api cache), persist to DynamoDB
+    if not token_result.get("cached") and account_id:
+        new_refresh = token_result.get("refresh_token")
+        await _update_setmore_account_tokens(
+            account_id,
+            access_token,
+            expires_at_ts,
+            refresh_token=new_refresh,
+        )
+    result = {"success": True, "access_token": access_token, "expires_at": expires_at_ts}
+    _setmore_token_cache[cache_key] = copy.deepcopy(result)
+    _setmore_token_cache_timestamps[cache_key] = time.time()
+    return result
+
+
 def _build_service_category_map(
     categories: Optional[list[Dict[str, Any]]],
 ) -> Dict[str, Dict[str, str]]:
@@ -743,6 +869,13 @@ async def resolve_business_context(
     optimize: Optional[bool] = None,
     prefetch_availability_days: Optional[int] = None,
 ) -> Dict[str, Any]:
+    start = time.monotonic()
+    def _emit(provider_value: Optional[str], success: bool) -> None:
+        emit_context_resolve_metrics(
+            provider_value or "unknown",
+            (time.monotonic() - start) * 1000,
+            success,
+        )
     # Use config defaults if not specified
     if optimize is None:
         optimize = config.settings.optimize_business_context
@@ -759,13 +892,15 @@ async def resolve_business_context(
     candidates = _candidate_numbers(business_number)
     if not candidates:
         logger.warning("Business number normalization failed: %s", business_number)
+        _emit("unknown", False)
         return {"success": False, "error": "Invalid business number."}
 
     cache_keys = [(candidate, bool(optimize), int(prefetch_availability_days)) for candidate in candidates]
     cached = _get_cached_business_context(cache_keys)
     if cached:
         logger.info("Returning cached business context for %s", business_number)
-        return cached
+        _emit(cached.get("provider") if isinstance(cached, dict) else "unknown", True)
+        return to_snake_case(cached)
 
     logger.info("Resolving business context for %s (candidates=%s)", business_number, candidates)
     record = None
@@ -779,6 +914,7 @@ async def resolve_business_context(
 
     if not record:
         logger.warning("No BusinessNumber record found for %s", candidates)
+        _emit("unknown", False)
         return {"success": False, "error": "Business number not found."}
 
     provider = (record.get("provider") or record.get("bookingProvider") or "square").lower()
@@ -807,10 +943,12 @@ async def resolve_business_context(
             refresh_token = (account or {}).get("refreshToken") or (account or {}).get("refresh_token")
         if not refresh_token:
             logger.warning("Setmore account missing refresh token (account_id=%s user_id=%s)", account_id, account_user_id)
+            _emit("setmore", False)
             return {"success": False, "error": "Setmore refresh token not found."}
 
         token_result = await setmore_api.get_access_token(refresh_token)
         if not token_result.get("success"):
+            _emit("setmore", False)
             return {"success": False, "error": token_result.get("error")}
         access_token = token_result.get("access_token")
 
@@ -928,12 +1066,12 @@ async def resolve_business_context(
         result = {
             "success": True,
             "provider": "setmore",
-            "businessNumber": matched_number,
-            "forwardingNumber": forwarding_number,
-            "accessToken": access_token,
-            "refreshToken": refresh_token,
-            "accountId": account_id or acct.get("accountId") or acct.get("id"),
-            "userId": account_user_id or acct.get("userId"),
+            "business_number": matched_number,
+            "forwarding_number": forwarding_number,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "account_id": account_id or acct.get("accountId") or acct.get("id"),
+            "user_id": account_user_id or acct.get("userId"),
             "location": location,
             "timezone": timezone_name,
             "services": services,
@@ -943,9 +1081,10 @@ async def resolve_business_context(
             "setmore_services": services_raw,
             "setmore_staff": staff_raw,
             "setmore_appointments": appointments_raw,
-            "bookingPageUrl": booking_page_url,
+            "booking_page_url": booking_page_url,
         }
-        return result
+        _emit("setmore", True)
+        return to_snake_case(result)
 
     location_id = record.get("locationId") or record.get("location_id")
     merchant_id = record.get("merchantId") or record.get("squareMerchantId")
@@ -959,6 +1098,7 @@ async def resolve_business_context(
             merchant_id,
             user_id,
         )
+        _emit("square", False)
         return {
             "success": False,
             "error": "Business record missing locationId, merchantId, or userId.",
@@ -978,11 +1118,13 @@ async def resolve_business_context(
             user_id,
             merchant_id,
         )
+        _emit("square", False)
         return {"success": False, "error": "Square account not found."}
 
     access_token = account.get("accessToken") or account.get("access_token")
     if not access_token:
         logger.warning("Square account missing access token for userId=%s merchantId=%s", user_id, merchant_id)
+        _emit("square", False)
         return {"success": False, "error": "Square access token not found."}
 
     location_result = await _fetch_square_location(access_token, location_id)
@@ -1055,4 +1197,5 @@ async def resolve_business_context(
         "staff": staff,
         "customer": customer,
     }
-    return result
+    _emit("square", True)
+    return to_snake_case(result)

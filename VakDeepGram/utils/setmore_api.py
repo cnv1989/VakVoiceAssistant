@@ -9,6 +9,7 @@ import httpx
 
 import config
 from utils.retry import run_async_with_retry
+from utils.metrics import emit_api_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,8 @@ async def get_access_token(refresh_token: str) -> Dict[str, Any]:
     url = _token_url()
     params = {"refreshToken": refresh_token}
     timeout = config.settings.setmore_request_timeout_seconds
+    start = time.monotonic()
+    response: Optional[httpx.Response] = None
 
     async def _fetch() -> httpx.Response:
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -99,38 +102,82 @@ async def get_access_token(refresh_token: str) -> Dict[str, Any]:
         response = await run_async_with_retry(_fetch, retry_exceptions=_SETMORE_RETRY_EXCEPTIONS)
     except Exception as e:
         logger.error("Setmore token request failed after retries: %s", e)
+        emit_api_metrics(
+            "setmore",
+            "GET /o/oauth2/token",
+            (time.monotonic() - start) * 1000,
+            False,
+            error_type=type(e).__name__,
+        )
         return {"success": False, "error": str(e)}
 
     try:
         payload = response.json()
     except Exception:
         logger.error("Failed to decode Setmore token response (%s)", response.text)
+        emit_api_metrics(
+            "setmore",
+            "GET /o/oauth2/token",
+            (time.monotonic() - start) * 1000,
+            False,
+            status_code=response.status_code if response else None,
+            error_type="InvalidResponse",
+        )
         return {"success": False, "error": "Invalid Setmore token response."}
 
     parsed = _parse_response(payload)
     if not parsed.get("success"):
+        emit_api_metrics(
+            "setmore",
+            "GET /o/oauth2/token",
+            (time.monotonic() - start) * 1000,
+            False,
+            status_code=response.status_code if response else None,
+            error_type="SetmoreApiError",
+        )
         return {"success": False, "error": parsed.get("error")}
 
     token_payload = (parsed.get("data") or {}).get("token") or {}
     access_token = token_payload.get("access_token")
     if not access_token:
+        emit_api_metrics(
+            "setmore",
+            "GET /o/oauth2/token",
+            (time.monotonic() - start) * 1000,
+            False,
+            status_code=response.status_code if response else None,
+            error_type="MissingAccessToken",
+        )
         return {"success": False, "error": "Setmore access token missing."}
     expires_in = token_payload.get("expires_in") or 0
     user_id = token_payload.get("user_id")
+    new_refresh_token = token_payload.get("refresh_token")
     expires_at = now + int(expires_in) if expires_in else now + 3600
-    _TOKEN_CACHE[refresh_token] = {
+    cache_refresh = new_refresh_token or refresh_token
+    _TOKEN_CACHE[cache_refresh] = {
         "access_token": access_token,
         "expires_in": expires_in,
         "user_id": user_id,
         "expires_at": expires_at,
     }
-    return {
+    result = {
         "success": True,
         "access_token": access_token,
         "expires_in": expires_in,
         "user_id": user_id,
         "cached": False,
     }
+    if new_refresh_token:
+        result["refresh_token"] = new_refresh_token
+    result["expires_at"] = expires_at
+    emit_api_metrics(
+        "setmore",
+        "GET /o/oauth2/token",
+        (time.monotonic() - start) * 1000,
+        True,
+        status_code=response.status_code if response else None,
+    )
+    return result
 
 
 def _invalidate_token_cache(refresh_token: str) -> None:
@@ -166,6 +213,9 @@ async def request(
     """
     url = _booking_url(path)
     timeout = config.settings.setmore_request_timeout_seconds
+    start = time.monotonic()
+    api_name = f"{method} {path}"
+    response: Optional[httpx.Response] = None
 
     async def _do_request(token: str) -> Tuple[httpx.Response, Any]:
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
@@ -192,9 +242,23 @@ async def request(
         response, payload = await _do_request_with_retry(access_token)
     except SetmoreServerError as e:
         logger.error("Setmore API 5xx after retries: %s %s — %s", method, path, e)
+        emit_api_metrics(
+            "setmore",
+            api_name,
+            (time.monotonic() - start) * 1000,
+            False,
+            error_type=type(e).__name__,
+        )
         return {"success": False, "error": e.message}
     except Exception as e:
         logger.error("Setmore API request failed after retries: %s %s — %s", method, path, e)
+        emit_api_metrics(
+            "setmore",
+            api_name,
+            (time.monotonic() - start) * 1000,
+            False,
+            error_type=type(e).__name__,
+        )
         return {"success": False, "error": str(e)}
 
     # --- 401 retry (one token refresh, then same backoff retries) ---
@@ -210,19 +274,63 @@ async def request(
             try:
                 response, payload = await _do_request_with_retry(new_token)
             except SetmoreServerError as e:
+                emit_api_metrics(
+                    "setmore",
+                    api_name,
+                    (time.monotonic() - start) * 1000,
+                    False,
+                    error_type=type(e).__name__,
+                )
                 return {"success": False, "error": e.message}
             except Exception as e:
+                emit_api_metrics(
+                    "setmore",
+                    api_name,
+                    (time.monotonic() - start) * 1000,
+                    False,
+                    error_type=type(e).__name__,
+                )
                 return {"success": False, "error": str(e)}
         else:
+            emit_api_metrics(
+                "setmore",
+                api_name,
+                (time.monotonic() - start) * 1000,
+                False,
+                error_type="TokenRefreshFailed",
+            )
             return {"success": False, "error": token_result.get("error") or "Token refresh failed"}
 
     if payload is None:
         logger.error("Failed to decode Setmore response (%s)", response.text)
+        emit_api_metrics(
+            "setmore",
+            api_name,
+            (time.monotonic() - start) * 1000,
+            False,
+            status_code=response.status_code if response else None,
+            error_type="InvalidResponse",
+        )
         return {"success": False, "error": "Invalid Setmore response."}
 
     parsed = _parse_response(payload)
     if not parsed.get("success"):
+        emit_api_metrics(
+            "setmore",
+            api_name,
+            (time.monotonic() - start) * 1000,
+            False,
+            status_code=response.status_code if response else None,
+            error_type="SetmoreApiError",
+        )
         return {"success": False, "error": parsed.get("error")}
+    emit_api_metrics(
+        "setmore",
+        api_name,
+        (time.monotonic() - start) * 1000,
+        True,
+        status_code=response.status_code if response else None,
+    )
     return {"success": True, "data": parsed.get("data")}
 
 

@@ -30,7 +30,7 @@ from utils.square_helpers import (
     parse_square_response as _parse_square_response,
     extract_square_cursor as _extract_square_cursor,
 )
-from utils.metrics import emit_forward_call_metrics
+from utils.metrics import emit_forward_call_metrics, emit_message_delivery
 from twilio.rest import Client as TwilioClient
 
 try:
@@ -188,6 +188,7 @@ def send_booking_link_sms(
             to_number,
             prefilled_url,
         )
+        emit_message_delivery("sms", True)
         return {
             "success": True,
             "sms_sid": sms_message.sid,
@@ -196,6 +197,7 @@ def send_booking_link_sms(
         }
     except Exception as exc:
         logger.error("Failed to send booking link SMS: %s", exc, exc_info=True)
+        emit_message_delivery("sms", False)
         return {"success": False, "error": f"Failed to send SMS: {exc}"}
 
 
@@ -279,6 +281,7 @@ def send_booking_link_whatsapp(
             wa_to,
             prefilled_url,
         )
+        emit_message_delivery("whatsapp", True)
         return {
             "success": True,
             "message_sid": wa_message.sid,
@@ -288,6 +291,7 @@ def send_booking_link_whatsapp(
         }
     except Exception as exc:
         logger.error("Failed to send WhatsApp booking link: %s", exc, exc_info=True)
+        emit_message_delivery("whatsapp", False)
         return {"success": False, "error": f"Failed to send WhatsApp message: {exc}"}
 
 

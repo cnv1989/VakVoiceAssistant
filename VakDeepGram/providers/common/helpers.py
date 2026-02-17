@@ -12,22 +12,10 @@ from typing import Any, Dict, Optional
 from strands.types.tools import ToolContext
 
 from utils import booking_helpers
+from utils.case import to_snake_case
 from utils.phone import normalize_phone_number
 
 logger = logging.getLogger(__name__)
-
-
-class StateDict(dict):
-    """Dict wrapper that supports .get() with no args (returns full dict).
-
-    Strands may call state.get() with no arguments expecting the full state;
-    Python's dict.get() requires at least one argument. This wrapper allows
-    .get() with no args to return a copy of the dict.
-    """
-    def get(self, key=None, default=None):
-        if key is None:
-            return dict(self)
-        return super().get(key, default)
 
 
 # ── Context access ────────────────────────────────────────────────────────────
@@ -50,97 +38,61 @@ def get_business_context(tool_context: Optional[ToolContext]) -> dict:
                 "bookingProvider",
             )
         )
-    # Prefer agent.state (set when creating the Agent in main.py)
+    # Prefer agent.state.get (Strands State API)
     agent = getattr(tool_context, "agent", None)
     if agent is not None:
-        state = getattr(agent, "state", None) or {}
-        ctx = state.get("business_context") if hasattr(state, "get") else None
-        if ctx is not None and isinstance(ctx, dict):
-            return ctx
-        if _looks_like_business_context(state):
-            return state
+        state = getattr(agent, "state", None)
+        if state is not None and hasattr(state, "get"):
+            ctx = state.get("business_context")
+            full_state = state.get()
+            if isinstance(ctx, dict):
+                flat = dict(full_state) if isinstance(full_state, dict) else {}
+                flat.pop("business_context", None)
+                return to_snake_case({**ctx, **flat})
+            if isinstance(full_state, dict) and _looks_like_business_context(full_state):
+                return to_snake_case(full_state)
     # Fallback: invocation_state (some Strands versions may pass state here)
     inv = getattr(tool_context, "invocation_state", None) or {}
     ctx = inv.get("business_context") if hasattr(inv, "get") else None
     if isinstance(ctx, dict):
-        return ctx
+        return to_snake_case(ctx)
     if _looks_like_business_context(inv):
-        return inv
+        return to_snake_case(inv)
     # Last resort: some tool_context variants expose state directly
     direct_state = getattr(tool_context, "state", None) or getattr(tool_context, "_state", None) or {}
     if isinstance(direct_state, dict):
         ctx = direct_state.get("business_context")
         if isinstance(ctx, dict):
-            return ctx
+            return to_snake_case(ctx)
         if _looks_like_business_context(direct_state):
-            return direct_state
+            return to_snake_case(direct_state)
     return {}
 
 
 def update_business_context(tool_context: ToolContext, updates: dict) -> dict:
-    """Persist chat selections in the agent state."""
+    """Update business_context and flatten keys into agent state using state.set()."""
     if not tool_context or not getattr(tool_context, "agent", None):
         return {}
-    
-    # Get state - ensure it's mutable
     agent_state = tool_context.agent.state
-    if agent_state is None:
-        state = {}
-    elif not isinstance(agent_state, dict):
-        # Convert read-only state to mutable dict
-        try:
-            state = dict(agent_state)
-        except (TypeError, ValueError):
-            state = {}
-    else:
-        # Make a copy to ensure mutability (state might be a read-only dict)
-        try:
-            state = dict(agent_state)
-        except TypeError:
-            # If dict() fails, try to create new dict from items
-            state = {k: v for k, v in agent_state.items()}
-    
-    # Get business_context - ensure it's mutable
-    business_context = state.get("business_context") or {}
-    if business_context:
-        # Convert read-only dict to mutable dict
-        try:
-            business_context = dict(business_context)
-        except (TypeError, ValueError):
-            # If dict() fails, try to create new dict from items
-            try:
-                business_context = {k: v for k, v in business_context.items()}
-            except (TypeError, AttributeError):
-                business_context = {}
-    else:
-        business_context = {}
-    
-    # Now update the mutable dict
-    business_context.update(updates)
-    
-    # Update state with the modified business_context.
-    # Use StateDict so Strands can call state.get() with no args on the next turn.
-    try:
-        state["business_context"] = business_context
-        tool_context.agent.state = StateDict(state)
-    except (TypeError, ValueError) as e:
-        # If state assignment fails, try to create a completely new state dict
-        logger.warning("Failed to update state directly, creating new state dict: %s", e)
-        try:
-            new_state = {}
-            if agent_state:
-                for k, v in agent_state.items():
-                    if k != "business_context":
-                        try:
-                            new_state[k] = v
-                        except (TypeError, ValueError):
-                            pass
-            new_state["business_context"] = business_context
-            tool_context.agent.state = StateDict(new_state)
-        except Exception as e2:
-            logger.error("Failed to create new state dict: %s", e2, exc_info=True)
-    
-    return business_context
+    if agent_state is None or not hasattr(agent_state, "get") or not hasattr(agent_state, "set"):
+        return {}
+    existing = agent_state.get("business_context") or {}
+    if not isinstance(existing, dict):
+        existing = {}
+    if not existing:
+        full_state = agent_state.get()
+        if isinstance(full_state, dict):
+            existing = dict(full_state)
+            existing.pop("business_context", None)
+    merged = dict(existing)
+    merged.update(updates)
+    merged = to_snake_case(merged)
+    agent_state.set("business_context", merged)
+    for key, value in merged.items():
+        if key == "business_context":
+            continue
+        agent_state.set(key, value)
+    return get_business_context(tool_context)
 
 
 def provider_from_context(business_context: dict) -> str:

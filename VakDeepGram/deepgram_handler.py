@@ -15,8 +15,23 @@ import config
 from providers import get_voice_prompt_for_provider
 from agent_functions import FUNCTION_DEFINITIONS, FUNCTION_MAP, get_function_definitions_for_provider
 from connection_store import get_localized_datetime_for_connection, get_connection_context
+from utils.metrics import (
+    emit_deepgram_session_start,
+    emit_deepgram_session_error,
+    emit_audio_bytes,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _endpoint_from_connection_id(connection_id: Optional[str]) -> str:
+    if not connection_id:
+        return "unknown"
+    if connection_id.startswith("twilio-"):
+        return "twilio_ws"
+    if connection_id.startswith("ws-"):
+        return "ws"
+    return "unknown"
 
 
 class DeepgramSession:
@@ -260,7 +275,11 @@ class DeepgramManager:
         logger.info(f"Creating Deepgram Voice Agent session for {connection_id}")
         
         # Create STS WebSocket connection
-        sts_ws = await self._sts_connect()
+        try:
+            sts_ws = await self._sts_connect()
+        except Exception as exc:
+            emit_deepgram_session_error(_endpoint_from_connection_id(connection_id), type(exc).__name__)
+            raise
         
         # Get the current event loop
         try:
@@ -281,6 +300,7 @@ class DeepgramManager:
         
         # Start receiver task
         asyncio.create_task(self._sts_receiver(session))
+        emit_deepgram_session_start(_endpoint_from_connection_id(connection_id))
         
         provider = self._resolve_provider(connection_id)
         logger.info(
@@ -442,6 +462,10 @@ class DeepgramManager:
             # It's not really an error, just Deepgram closing due to inactivity
             if error_code == "CLIENT_MESSAGE_TIMEOUT":
                 logger.info(f"⏱️ Deepgram timeout (no user speech): {error_msg}")
+                emit_deepgram_session_error(
+                    _endpoint_from_connection_id(session.connection_id),
+                    error_code or "CLIENT_MESSAGE_TIMEOUT",
+                )
                 await session.send_to_client_safe({
                     "type": "disconnect",
                     "reason": "timeout",
@@ -450,6 +474,10 @@ class DeepgramManager:
                 await self.close_session(session.connection_id)
             else:
                 logger.error(f"❌ Deepgram error event: {error_msg} (code: {error_code})")
+                emit_deepgram_session_error(
+                    _endpoint_from_connection_id(session.connection_id),
+                    error_code or "DeepgramError",
+                )
                 await session.send_to_client_safe({
                     "type": "error",
                     "message": error_msg,
@@ -659,6 +687,12 @@ class DeepgramManager:
     async def _handle_audio_message(self, session: DeepgramSession, audio_data: bytes):
         """Handle binary audio messages (TTS) from Deepgram Voice Agent"""
         logger.debug("DeepgramManager._handle_audio_message called (connection_id=%s bytes=%d)", session.connection_id, len(audio_data))
+        emit_audio_bytes(
+            "Out",
+            _endpoint_from_connection_id(session.connection_id),
+            "mulaw" if session.use_mulaw else "linear16",
+            len(audio_data),
+        )
         if len(audio_data) > 0:
             # Always encode as base64 for the callback (JSON-compatible)
             # The callback will decode and handle appropriately
@@ -719,6 +753,12 @@ class DeepgramManager:
     async def _send_audio_to_deepgram(self, session: DeepgramSession, audio_data: bytes):
         """Send audio data to Deepgram Voice Agent"""
         logger.debug("DeepgramManager._send_audio_to_deepgram called (connection_id=%s bytes=%d)", session.connection_id, len(audio_data))
+        emit_audio_bytes(
+            "In",
+            _endpoint_from_connection_id(session.connection_id),
+            "mulaw" if session.use_mulaw else "linear16",
+            len(audio_data),
+        )
         try:
             if session.sts_ws and session.is_active:
                 # Check WebSocket state (websockets 16.0+ uses state instead of closed property)

@@ -43,10 +43,10 @@ async def main() -> int:
 
     provider = context.get("provider", "square")
     print(f"Provider: {provider}")
-    print(f"Business number: {context.get('businessNumber')}")
-    print(f"Access token present: {bool(context.get('accessToken'))}")
+    print(f"Business number: {context.get('business_number') or context.get('businessNumber')}")
+    print(f"Access token present: {bool(context.get('access_token') or context.get('accessToken'))}")
     print(f"Location ID: {context.get('locationId', 'N/A')}")
-    print(f"Account ID: {context.get('accountId', 'N/A')}")
+    print(f"Account ID: {context.get('account_id') or context.get('accountId') or 'N/A'}")
 
     location = context.get("location") or {}
     print(f"\n--- Location ---")
@@ -78,9 +78,9 @@ async def main() -> int:
 
     print(f"\n--- Provider-specific fields ---")
     if provider == "setmore":
-        print(f"  Setmore account ID: {context.get('accountId')}")
-        print(f"  Setmore user ID: {context.get('userId')}")
-        print(f"  Refresh token present: {bool(context.get('refreshToken'))}")
+        print(f"  Setmore account ID: {context.get('account_id') or context.get('accountId')}")
+        print(f"  Setmore user ID: {context.get('user_id') or context.get('userId')}")
+        print(f"  Refresh token present: {bool(context.get('refresh_token') or context.get('refreshToken'))}")
         print(f"  Raw setmore_services count: {len(context.get('setmore_services') or [])}")
         print(f"  Raw setmore_staff count: {len(context.get('setmore_staff') or [])}")
     else:

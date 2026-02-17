@@ -43,7 +43,7 @@ from providers.setmore.helpers import (
     slot_to_iso,
     phone_fields,
 )
-from utils.metrics import emit_tool_metrics
+from utils.metrics import emit_tool_metrics, emit_missing_business_number
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +89,12 @@ def _get_refresh_token(business_context: dict) -> Optional[str]:
     return business_context.get("refreshToken") or business_context.get("refresh_token")
 
 
-async def _ensure_setmore_token(tool_context: ToolContext, business_context: dict) -> Optional[str]:
+async def _ensure_setmore_token(
+    tool_context: ToolContext,
+    business_context: dict,
+    *,
+    tool_name: str = "unknown",
+) -> Optional[str]:
     """Return access token; always prefer fresh token from DynamoDB when business number is in context."""
     business_number = business_context.get("business_number") or business_context.get("businessNumber")
     if not business_number and tool_context is not None and getattr(tool_context, "agent", None):
@@ -120,6 +125,7 @@ async def _ensure_setmore_token(tool_context: ToolContext, business_context: dic
             "Setmore: no businessNumber or business_number in context (keys=%s); cannot fetch token from DynamoDB",
             list(business_context.keys()) if isinstance(business_context, dict) else "n/a",
         )
+        emit_missing_business_number("setmore", tool_name)
     # Fallback: use token or refresh from context (e.g. voice/connection flow without businessNumber or business_number)
     access_token = _get_setmore_token(business_context)
     if access_token:
@@ -163,7 +169,7 @@ async def find_customer(
     confirm with the customer and pass customer_confirmed_use_of_caller_phone=True only after they agree.
     """
     business_context = get_business_context(tool_context)
-    access_token = await _ensure_setmore_token(tool_context, business_context)
+    access_token = await _ensure_setmore_token(tool_context, business_context, tool_name="find_customer")
     if not access_token:
         return {"success": False, "error": "Missing Setmore access token."}
 
@@ -208,7 +214,7 @@ async def create_customer(
     customer_confirmed_use_of_caller_phone=True only after they agree.
     """
     business_context = get_business_context(tool_context)
-    access_token = await _ensure_setmore_token(tool_context, business_context)
+    access_token = await _ensure_setmore_token(tool_context, business_context, tool_name="create_customer")
     if not access_token:
         return {"success": False, "error": "Missing Setmore access token."}
 
@@ -334,7 +340,7 @@ async def get_appointments(
     Returns appointments within the next 30 days that match the customer key.
     """
     business_context = get_business_context(tool_context)
-    access_token = await _ensure_setmore_token(tool_context, business_context)
+    access_token = await _ensure_setmore_token(tool_context, business_context, tool_name="get_appointments")
     if not access_token:
         return {"success": False, "error": "Missing Setmore access token."}
 
@@ -374,7 +380,7 @@ async def check_availability(
     a relative keyword (TODAY, TOMORROW, NEXT_WEEK), or a weekday name.
     """
     business_context = get_business_context(tool_context)
-    access_token = await _ensure_setmore_token(tool_context, business_context)
+    access_token = await _ensure_setmore_token(tool_context, business_context, tool_name="check_availability")
     if not access_token:
         logger.error("check_availability: Missing Setmore access token")
         return {"success": False, "error": "Missing Setmore access token."}
@@ -489,7 +495,7 @@ async def create_appointment(
     Date should be in ISO format (YYYY-MM-DDTHH:MM:SS).
     """
     business_context = get_business_context(tool_context)
-    access_token = await _ensure_setmore_token(tool_context, business_context)
+    access_token = await _ensure_setmore_token(tool_context, business_context, tool_name="create_appointment")
     if not access_token:
         return {"success": False, "error": "Missing Setmore access token."}
 

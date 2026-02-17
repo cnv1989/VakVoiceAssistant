@@ -61,6 +61,54 @@ def emit_tool_metrics(
     emit_metrics(metrics, dims)
 
 
+def emit_api_metrics(
+    provider: str,
+    api: str,
+    duration_ms: float,
+    success: bool,
+    status_code: Optional[int] = None,
+    error_type: Optional[str] = None,
+) -> None:
+    dims = {"provider": provider, "api": api}
+    if status_code is not None:
+        dims["status_code"] = str(status_code)
+    if error_type:
+        dims["error_type"] = error_type
+    metrics = [
+        {"name": f"{provider.capitalize()}ApiCallCount", "value": 1, "unit": "Count"},
+        {"name": f"{provider.capitalize()}ApiLatencyMs", "value": duration_ms, "unit": "Milliseconds"},
+    ]
+    if not success:
+        metrics.append({"name": f"{provider.capitalize()}ApiErrorCount", "value": 1, "unit": "Count"})
+    emit_metrics(metrics, dims)
+
+
+def emit_agent_metrics(
+    endpoint: str,
+    provider: str,
+    duration_ms: float,
+    success: bool,
+    error_type: Optional[str] = None,
+) -> None:
+    dims = {"endpoint": endpoint, "provider": provider}
+    if error_type:
+        dims["error_type"] = error_type
+    metrics = [
+        {"name": "AgentInvokeCount", "value": 1, "unit": "Count"},
+        {"name": "AgentResponseLatencyMs", "value": duration_ms, "unit": "Milliseconds"},
+    ]
+    if not success:
+        metrics.append({"name": "AgentInvokeErrorCount", "value": 1, "unit": "Count"})
+    emit_metrics(metrics, dims)
+
+
+def emit_max_tokens_reached(endpoint: str, provider: str) -> None:
+    emit_metrics(
+        [{"name": "MaxTokensReachedCount", "value": 1, "unit": "Count"}],
+        {"endpoint": endpoint, "provider": provider},
+    )
+
+
 def emit_forward_call_metrics(success: bool) -> None:
     metrics = [{"name": "ForwardedCallCount", "value": 1, "unit": "Count"}]
     if not success:
@@ -80,3 +128,58 @@ def emit_user_message_count(endpoint: str, session_id: str, count: int) -> None:
         [{"name": "UserMessagesPerSession", "value": count, "unit": "Count"}],
         {"endpoint": endpoint},
     )
+
+
+def emit_active_connections(endpoint: str, count: int) -> None:
+    emit_metrics(
+        [{"name": "ActiveConnections", "value": count, "unit": "Count"}],
+        {"endpoint": endpoint},
+    )
+
+
+def emit_deepgram_session_start(endpoint: str) -> None:
+    emit_metrics(
+        [{"name": "DeepgramSessionStartCount", "value": 1, "unit": "Count"}],
+        {"endpoint": endpoint},
+    )
+
+
+def emit_deepgram_session_error(endpoint: str, error_type: Optional[str] = None) -> None:
+    dims = {"endpoint": endpoint}
+    if error_type:
+        dims["error_type"] = error_type
+    emit_metrics(
+        [{"name": "DeepgramSessionErrorCount", "value": 1, "unit": "Count"}],
+        dims,
+    )
+
+
+def emit_audio_bytes(direction: str, endpoint: str, codec: str, size_bytes: int) -> None:
+    emit_metrics(
+        [{"name": f"AudioBytes{direction}", "value": size_bytes, "unit": "Bytes"}],
+        {"endpoint": endpoint, "codec": codec},
+    )
+
+
+def emit_context_resolve_metrics(provider: str, duration_ms: float, success: bool) -> None:
+    metrics = [
+        {"name": "BusinessContextResolveLatencyMs", "value": duration_ms, "unit": "Milliseconds"},
+        {"name": "BusinessContextResolveCount", "value": 1, "unit": "Count"},
+    ]
+    if not success:
+        metrics.append({"name": "BusinessContextResolveErrorCount", "value": 1, "unit": "Count"})
+    emit_metrics(metrics, {"provider": provider})
+
+
+def emit_missing_business_number(provider: str, tool: str) -> None:
+    emit_metrics(
+        [{"name": "MissingBusinessNumberCount", "value": 1, "unit": "Count"}],
+        {"provider": provider, "tool": tool},
+    )
+
+
+def emit_message_delivery(channel: str, success: bool) -> None:
+    metrics = [{"name": f"{channel.capitalize()}SendCount", "value": 1, "unit": "Count"}]
+    if not success:
+        metrics.append({"name": f"{channel.capitalize()}SendErrorCount", "value": 1, "unit": "Count"})
+    emit_metrics(metrics, {"channel": channel})
