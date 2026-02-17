@@ -568,7 +568,7 @@ export class VakMonitoringStack extends cdk.Stack {
       }),
       new cloudwatch.GraphWidget({
         title: 'Agent Errors / Max Tokens',
-        left: [agentErrorSearch, maxTokensReached],
+        left: [agentErrorTotal, maxTokensReached],
         width: 24,
       }),
       new cloudwatch.GraphWidget({
