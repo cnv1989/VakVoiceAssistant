@@ -154,13 +154,6 @@ def emit_deepgram_session_error(endpoint: str, error_type: Optional[str] = None)
     )
 
 
-def emit_audio_bytes(direction: str, endpoint: str, codec: str, size_bytes: int) -> None:
-    emit_metrics(
-        [{"name": f"AudioBytes{direction}", "value": size_bytes, "unit": "Bytes"}],
-        {"endpoint": endpoint, "codec": codec},
-    )
-
-
 def emit_context_resolve_metrics(provider: str, duration_ms: float, success: bool) -> None:
     metrics = [
         {"name": "BusinessContextResolveLatencyMs", "value": duration_ms, "unit": "Milliseconds"},

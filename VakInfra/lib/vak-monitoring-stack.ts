@@ -291,18 +291,6 @@ export class VakMonitoringStack extends cdk.Stack {
       period,
     });
 
-    const audioBytesIn = new cloudwatch.MathExpression({
-      expression: "SEARCH('{VakDeepGram,AudioBytesIn} MetricName=\"AudioBytesIn\"', 'Sum', 300)",
-      period,
-      label: 'Audio bytes in',
-    });
-
-    const audioBytesOut = new cloudwatch.MathExpression({
-      expression: "SEARCH('{VakDeepGram,AudioBytesOut} MetricName=\"AudioBytesOut\"', 'Sum', 300)",
-      period,
-      label: 'Audio bytes out',
-    });
-
     const activeConnectionsWs = new cloudwatch.Metric({
       namespace: 'VakDeepGram',
       metricName: 'ActiveConnections',
@@ -614,11 +602,6 @@ export class VakMonitoringStack extends cdk.Stack {
       new cloudwatch.GraphWidget({
         title: 'Active Connections (WS / Twilio)',
         left: [activeConnectionsWs, activeConnectionsTwilio],
-        width: 24,
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'Audio Bytes (In / Out)',
-        left: [audioBytesIn, audioBytesOut],
         width: 24,
       }),
       new cloudwatch.GraphWidget({

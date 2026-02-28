@@ -1293,16 +1293,24 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
         msg_type = data.get("type")
         
         if msg_type == "tts" and data.get("audio"):
-            # Deepgram sends mulaw audio as base64, decode and send raw mulaw to Twilio
-            # Matches sts-twilio: raw_mulaw = message (where message is binary from sts_ws)
+            # Deepgram sends mulaw audio as base64, decode and send to Twilio
             raw_mulaw = base64.b64decode(data["audio"])
-            
-            # Construct Twilio media message with raw mulaw (matches sts-twilio exactly)
-            if stream_sid_ref["value"]:
+            if not stream_sid_ref["value"]:
+                return
+            # Send outbound audio in fixed 20ms (160-byte) frames to match Twilio's
+            # expected cadence and avoid clicks at chunk boundaries (Twilio uses 20ms frames).
+            TWILIO_FRAME_BYTES = 160
+            offset = 0
+            while offset < len(raw_mulaw):
+                frame = raw_mulaw[offset : offset + TWILIO_FRAME_BYTES]
+                offset += len(frame)
+                if len(frame) < TWILIO_FRAME_BYTES:
+                    # Pad last partial frame with silence (0xff = mulaw silence) to avoid click
+                    frame = frame + bytes([0xFF] * (TWILIO_FRAME_BYTES - len(frame)))
                 media_message = {
                     "event": "media",
                     "streamSid": stream_sid_ref["value"],
-                    "media": {"payload": base64.b64encode(raw_mulaw).decode("ascii")},
+                    "media": {"payload": base64.b64encode(frame).decode("ascii")},
                 }
                 await send_to_twilio(media_message)
         
