@@ -6,21 +6,27 @@ Resolves the provider first, then runs the appropriate test suite:
 1. test_resolve_business_context  (always)
 2. test_provider_tools            (always)
 3. test_setmore_apis OR test_square_apis (based on provider)
+4. test_full_stack_e2e            (optional via --with-e2e)
 
 Usage:
   cd VakDeepGram
   python -m scripts.tests.run_all
+  python -m scripts.tests.run_all --with-e2e --base-url http://localhost:8080
 """
 from __future__ import annotations
 
 import asyncio
+import argparse
 import os
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SRC_DIR = os.path.join(ROOT_DIR, "src")
+sys.path.insert(0, ROOT_DIR)
+sys.path.insert(0, SRC_DIR)
 
-from connection_store import resolve_business_context
+from vakdeepgram.connection_store import resolve_business_context
 
 BUSINESS_NUMBER = "510 405 4454"
 
@@ -32,7 +38,7 @@ def _separator(title: str) -> None:
     print("=" * width + "\n")
 
 
-async def main() -> int:
+async def main(args: argparse.Namespace) -> int:
     start = time.time()
     print(f"=== Running all tests for: {BUSINESS_NUMBER} ===\n")
 
@@ -95,6 +101,23 @@ async def main() -> int:
             print(f"ERROR: {exc}")
             failures += 1
 
+    # 4. Optional full-stack E2E (/chat + /ws + /twilio)
+    if args.with_e2e:
+        _separator("4. Full Stack E2E")
+        try:
+            from scripts.tests.test_full_stack_e2e import main as full_stack_main
+            ns = argparse.Namespace(
+                base_url=args.base_url,
+                api_key=args.api_key,
+                skip_twilio_voice=args.skip_twilio_voice,
+            )
+            rc = await full_stack_main(ns)
+            if rc != 0:
+                failures += 1
+        except Exception as exc:
+            print(f"ERROR: {exc}")
+            failures += 1
+
     elapsed = time.time() - start
     _separator("Summary")
     print(f"Provider:  {provider}")
@@ -109,5 +132,30 @@ async def main() -> int:
     return 0
 
 
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run all integration tests.")
+    parser.add_argument(
+        "--with-e2e",
+        action="store_true",
+        help="Also run full stack E2E (/chat, /ws, /twilio). Requires running server.",
+    )
+    parser.add_argument(
+        "--base-url",
+        default=os.environ.get("VAKDEEPGRAM_URL", "http://localhost:8080"),
+        help="Server base URL for E2E tests.",
+    )
+    parser.add_argument(
+        "--api-key",
+        default=os.environ.get("CHAT_API_KEY"),
+        help="Optional API key for /chat E2E.",
+    )
+    parser.add_argument(
+        "--skip-twilio-voice",
+        action="store_true",
+        help="Skip /twilio portion of full stack E2E.",
+    )
+    return parser
+
+
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    raise SystemExit(asyncio.run(main(_build_parser().parse_args())))

@@ -10,7 +10,7 @@ class TestConnectionStore:
     """Tests for connection store functions."""
 
     def test_set_and_get_context(self):
-        from connection_store import (
+        from vakdeepgram.connection_store import (
             set_connection_context,
             get_connection_context,
             clear_connection_context,
@@ -30,7 +30,7 @@ class TestConnectionStore:
         assert get_connection_context(conn_id) == {}
 
     def test_update_context(self):
-        from connection_store import (
+        from vakdeepgram.connection_store import (
             set_connection_context,
             update_connection_context,
             get_connection_context,
@@ -50,7 +50,7 @@ class TestConnectionStore:
         clear_connection_context(conn_id)
 
     def test_clear_nonexistent_context(self):
-        from connection_store import clear_connection_context, get_connection_context
+        from vakdeepgram.connection_store import clear_connection_context, get_connection_context
 
         # Should not raise
         clear_connection_context("nonexistent-conn")
@@ -61,7 +61,7 @@ class TestConnectionTimestamps:
     """Tests for connection timestamp tracking."""
 
     def test_timestamp_set_on_context(self):
-        from connection_store import (
+        from vakdeepgram.connection_store import (
             set_connection_context,
             clear_connection_context,
             _connection_timestamps,
@@ -79,7 +79,7 @@ class TestConnectionTimestamps:
         assert conn_id not in _connection_timestamps
 
     def test_timestamp_cleared_on_clear(self):
-        from connection_store import (
+        from vakdeepgram.connection_store import (
             set_connection_context,
             clear_connection_context,
             _connection_timestamps,

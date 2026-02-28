@@ -22,9 +22,12 @@ import os
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SRC_DIR = os.path.join(ROOT_DIR, "src")
+sys.path.insert(0, ROOT_DIR)
+sys.path.insert(0, SRC_DIR)
 
-from connection_store import get_setmore_access_token_from_dynamodb, resolve_business_context
+from vakdeepgram.connection_store import get_setmore_access_token_from_dynamodb, resolve_business_context
 from utils import setmore_api
 
 # Default Setmore business number (Mission Barber)

@@ -9,7 +9,7 @@ try:
 except Exception:
     SquareEnvironment = None
 
-import config
+from vakdeepgram import config
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +33,6 @@ def parse_square_response(response: Any) -> Dict[str, Any]:
     Returns:
         Dict with 'success' bool, and either 'payload' or 'error'
     """
-    if hasattr(response, "__aiter__"):
-        return {"success": True, "payload": {"iterable": True}}
     if hasattr(response, "is_error"):
         if response.is_error():
             return {"success": False, "error": response.errors}
@@ -47,6 +45,9 @@ def parse_square_response(response: Any) -> Dict[str, Any]:
         payload = response
         if payload.get("errors"):
             return {"success": False, "error": payload.get("errors")}
+    elif hasattr(response, "__aiter__"):
+        # Async pagers from SDK can be consumed by callers; mark as iterable.
+        return {"success": True, "payload": {"iterable": True}}
     else:
         return {"success": False, "error": f"Unexpected Square response type: {type(response)}"}
     return {"success": True, "payload": payload}

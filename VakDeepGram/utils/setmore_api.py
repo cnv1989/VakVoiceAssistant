@@ -7,7 +7,7 @@ from urllib.parse import urlencode, urlparse
 
 import httpx
 
-import config
+from vakdeepgram import config
 from utils.retry import run_async_with_retry
 from utils.metrics import emit_api_metrics
 
@@ -477,32 +477,6 @@ def generate_booking_link(
 
     booking_url = f"{base}{path}?{urlencode(params)}"
     return {"success": True, "booking_url": booking_url}
-
-
-async def fetch_company(access_token: str, *, refresh_token: Optional[str] = None) -> Dict[str, Any]:
-    """Fetch company/business details from Setmore."""
-    result = await request("GET", "/bookingapi/company", access_token, refresh_token=refresh_token)
-    if not result.get("success"):
-        return result
-    data = result.get("data") or {}
-    # The company endpoint may nest under a "company" key or return flat
-    company = data.get("company") or data
-    return {
-        "success": True,
-        "company": {
-            "company_name": company.get("company_name") or company.get("companyName"),
-            "address": company.get("address"),
-            "city": company.get("city"),
-            "state": company.get("state"),
-            "zip": company.get("zip") or company.get("postal_code"),
-            "country": company.get("country"),
-            "phone": company.get("phone") or company.get("contact_number"),
-            "email": company.get("email") or company.get("contact_email"),
-            "website": company.get("website"),
-            "timezone": company.get("timezone"),
-            "logo_url": company.get("logo_url") or company.get("logoUrl"),
-        },
-    }
 
 
 async def fetch_appointments(

@@ -23,9 +23,12 @@ import os
 import sys
 from datetime import datetime, timedelta
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SRC_DIR = os.path.join(ROOT_DIR, "src")
+sys.path.insert(0, ROOT_DIR)
+sys.path.insert(0, SRC_DIR)
 
-from connection_store import resolve_business_context
+from vakdeepgram.connection_store import resolve_business_context
 from utils.square_helpers import get_square_environment, parse_square_response
 
 BUSINESS_NUMBER = "510 405 4454"
@@ -33,6 +36,20 @@ BUSINESS_NUMBER = "510 405 4454"
 
 def _pretty(data: dict) -> str:
     return json.dumps(data, indent=2, default=str)
+
+
+def _context_access_token(context: dict) -> str:
+    token = context.get("accessToken") or context.get("access_token")
+    if not token:
+        raise KeyError("Missing Square access token in context.")
+    return token
+
+
+def _context_location_id(context: dict) -> str:
+    location_id = context.get("locationId") or context.get("location_id")
+    if not location_id:
+        raise KeyError("Missing Square location ID in context.")
+    return location_id
 
 
 def _as_dict(value):
@@ -60,7 +77,7 @@ async def test_list_locations(context: dict) -> None:
     from square import AsyncSquare
 
     print("--- list_locations ---")
-    token = context["accessToken"]
+    token = _context_access_token(context)
     client = AsyncSquare(token=token, environment=get_square_environment())
     response = await client.locations.list()
     parsed = parse_square_response(response)
@@ -77,8 +94,8 @@ async def test_list_services(context: dict) -> None:
     from square import AsyncSquare
 
     print("--- list_services ---")
-    token = context["accessToken"]
-    location_id = context["locationId"]
+    token = _context_access_token(context)
+    location_id = _context_location_id(context)
     client = AsyncSquare(token=token, environment=get_square_environment())
     response = await client.catalog.search_items(
         enabled_location_ids=[location_id],
@@ -99,8 +116,8 @@ async def test_list_staff(context: dict) -> None:
     from square import AsyncSquare
 
     print("--- list_staff ---")
-    token = context["accessToken"]
-    location_id = context["locationId"]
+    token = _context_access_token(context)
+    location_id = _context_location_id(context)
     client = AsyncSquare(token=token, environment=get_square_environment())
     try:
         from square.types.search_team_members_query import SearchTeamMembersQuery
@@ -126,7 +143,7 @@ async def test_list_customers(context: dict) -> None:
     from square import AsyncSquare
 
     print("--- list_customers ---")
-    token = context["accessToken"]
+    token = _context_access_token(context)
     client = AsyncSquare(token=token, environment=get_square_environment())
     response = await client.customers.list(limit=20)
     parsed = parse_square_response(response)
@@ -149,8 +166,8 @@ async def test_check_availability(context: dict, service_name: str | None = None
     from square import AsyncSquare
 
     print("--- check_availability ---")
-    token = context["accessToken"]
-    location_id = context["locationId"]
+    token = _context_access_token(context)
+    location_id = _context_location_id(context)
 
     # Match service
     services = context.get("services") or []
@@ -218,10 +235,12 @@ async def main(args: argparse.Namespace) -> int:
 
     tests_to_run = [args.test] if args.test else list(ALL_TESTS.keys())
 
+    failures = 0
     for test_name in tests_to_run:
         fn = ALL_TESTS.get(test_name)
         if not fn:
             print(f"Unknown test: {test_name}")
+            failures += 1
             continue
         try:
             if test_name == "check-availability":
@@ -232,8 +251,12 @@ async def main(args: argparse.Namespace) -> int:
             print(f"ERROR in {test_name}: {exc}")
             import traceback
             traceback.print_exc()
+            failures += 1
 
     print("=== Square API tests complete ===")
+    if failures:
+        print(f"FAIL: {failures} Square API test(s) failed.")
+        return 1
     return 0
 
 

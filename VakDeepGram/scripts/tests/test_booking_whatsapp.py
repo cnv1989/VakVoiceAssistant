@@ -23,7 +23,10 @@ import json
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SRC_DIR = os.path.join(ROOT_DIR, "src")
+sys.path.insert(0, ROOT_DIR)
+sys.path.insert(0, SRC_DIR)
 
 
 BUSINESS_NUMBER = "+15104054454"
@@ -90,10 +93,10 @@ async def main(args: argparse.Namespace) -> int:
     print()
 
     # Reload config so pydantic picks up the new env vars
-    import config
+    from vakdeepgram import config
     config.settings = config.Settings()
 
-    from connection_store import resolve_business_context
+    from vakdeepgram.connection_store import resolve_business_context
     from providers.setmore.tools import create_appointment
 
     # ── 1. Resolve business context ──────────────────────────────────────────

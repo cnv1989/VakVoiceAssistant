@@ -2,7 +2,7 @@
 Twilio authentication utilities
 """
 import logging
-import config
+from vakdeepgram import config
 from twilio.request_validator import RequestValidator
 
 logger = logging.getLogger(__name__)

@@ -13,8 +13,8 @@ from typing import Optional
 from strands import tool
 from strands.types.tools import ToolContext
 
-import config
-from store_tools import (
+from vakdeepgram import config
+from vakdeepgram.store_tools import (
     get_store_hours_from_context as _get_store_hours,
     get_store_location_from_context as _get_store_location,
     get_services_from_context as _get_services,

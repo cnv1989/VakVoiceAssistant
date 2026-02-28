@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 
 import boto3
 
-import config
+from vakdeepgram import config
 from utils import setmore_api
 
 

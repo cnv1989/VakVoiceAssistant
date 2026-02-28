@@ -144,12 +144,12 @@ docker-run.bat down
 ### Option 2: Direct Python
 
 ```bash
-python main.py
+uvicorn vakdeepgram.api.main:app --host 0.0.0.0 --port 8080
 ```
 
 Or with uvicorn directly:
 ```bash
-uvicorn main:app --host 0.0.0.0 --port 8080 --reload
+uvicorn vakdeepgram.api.main:app --host 0.0.0.0 --port 8080 --reload
 ```
 
 The server will start on `http://localhost:8080`

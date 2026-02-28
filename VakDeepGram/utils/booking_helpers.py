@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 import difflib
 
-import config
+from vakdeepgram import config
 
 
 def _as_dict(value: Any) -> Any:

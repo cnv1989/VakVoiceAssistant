@@ -19,7 +19,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import uvicorn
-import config
+from vakdeepgram import config
 from strands import Agent
 from strands.models import BedrockModel
 from strands.session.file_session_manager import FileSessionManager
@@ -27,7 +27,7 @@ try:
     from strands.event_loop._recover_message_on_max_tokens_reached import MaxTokensReachedException
 except ImportError:
     MaxTokensReachedException = None
-from deepgram_handler import deepgram_manager
+from vakdeepgram.deepgram_handler import deepgram_manager
 from providers import get_tools_for_provider, get_chat_prompt_for_provider, get_voice_prompt_for_provider
 from utils.case import to_snake_case
 from utils.metrics import (
@@ -69,14 +69,20 @@ def _seed_agent_state(agent: Agent, context: dict) -> None:
         state.set(key, value)
 
 
-from connection_store import (
-    get_connection_context,
-    resolve_business_context,
-    set_connection_context,
-    clear_connection_context,
+from vakdeepgram.connection_store import (
     normalize_phone_number,
     get_localized_datetime_from_context,
 )
+from vakdeepgram.repositories import (
+    get_connection_context_by_id,
+    set_connection_context_by_id,
+    clear_connection_context_by_id,
+)
+from vakdeepgram.services import (
+    resolve_context_for_request,
+    resolve_and_store_connection_context,
+)
+from vakdeepgram.security.oauth import validate_oauth_token
 
 # Configure logging with PII redaction
 from utils.logging import configure_pii_safe_logging
@@ -153,24 +159,11 @@ async def _resolve_and_set_context(
         connection_id,
         business_number,
     )
-    try:
-        caller_number = extra_context.get("caller") if extra_context else None
-        context = await resolve_business_context(business_number, caller_number=caller_number)
-    except Exception as exc:
-        logger.error(
-            "Failed to resolve business context for %s: %s",
-            connection_id,
-            exc,
-            exc_info=True,
-        )
-        context = {"success": False, "error": str(exc)}
-
-    existing_context = get_connection_context(connection_id)
-    merged_context = {**existing_context, **context}
-    if extra_context:
-        merged_context.update(extra_context)
-
-    set_connection_context(connection_id, merged_context)
+    merged_context = await resolve_and_store_connection_context(
+        connection_id,
+        business_number,
+        extra_context=extra_context,
+    )
     if not merged_context.get("success"):
         logger.warning("Failed to resolve business context: %s", merged_context.get("error"))
 
@@ -236,8 +229,10 @@ async def root():
         "version": "1.0.0",
         "status": "running",
         "websocket_endpoint": "/ws",
+        "voice_oauth_connect_endpoint": "/voice/oauth/connect",
         "twilio_endpoint": "/twilio",
         "chat_endpoint": "/chat",
+        "chat_oauth_endpoint": "/chat/oauth",
         "twilio_chat_endpoint": "/twilio-chat",
     }
 
@@ -262,6 +257,91 @@ async def verify_chat_auth(
     if credentials.credentials != api_key:
         raise HTTPException(status_code=401, detail="Invalid API key")
     return True
+
+
+async def verify_oauth_auth(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> dict:
+    """Verify OAuth bearer token using configured JWKS settings."""
+    host = request.headers.get("host") or request.url.hostname
+    if _localhost_oauth_bypass_allowed(host):
+        logger.info("Bypassing OAuth auth for localhost request (host=%s)", host)
+        return {"claims": {}, "token": None, "bypassed": True}
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Bearer token required")
+    result = validate_oauth_token(credentials.credentials)
+    if not result.get("success"):
+        raise HTTPException(status_code=401, detail=result.get("error") or "Invalid OAuth token")
+    claims = result.get("claims") or {}
+    if not isinstance(claims, dict):
+        raise HTTPException(status_code=401, detail="Invalid OAuth claims payload")
+    return {"claims": claims, "token": credentials.credentials}
+
+
+def _normalize_business(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    return normalize_phone_number(value) or str(value)
+
+
+def _is_localhost_host(host_value: Optional[str]) -> bool:
+    if not host_value:
+        return False
+    host = str(host_value).strip().lower()
+    if host.startswith("[") and "]" in host:
+        host = host[1:host.index("]")]
+    elif ":" in host:
+        host = host.split(":", 1)[0]
+    return host in {"localhost", "127.0.0.1", "::1"}
+
+
+def _localhost_oauth_bypass_allowed(host_value: Optional[str]) -> bool:
+    return bool(config.settings.oauth_allow_localhost_noauth and _is_localhost_host(host_value))
+
+
+def _validate_token_business_match(claims: dict, business_number: str) -> None:
+    token_business = claims.get("business_number") or claims.get("businessNumber")
+    if not token_business:
+        return
+    req_business = _normalize_business(business_number)
+    claim_business = _normalize_business(str(token_business))
+    if req_business != claim_business:
+        raise HTTPException(status_code=403, detail="Token business_number does not match request.")
+
+
+def _validate_websocket_oauth(query_params, headers) -> tuple[bool, Optional[str], Optional[dict]]:
+    host = headers.get("host") or headers.get("Host")
+    if _localhost_oauth_bypass_allowed(host):
+        logger.info("Bypassing WebSocket OAuth auth for localhost request (host=%s)", host)
+        return True, None, {}
+
+    token = query_params.get("access_token") or query_params.get("token")
+    if not token:
+        auth_header = headers.get("authorization") or headers.get("Authorization") or ""
+        if isinstance(auth_header, str) and auth_header.lower().startswith("bearer "):
+            token = auth_header.split(" ", 1)[1].strip()
+    if not token:
+        return False, "Bearer token required", None
+
+    result = validate_oauth_token(token)
+    if not result.get("success"):
+        return False, result.get("error") or "Invalid OAuth token", None
+    claims = result.get("claims") or {}
+    if not isinstance(claims, dict):
+        return False, "Invalid OAuth claims payload", None
+
+    query_business = query_params.get("businessNumber")
+    token_business = claims.get("business_number") or claims.get("businessNumber")
+    if token_business:
+        if not query_business:
+            return False, "businessNumber query parameter required for token-bound businesses", None
+        req_business = _normalize_business(query_business)
+        claim_business = _normalize_business(str(token_business))
+        if req_business != claim_business:
+            return False, "Token business_number does not match businessNumber query parameter", None
+
+    return True, token, claims
 
 
 def _get_chat_session_manager(session_id: str):
@@ -290,7 +370,7 @@ def _get_chat_session_manager(session_id: str):
 @limiter.limit(lambda: f"{config.settings.rate_limit_per_minute}/minute")
 async def chat(
     request: Request,
-    _auth: bool = Depends(verify_chat_auth),
+    oauth_auth: dict = Depends(verify_oauth_auth),
 ):
     """Simple chat endpoint for browser testing.
 
@@ -313,6 +393,8 @@ async def chat(
 
     if not business_number:
         raise HTTPException(status_code=400, detail="business_number is required")
+    claims = oauth_auth.get("claims") or {}
+    _validate_token_business_match(claims, business_number)
     
     logger.info("Chat request: businessNumber=%s customerPhone=%s", business_number, customer_phone)
     
@@ -320,9 +402,10 @@ async def chat(
     business_context = {}
     if business_number:
         try:
-            business_context = await resolve_business_context(business_number, caller_number=customer_phone)
-            if customer_phone:
-                business_context["caller"] = customer_phone
+            business_context = await resolve_context_for_request(
+                business_number,
+                caller_number=customer_phone,
+            )
         except Exception as exc:
             logger.error("Failed to resolve business context: %s", exc, exc_info=True)
             business_context = {"success": False, "error": str(exc)}
@@ -489,6 +572,79 @@ async def chat(
     return {"reply": reply, "model_id": model_id}
 
 
+@app.post("/voice/oauth/connect")
+@limiter.limit(lambda: f"{config.settings.rate_limit_per_minute}/minute")
+async def voice_oauth_connect(
+    request: Request,
+    oauth_auth: dict = Depends(verify_oauth_auth),
+):
+    """OAuth-protected voice connect endpoint for Integrin clients.
+
+    Returns a browser voice websocket URL pre-populated with business info.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body.")
+
+    business_number = payload.get("business_number") or payload.get("businessNumber")
+    customer_phone = payload.get("customer_number") or payload.get("customerNumber") or payload.get("customerPhone")
+    if not business_number:
+        raise HTTPException(status_code=400, detail="business_number is required")
+
+    claims = oauth_auth.get("claims") or {}
+    token = oauth_auth.get("token")
+    _validate_token_business_match(claims, business_number)
+
+    try:
+        business_context = await resolve_context_for_request(
+            business_number,
+            caller_number=customer_phone,
+        )
+    except Exception as exc:
+        logger.error("Failed to resolve business context for OAuth voice connect: %s", exc, exc_info=True)
+        business_context = {"success": False, "error": str(exc)}
+
+    forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    forwarded_host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
+    ws_scheme = "wss" if forwarded_proto == "https" else "ws"
+    query_params = {"businessNumber": business_number}
+    if customer_phone:
+        query_params["customerPhone"] = customer_phone
+    if token:
+        query_params["access_token"] = token
+    websocket_url = f"{ws_scheme}://{forwarded_host}/ws?{urlencode(query_params)}"
+
+    return {
+        "success": True,
+        "websocket_url": websocket_url,
+        "business_number": business_number,
+        "customer_number": customer_phone,
+        "oauth_subject": claims.get("sub"),
+        "business_context": _make_json_serializable(business_context),
+    }
+
+
+@app.post("/chat/oauth")
+@limiter.limit(lambda: f"{config.settings.rate_limit_per_minute}/minute")
+async def chat_oauth(
+    request: Request,
+    oauth_auth: dict = Depends(verify_oauth_auth),
+):
+    """OAuth-protected chat endpoint for Integrin clients."""
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body.")
+
+    business_number = payload.get("business_number") or payload.get("businessNumber")
+    if not business_number:
+        raise HTTPException(status_code=400, detail="business_number is required")
+    claims = oauth_auth.get("claims") or {}
+    _validate_token_business_match(claims, business_number)
+    return await chat(request, oauth_auth=oauth_auth)
+
+
 def verify_twilio_http_signature(request: Request, body: bytes) -> bool:
     """
     Verify Twilio signature for HTTP POST requests.
@@ -629,9 +785,10 @@ async def twilio_chat(request: Request):
     business_context = {}
     if stripped_business_number:
         try:
-            business_context = await resolve_business_context(stripped_business_number, caller_number=stripped_customer_phone)
-            if stripped_customer_phone:
-                business_context["caller"] = stripped_customer_phone
+            business_context = await resolve_context_for_request(
+                stripped_business_number,
+                caller_number=stripped_customer_phone,
+            )
             if business_context.get("success"):
                 logger.info(
                     "Resolved Square context for %s: locationId=%s, services=%d, staff=%d",
@@ -872,6 +1029,11 @@ async def websocket_endpoint(websocket: WebSocket):
     Starts Deepgram session immediately on connection for bidirectional audio streaming.
     """
     logger.info("websocket_endpoint called")
+    is_valid_oauth, _, _ = _validate_websocket_oauth(websocket.query_params, websocket.headers)
+    if not is_valid_oauth:
+        logger.warning("Rejecting /ws connection due to OAuth validation failure")
+        await websocket.close(code=1008, reason="OAuth validation failed")
+        return
 
     # Check WebSocket connection rate limit
     client_ip = _get_client_ip(websocket)
@@ -890,7 +1052,7 @@ async def websocket_endpoint(websocket: WebSocket):
     customer_phone = websocket.query_params.get("customerPhone")
     if business_number:
         logger.info("Browser client provided businessNumber=%s for %s", business_number, connection_id)
-        set_connection_context(
+        set_connection_context_by_id(
             connection_id,
             {
                 "success": False,
@@ -1003,7 +1165,7 @@ async def websocket_endpoint(websocket: WebSocket):
         # Clean up session
         if session:
             await deepgram_manager.close_session(connection_id)
-        clear_connection_context(connection_id)
+        clear_connection_context_by_id(connection_id)
         _decrement_websocket_count(client_ip, "ws")
         emit_call_duration("ws", (time.monotonic() - connection_start) * 1000)
         logger.info("Cleaned up connection: %s", connection_id)
@@ -1154,7 +1316,7 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                 await send_to_twilio(clear_message)
 
         elif msg_type == "disconnect":
-            context = get_connection_context(connection_id)
+            context = get_connection_context_by_id(connection_id)
             await _end_twilio_call(
                 connection_id,
                 context.get("accountSid"),
@@ -1254,7 +1416,7 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                             "callSid": call_sid,
                             "accountSid": account_sid,
                         }
-                        set_connection_context(
+                        set_connection_context_by_id(
                             connection_id,
                             {
                                 "success": False,
@@ -1270,7 +1432,7 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                         )
                     else:
                         logger.info("No Twilio business number available for %s", connection_id)
-                        set_connection_context(
+                        set_connection_context_by_id(
                             connection_id,
                             {
                                 "success": False,
@@ -1372,7 +1534,7 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
         # Clean up session
         if session_ref["value"]:
             await deepgram_manager.close_session(connection_id)
-        clear_connection_context(connection_id)
+        clear_connection_context_by_id(connection_id)
         _decrement_websocket_count(client_ip, "twilio_ws")
         emit_call_duration("twilio_ws", (time.monotonic() - connection_start) * 1000)
         logger.info("Cleaned up Twilio connection: %s", connection_id)
@@ -1388,10 +1550,10 @@ if __name__ == "__main__":
         logger.info(f"   Speaking: Deepgram ({config.settings.deepgram_speaking_model})")
     
     uvicorn.run(
-        "main:app",
+        app,
         workers=config.settings.workers,
         host=config.settings.host,
         port=config.settings.port,
         log_level=config.settings.log_level,
-        reload=config.settings.reload
+        reload=config.settings.reload,
     )

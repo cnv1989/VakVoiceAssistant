@@ -3,14 +3,100 @@ Store Tools Configuration for Deepgram Voice Agent
 Defines function schemas and implementations for store operations
 """
 import logging
+from datetime import datetime
 from typing import Any, Dict
 
 from square import AsyncSquare
 
-from connection_store import get_connection_context
+from vakdeepgram.connection_store import get_connection_context
 from utils.square_client import get_square_client
 
 logger = logging.getLogger(__name__)
+
+_DAY_ORDER = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
+_DAY_LABEL = {
+    "MON": "Monday",
+    "TUE": "Tuesday",
+    "WED": "Wednesday",
+    "THU": "Thursday",
+    "FRI": "Friday",
+    "SAT": "Saturday",
+    "SUN": "Sunday",
+}
+
+
+def _to_12h(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.strptime(value, "%H:%M")
+        return dt.strftime("%I:%M %p").lstrip("0")
+    except Exception:
+        return value
+
+
+def _hours_summary(by_day: list[dict]) -> str:
+    open_days = [d for d in by_day if not d.get("closed")]
+    closed_days = [d for d in by_day if d.get("closed")]
+    if not open_days:
+        return "We are currently closed all week."
+    first = open_days[0]
+    same_window = all(
+        d.get("open") == first.get("open") and d.get("close") == first.get("close")
+        for d in open_days
+    )
+    if len(open_days) == 6 and len(closed_days) == 1 and same_window and closed_days[0].get("day_code") == "SUN":
+        return (
+            f"We are open Monday through Saturday from {first.get('open')} to "
+            f"{first.get('close')}, and closed Sunday."
+        )
+    parts = []
+    for d in by_day:
+        if d.get("closed"):
+            parts.append(f"{d.get('day')}: Closed")
+        else:
+            parts.append(f"{d.get('day')}: {d.get('open')}-{d.get('close')}")
+    return "; ".join(parts)
+
+
+def _normalize_hours(location: Dict[str, Any]) -> tuple[list[dict], str]:
+    # Setmore structured format populated by resolve_business_context
+    business_hours = location.get("business_hours") or {}
+    if isinstance(business_hours, dict) and isinstance(business_hours.get("by_day"), list):
+        by_day = []
+        for row in business_hours.get("by_day") or []:
+            open_12h = _to_12h(row.get("open"))
+            close_12h = _to_12h(row.get("close"))
+            by_day.append(
+                {
+                    "day_code": row.get("day_code"),
+                    "day": row.get("day"),
+                    "open": open_12h,
+                    "close": close_12h,
+                    "closed": bool(row.get("closed")),
+                }
+            )
+        summary = location.get("business_hours_text") or _hours_summary(by_day)
+        return by_day, summary
+
+    # Square business_hours.periods format
+    periods = business_hours.get("periods") if isinstance(business_hours, dict) else []
+    by_code = {code: {"day_code": code, "day": _DAY_LABEL[code], "open": None, "close": None, "closed": True} for code in _DAY_ORDER}
+    for period in periods or []:
+        day_code = period.get("day_of_week")
+        if day_code not in by_code:
+            continue
+        open_local = _to_12h(period.get("start_local_time"))
+        close_local = _to_12h(period.get("end_local_time"))
+        by_code[day_code] = {
+            "day_code": day_code,
+            "day": _DAY_LABEL[day_code],
+            "open": open_local,
+            "close": close_local,
+            "closed": False if open_local and close_local else True,
+        }
+    by_day = [by_code[code] for code in _DAY_ORDER]
+    return by_day, _hours_summary(by_day)
 
 
 def _get_context(params: Dict[str, Any]) -> Dict[str, Any]:
@@ -67,11 +153,19 @@ def get_store_hours_from_context(params: Dict[str, Any]) -> Dict[str, Any]:
     logger.debug("store_tools.get_store_hours_from_context called")
     context_result = _get_context(params)
     if not context_result.get("success"):
-        return {"success": False, "error": context_result.get("error"), "hours": []}
+        return {"success": False, "error": context_result.get("error"), "hours": [], "by_day": [], "human_summary": ""}
     location = context_result["context"].get("location") or {}
-    business_hours = location.get("business_hours") or {}
-    periods = business_hours.get("periods") or []
-    return {"success": True, "hours": periods}
+    by_day, summary = _normalize_hours(location)
+    hours = [
+        {
+            "day": row["day"],
+            "open": row["open"],
+            "close": row["close"],
+            "closed": row["closed"],
+        }
+        for row in by_day
+    ]
+    return {"success": True, "hours": hours, "by_day": by_day, "human_summary": summary}
 
 
 def get_services_from_context(params: Dict[str, Any]) -> Dict[str, Any]:

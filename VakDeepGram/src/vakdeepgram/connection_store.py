@@ -3,6 +3,7 @@ Helpers for resolving business context from DynamoDB for Square/Setmore integrat
 """
 import asyncio
 import copy
+import json
 import logging
 import time
 from datetime import datetime, timezone, timedelta
@@ -17,7 +18,7 @@ try:
 except ImportError:  # pragma: no cover - py<3.9 fallback
     ZoneInfo = None
 
-import config
+from vakdeepgram import config
 from utils import setmore_api
 from utils.case import to_snake_case
 from utils.metrics import emit_context_resolve_metrics
@@ -706,6 +707,83 @@ def _normalize_setmore_staff(staffs: Optional[list[Dict[str, Any]]]) -> list[Dic
     return normalized
 
 
+_SETMORE_DAY_ORDER = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
+_SETMORE_DAY_LABELS = {
+    "MON": "Monday",
+    "TUE": "Tuesday",
+    "WED": "Wednesday",
+    "THU": "Thursday",
+    "FRI": "Friday",
+    "SAT": "Saturday",
+    "SUN": "Sunday",
+}
+
+
+def _parse_setmore_business_hours(raw_hours: Any) -> Dict[str, Any]:
+    """Parse Setmore businessHours JSON into normalized by-day entries."""
+    parsed = raw_hours
+    if isinstance(raw_hours, str):
+        try:
+            parsed = json.loads(raw_hours)
+        except Exception:
+            parsed = {}
+    if not isinstance(parsed, dict):
+        parsed = {}
+
+    by_day = []
+    for code in _SETMORE_DAY_ORDER:
+        entry = parsed.get(code)
+        if isinstance(entry, dict):
+            open_time = entry.get("open")
+            close_time = entry.get("close")
+            if open_time and close_time:
+                by_day.append(
+                    {
+                        "day_code": code,
+                        "day": _SETMORE_DAY_LABELS[code],
+                        "open": open_time,
+                        "close": close_time,
+                        "closed": False,
+                    }
+                )
+                continue
+        by_day.append(
+            {
+                "day_code": code,
+                "day": _SETMORE_DAY_LABELS[code],
+                "open": None,
+                "close": None,
+                "closed": True,
+            }
+        )
+    return {"by_day": by_day}
+
+
+def _format_setmore_hours_summary(hours: Dict[str, Any]) -> str:
+    by_day = hours.get("by_day") or []
+    open_days = [d for d in by_day if not d.get("closed")]
+    closed_days = [d for d in by_day if d.get("closed")]
+    if not open_days:
+        return "We are currently closed all week."
+    first = open_days[0]
+    same_window = all(
+        d.get("open") == first.get("open") and d.get("close") == first.get("close")
+        for d in open_days
+    )
+    if len(open_days) == 6 and len(closed_days) == 1 and same_window:
+        return (
+            f"We are open Monday through Saturday from {first.get('open')} to "
+            f"{first.get('close')}, and closed Sunday."
+        )
+    parts = []
+    for day in by_day:
+        if day.get("closed"):
+            parts.append(f"{day.get('day')}: Closed")
+        else:
+            parts.append(f"{day.get('day')}: {day.get('open')}-{day.get('close')}")
+    return "; ".join(parts)
+
+
 async def _fetch_square_location(access_token: str, location_id: str) -> Dict[str, Any]:
     logger.info("connection_store._fetch_square_location called (location_id=%s)", location_id)
     logger.info("Fetching Square location %s", location_id)
@@ -1042,6 +1120,8 @@ async def resolve_business_context(
         business_state = acct.get("businessState")
         business_zip = acct.get("businessZip")
         business_hours = acct.get("businessHours")
+        business_hours_structured = _parse_setmore_business_hours(business_hours)
+        business_hours_text = _format_setmore_hours_summary(business_hours_structured)
         business_email = acct.get("businessEmail") or record.get("businessEmail")
         forwarding_number = record.get("forwardingNumber") or record.get("forwarding_number")
 
@@ -1060,7 +1140,9 @@ async def resolve_business_context(
             "whatsapp_number": whatsapp_number,
             "address": business_address,
             "email": business_email,
-            "business_hours": business_hours,
+            "business_hours": business_hours_structured,
+            "business_hours_raw": business_hours,
+            "business_hours_text": business_hours_text,
         }
 
         result = {

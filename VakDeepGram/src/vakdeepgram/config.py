@@ -46,6 +46,11 @@ class Settings(BaseSettings):
 
     # Authentication
     chat_api_key: Optional[str] = None  # API key for /chat endpoint (None = no auth in dev)
+    oauth_jwks_url: Optional[str] = None
+    oauth_issuer: Optional[str] = None
+    oauth_audience: Optional[str] = None
+    oauth_required_scope: Optional[str] = None
+    oauth_allow_localhost_noauth: bool = False
 
     # Connection Store
     connection_ttl_seconds: int = 3600  # 1 hour TTL for connection contexts

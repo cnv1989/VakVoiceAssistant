@@ -18,9 +18,12 @@ import os
 import sys
 
 # Ensure project root is on path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SRC_DIR = os.path.join(ROOT_DIR, "src")
+sys.path.insert(0, ROOT_DIR)
+sys.path.insert(0, SRC_DIR)
 
-from connection_store import resolve_business_context
+from vakdeepgram.connection_store import resolve_business_context
 from utils.phone import normalize_phone_number
 
 BUSINESS_NUMBER = "510 405 4454"

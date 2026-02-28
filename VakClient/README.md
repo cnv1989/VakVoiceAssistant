@@ -167,7 +167,7 @@ Binary PCM16 audio chunks (48kHz) sent directly via WebSocket.
 
 ## Development
 
-The app runs on `http://localhost:5173` by default (Vite default port). Hot module replacement is enabled for fast development.
+The app runs on `http://localhost:3001` by default. Hot module replacement is enabled for fast development.
 
 ## Backend Compatibility
 

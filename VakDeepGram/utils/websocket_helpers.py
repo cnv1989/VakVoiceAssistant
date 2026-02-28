@@ -3,7 +3,7 @@ Helper functions for WebSocket endpoints
 """
 import logging
 from typing import Optional
-from connection_store import (
+from vakdeepgram.connection_store import (
     get_connection_context,
     resolve_business_context,
     set_connection_context,

@@ -27,7 +27,10 @@ pip install -r requirements.txt
 # Run server with reload enabled (watches for file changes)
 echo "🚀 Starting VakDeepGram server with auto-reload (watching for file changes)..."
 echo "📁 Watching: *.py, *.yaml, *.yml, *.json, *.env"
-uvicorn main:app \
+# Support both legacy root module and new package path.
+APP_MODULE="${APP_MODULE:-vakdeepgram.api.main:app}"
+export PYTHONPATH="${PYTHONPATH}:$(pwd)/src"
+uvicorn "${APP_MODULE}" \
         --host 0.0.0.0 \
         --port 8080 \
         --reload \

@@ -11,10 +11,10 @@ import uuid
 from typing import Dict, Optional, Callable
 import websockets
 from websockets.protocol import State
-import config
+from vakdeepgram import config
 from providers import get_voice_prompt_for_provider
-from agent_functions import FUNCTION_DEFINITIONS, FUNCTION_MAP, get_function_definitions_for_provider
-from connection_store import get_localized_datetime_for_connection, get_connection_context
+from vakdeepgram.agent_functions import FUNCTION_DEFINITIONS, FUNCTION_MAP, get_function_definitions_for_provider
+from vakdeepgram.connection_store import get_localized_datetime_for_connection, get_connection_context
 from utils.metrics import (
     emit_deepgram_session_start,
     emit_deepgram_session_error,
@@ -698,6 +698,7 @@ class DeepgramManager:
             # The callback will decode and handle appropriately
             audio_base64 = base64.b64encode(audio_data).decode('utf-8')
             encoding = "mulaw" if session.use_mulaw else "linear16"
+            sample_rate = 8000 if session.use_mulaw else (config.settings.deepgram_output_sample_rate or 24000)
             logger.debug(
                 f"🔊 Forwarding {len(audio_data)} bytes of {encoding} TTS audio "
                 f"to client {session.connection_id}"
@@ -709,6 +710,7 @@ class DeepgramManager:
                 "connectionId": session.connection_id,
                 "size": len(audio_data),
                 "encoding": encoding,
+                "sample_rate": sample_rate,
             })
     
     async def _on_settings_applied(self, session: DeepgramSession):

@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 import logging
-from business_logic import (
+from vakdeepgram.business_logic import (
     get_customer,
     get_customer_appointments,
     get_customer_orders,
@@ -11,13 +11,13 @@ from business_logic import (
     prepare_farewell_message,
     forward_call_to_location,
 )
-from store_tools import (
+from vakdeepgram.store_tools import (
     get_services_from_context,
     get_staff_from_context,
     get_store_hours_from_context,
     get_store_location_from_context,
 )
-from connection_store import get_connection_context, update_connection_context
+from vakdeepgram.connection_store import get_connection_context, update_connection_context
 
 logger = logging.getLogger(__name__)
 

@@ -8,8 +8,10 @@
 - `VakDeepGram/` is the FastAPI WebSocket server that connects to Deepgram Voice Agents.
   - Entrypoint: `main.py`.
   - Core behavior: `deepgram_handler.py`, `business_logic.py`, `agent_functions.py`, `store_tools.py`, `connection_store.py`.
+  - Layers: `services/` (auth/business context), `repositories/` (connection context), `providers/clients/` (Square/Setmore APIs), `providers/setmore/`, `providers/square/` (tools, prompts).
+  - New package: `src/vakdeepgram/` (api, core, domain, providers, repositories, services, utils). See `VakDeepGram/docs/PROJECT_STRUCTURE.md`.
   - Config: `config.py`, `.env.example`.
-  - Tests: `tests/` with `pytest` configuration in `pytest.ini`.
+  - Tests: `tests/` with `pytest` configuration in `pytest.ini`; `scripts/tests/` for API and full-stack scripts.
   - Manual client: `test_client.html`.
 - `VakInfra/` contains AWS CDK v2 stacks for networking and app deployment.
   - Entrypoint: `bin/vak-infra.ts`.

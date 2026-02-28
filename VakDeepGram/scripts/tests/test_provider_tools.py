@@ -16,13 +16,16 @@ import json
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SRC_DIR = os.path.join(ROOT_DIR, "src")
+sys.path.insert(0, ROOT_DIR)
+sys.path.insert(0, SRC_DIR)
 
-from connection_store import resolve_business_context
+from vakdeepgram.connection_store import resolve_business_context
 from providers import get_tools_for_provider, get_voice_prompt_for_provider, get_chat_prompt_for_provider
 from providers.square.tools import TOOLS as SQUARE_TOOLS
 from providers.setmore.tools import TOOLS as SETMORE_TOOLS
-from agent_functions import (
+from vakdeepgram.agent_functions import (
     FUNCTION_DEFINITIONS,
     SQUARE_FUNCTION_DEFINITIONS,
     SETMORE_FUNCTION_DEFINITIONS,

@@ -11,10 +11,12 @@
 - **Runtime**: Python 3.x, venv in `VakDeepGram/venv`; use `requirements.txt` for deps
 - **Entry**: `main.py` — FastAPI app, `/ws` (WebSocket), `/twilio` (Twilio media), rate limiting, Twilio signature verification
 - **Voice**: `deepgram_handler.py` — Deepgram Voice Agent STS WebSocket; config in `config.py` (env: `DEEPGRAM_*`, ElevenLabs/Deepgram TTS)
-- **Agent/tools**: Strands agent in `strands_tools.py`, `agent_functions.py`; `connection_store.py` for connection/business context; Square/Setmore in `utils/` (e.g. `square_client.py`, `setmore_api.py`)
+- **Agent/tools**: Strands agent in `strands_tools.py`, `agent_functions.py`, `store_tools.py`; `connection_store.py` for connection/business context
+- **Layers**: `services/` — auth/business context orchestration; `repositories/` — connection-context persistence; `providers/clients/` — Square/Setmore API clients; `providers/setmore/`, `providers/square/` — provider-specific tools and prompts; legacy `utils/` (e.g. `square_client.py`, `setmore_api.py`) still used during incremental refactor
+- **Package**: New layout under `src/vakdeepgram/` (api, core, domain, providers, repositories, services, utils); root modules remain active. See `VakDeepGram/docs/PROJECT_STRUCTURE.md`
 - **Config**: `.env` from `.env.example`; `config.py` uses pydantic-settings
-- **Tests**: `tests/` — pytest, conftest; test Square responses, PII redaction, phone normalization, connection store
-- **Conventions**: Async where appropriate; PII-safe logging via `utils/logging.py`; normalize phone numbers via shared helpers; keep Twilio/Deepgram secrets in env or AWS Secrets Manager (see VakInfra docs)
+- **Tests**: `tests/` — pytest, conftest; `scripts/tests/` for API and full-stack scripts; test provider clients, store hours, PII redaction, phone normalization, connection store
+- **Conventions**: Async where appropriate; PII-safe logging via `utils/logging.py` or `src/vakdeepgram/core/logging.py`; normalize phone numbers via shared helpers; keep Twilio/Deepgram secrets in env or AWS Secrets Manager (see VakInfra docs)
 
 ## VakClient (React)
 
@@ -34,7 +36,7 @@
 - Run VakDeepGram tests with pytest from `VakDeepGram/` (venv activated)
 - Add new env vars to `config.py` and `.env.example`; document in README
 - Keep API contracts (WebSocket message shapes) in sync between VakDeepGram and VakClient; refer to `schemas/` if present
-- Use existing `utils/` (Square, Setmore, Twilio, booking, phone) before adding duplicate logic
+- Use existing `providers/clients/`, `providers/*/tools.py`, and `utils/` (Square, Setmore, Twilio, booking, phone) before adding duplicate logic
 
 ## Avoid
 

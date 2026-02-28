@@ -6,8 +6,11 @@ import sys
 import pytest
 from unittest.mock import MagicMock, AsyncMock
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add repository and src package roots for imports
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SRC_DIR = os.path.join(ROOT_DIR, "src")
+sys.path.insert(0, ROOT_DIR)
+sys.path.insert(0, SRC_DIR)
 
 # Set test environment variables before importing config
 os.environ.setdefault("DEEPGRAM_API_KEY", "test-api-key")
