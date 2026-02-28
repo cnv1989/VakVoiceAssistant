@@ -16,21 +16,29 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import os
 import sys
 from datetime import datetime, timedelta
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SRC_DIR = os.path.join(ROOT_DIR, "src")
+sys.path.insert(0, ROOT_DIR)
+sys.path.insert(0, SRC_DIR)
 
-from connection_store import resolve_business_context
-from utils import setmore_api
+from vakdeepgram.connection_store import resolve_business_context
+from providers.clients import SetmoreApiClient, ensure_provider_access_context
 
 BUSINESS_NUMBER = "510 405 4454"
 
 
-def _pretty(data: dict) -> str:
-    return json.dumps(data, indent=2, default=str)
+async def _resolve_setmore_client(context: dict) -> SetmoreApiClient:
+    auth = await ensure_provider_access_context(business_context=context)
+    if not auth.get("success"):
+        raise RuntimeError(f"Unable to resolve Setmore auth context: {auth.get('error')}")
+    token = auth.get("access_token")
+    if not token:
+        raise RuntimeError("Setmore access token is missing.")
+    return SetmoreApiClient(token, refresh_token=auth.get("refresh_token"))
 
 
 async def _resolve_context() -> dict:
@@ -46,10 +54,9 @@ async def _resolve_context() -> dict:
     return context
 
 
-async def test_fetch_services(context: dict) -> None:
+async def test_fetch_services(context: dict, setmore_client: SetmoreApiClient) -> None:
     print("--- fetch_services ---")
-    token = context["accessToken"]
-    result = await setmore_api.fetch_services(token)
+    result = await setmore_client.fetch_services()
     print(f"Success: {result.get('success')}")
     services = result.get("services") or []
     print(f"Service count: {len(services)}")
@@ -76,10 +83,9 @@ async def test_fetch_services(context: dict) -> None:
     print()
 
 
-async def test_fetch_service_categories(context: dict) -> None:
+async def test_fetch_service_categories(context: dict, setmore_client: SetmoreApiClient) -> None:
     print("--- fetch_service_categories ---")
-    token = context["accessToken"]
-    result = await setmore_api.fetch_service_categories(token)
+    result = await setmore_client.fetch_service_categories()
     print(f"Success: {result.get('success')}")
     categories = result.get("service_categories") or []
     print(f"Category count: {len(categories)}")
@@ -95,25 +101,9 @@ async def test_fetch_service_categories(context: dict) -> None:
     print()
 
 
-async def test_fetch_company(context: dict) -> None:
-    print("--- fetch_company ---")
-    token = context["accessToken"]
-    result = await setmore_api.fetch_company(token)
-    print(f"Success: {result.get('success')}")
-    if not result.get("success"):
-        print(f"Error: {result.get('error')}")
-        return
-    company = result.get("company") or {}
-    for key, value in company.items():
-        if value:
-            print(f"  {key}: {value}")
-    print()
-
-
-async def test_fetch_staff(context: dict) -> None:
+async def test_fetch_staff(context: dict, setmore_client: SetmoreApiClient) -> None:
     print("--- fetch_staff ---")
-    token = context["accessToken"]
-    result = await setmore_api.fetch_staff(token)
+    result = await setmore_client.fetch_staff()
     print(f"Success: {result.get('success')}")
     staffs = result.get("staffs") or []
     print(f"Staff count: {len(staffs)}")
@@ -125,9 +115,13 @@ async def test_fetch_staff(context: dict) -> None:
     print()
 
 
-async def test_fetch_slots(context: dict, service_name: str | None = None) -> None:
+async def test_fetch_slots(
+    context: dict,
+    setmore_client: SetmoreApiClient,
+    service_name: str | None = None,
+    days: int = 7,
+) -> None:
     print("--- fetch_slots ---")
-    token = context["accessToken"]
 
     # Resolve service key
     services = context.get("services") or []
@@ -152,11 +146,10 @@ async def test_fetch_slots(context: dict, service_name: str | None = None) -> No
         return
 
     service_key = service_item.get("id")
-    tomorrow = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
     payload = {
         "staff_key": staff_key,
         "service_key": service_key,
-        "selected_date": tomorrow,
+        "selected_date": "",
     }
     tz = (context.get("location") or {}).get("timezone")
     if tz:
@@ -164,24 +157,38 @@ async def test_fetch_slots(context: dict, service_name: str | None = None) -> No
 
     print(f"  Service: {service_item.get('name')} (key={service_key})")
     print(f"  Staff: {staff_key}")
-    print(f"  Date: {tomorrow}")
-    result = await setmore_api.fetch_slots(token, payload)
-    print(f"  Success: {result.get('success')}")
-    slots = result.get("slots") or []
-    print(f"  Slot count: {len(slots)}")
-    for slot in slots[:15]:
-        print(f"    - {slot}")
-    if len(slots) > 15:
-        print(f"    ... and {len(slots) - 15} more")
+    total_slots = 0
+    start = datetime.now()
+    for day_offset in range(max(1, days)):
+        query_date = (start + timedelta(days=day_offset + 1)).strftime("%d/%m/%Y")
+        payload["selected_date"] = query_date
+        result = await setmore_client.fetch_slots(payload)
+        print(f"  Date: {query_date} | Success: {result.get('success')}")
+        if not result.get("success"):
+            print(f"    Error: {result.get('error')}")
+            continue
+        slots = result.get("slots") or []
+        total_slots += len(slots)
+        print(f"    Slot count: {len(slots)}")
+        for slot in slots[:6]:
+            print(f"      - {slot}")
+        if len(slots) > 6:
+            print(f"      ... and {len(slots) - 6} more")
+    if total_slots == 0:
+        raise RuntimeError(f"Expected available slots over next {days} days, but found none.")
+    print(f"  Total slots over next {days} days: {total_slots}")
     print()
 
 
-async def test_fetch_customer(context: dict, first_name: str | None = None) -> None:
+async def test_fetch_customer(
+    context: dict,
+    setmore_client: SetmoreApiClient,
+    first_name: str | None = None,
+) -> None:
     print("--- fetch_customer ---")
-    token = context["accessToken"]
     name = first_name or "Test"
     print(f"  Searching for first_name='{name}'")
-    result = await setmore_api.fetch_customer(token, first_name=name)
+    result = await setmore_client.fetch_customer(first_name=name)
     print(f"  Success: {result.get('success')}")
     customers = result.get("customers") or []
     print(f"  Customer count: {len(customers)}")
@@ -194,15 +201,16 @@ async def test_fetch_customer(context: dict, first_name: str | None = None) -> N
     print()
 
 
-async def test_fetch_appointments(context: dict) -> None:
+async def test_fetch_appointments(context: dict, setmore_client: SetmoreApiClient) -> None:
     print("--- fetch_appointments ---")
-    token = context["accessToken"]
     now = datetime.now()
     start_date = (now - timedelta(days=7)).strftime("%d-%m-%Y")
     end_date = (now + timedelta(days=30)).strftime("%d-%m-%Y")
     print(f"  Date range: {start_date} to {end_date}")
-    result = await setmore_api.fetch_appointments(
-        token, start_date=start_date, end_date=end_date, customer_details=True
+    result = await setmore_client.fetch_appointments(
+        start_date=start_date,
+        end_date=end_date,
+        customer_details=True,
     )
     print(f"  Success: {result.get('success')}")
     appointments = result.get("appointments") or []
@@ -219,7 +227,6 @@ async def test_fetch_appointments(context: dict) -> None:
 
 
 ALL_TESTS = {
-    "fetch-company": test_fetch_company,
     "fetch-services": test_fetch_services,
     "fetch-service-categories": test_fetch_service_categories,
     "fetch-staff": test_fetch_staff,
@@ -232,29 +239,36 @@ ALL_TESTS = {
 async def main(args: argparse.Namespace) -> int:
     print(f"=== Setmore API tests for: {BUSINESS_NUMBER} ===\n")
     context = await _resolve_context()
+    setmore_client = await _resolve_setmore_client(context)
     print(f"Provider: {context.get('provider')}")
     print(f"Business: {(context.get('location') or {}).get('business_name')}\n")
 
     tests_to_run = [args.test] if args.test else list(ALL_TESTS.keys())
 
+    failures = 0
     for test_name in tests_to_run:
         fn = ALL_TESTS.get(test_name)
         if not fn:
             print(f"Unknown test: {test_name}")
+            failures += 1
             continue
         try:
             if test_name == "fetch-slots":
-                await fn(context, service_name=args.service)
+                await fn(context, setmore_client, service_name=args.service, days=max(1, args.days))
             elif test_name == "fetch-customer":
-                await fn(context, first_name=args.first_name)
+                await fn(context, setmore_client, first_name=args.first_name)
             else:
-                await fn(context)
+                await fn(context, setmore_client)
         except Exception as exc:
             print(f"ERROR in {test_name}: {exc}")
             import traceback
             traceback.print_exc()
+            failures += 1
 
     print("=== Setmore API tests complete ===")
+    if failures:
+        print(f"FAIL: {failures} Setmore API test(s) failed.")
+        return 1
     return 0
 
 
@@ -268,6 +282,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--service", default=None, help="Service name for fetch-slots test.")
     parser.add_argument("--first-name", default=None, help="First name for fetch-customer test.")
+    parser.add_argument("--days", type=int, default=7, help="Days window for fetch-slots (default: 7).")
     return parser
 
 

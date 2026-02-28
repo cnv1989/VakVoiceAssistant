@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from functools import wraps
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
@@ -60,6 +61,7 @@ logger = logging.getLogger(__name__)
 
 def tool_metric(tool_name: str):
     def decorator(func):
+        @wraps(func)
         async def wrapper(*args, **kwargs):
             start = time.monotonic()
             success = True

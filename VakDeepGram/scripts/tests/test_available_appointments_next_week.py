@@ -20,15 +20,18 @@ import os
 import sys
 from datetime import datetime, timedelta
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SRC_DIR = os.path.join(ROOT_DIR, "src")
+sys.path.insert(0, ROOT_DIR)
+sys.path.insert(0, SRC_DIR)
 
 BUSINESS_NUMBER = "+15104054454"
 DEFAULT_DAYS = 7
 
 
 async def main(args: argparse.Namespace) -> int:
-    from connection_store import resolve_business_context
-    from utils import setmore_api
+    from vakdeepgram.connection_store import resolve_business_context
+    from providers.clients import SetmoreApiClient, ensure_provider_access_context
     from providers.setmore.helpers import format_date, slot_to_iso
 
     service_name = (args.service or "").strip()
@@ -66,6 +69,15 @@ async def main(args: argparse.Namespace) -> int:
         tzinfo = ZoneInfo(timezone_name)
     except Exception:
         tzinfo = None
+
+    auth = await ensure_provider_access_context(business_context=ctx)
+    if not auth.get("success"):
+        print(f"FAIL: Unable to resolve Setmore auth: {auth.get('error')}")
+        return 1
+    setmore_client = SetmoreApiClient(
+        auth["access_token"],
+        refresh_token=auth.get("refresh_token"),
+    )
 
     # Pick service
     services = ctx.get("services") or []
@@ -115,9 +127,6 @@ async def main(args: argparse.Namespace) -> int:
         "staff_key": staff_key,
         "timezone": timezone_name,
     }
-    token = ctx.get("accessToken")
-    refresh = ctx.get("refreshToken")
-
     print("-" * 70)
     print(f"  {'Date':<12}  {'Day':<10}  Slots")
     print("-" * 70)
@@ -128,8 +137,13 @@ async def main(args: argparse.Namespace) -> int:
         day_date = today + timedelta(days=day_offset)
         selected_date = format_date(day_date)
         payload = {**payload_base, "selected_date": selected_date}
-        result = await setmore_api.fetch_slots(token, payload, refresh_token=refresh)
-        slots_raw = result.get("slots") or [] if result.get("success") else []
+        result = await setmore_client.fetch_slots(payload)
+        if not result.get("success"):
+            day_name = day_date.strftime("%A")
+            date_str = day_date.strftime("%Y-%m-%d")
+            print(f"  {date_str}  {day_name:<10}  ERR  {result.get('error')}")
+            continue
+        slots_raw = result.get("slots") or []
         slots_iso = []
         for slot_str in slots_raw:
             iso_val = slot_to_iso(day_date.replace(hour=0, minute=0, second=0, microsecond=0), slot_str, tzinfo)
@@ -154,6 +168,9 @@ async def main(args: argparse.Namespace) -> int:
     print("-" * 70)
     print(f"  Total: {total_slots} slots over {days_with_slots} days (next {days} days)")
     print("=" * 70)
+    if total_slots == 0:
+        print("FAIL: Expected available slots over next week, but found none.")
+        return 1
     return 0
 
 

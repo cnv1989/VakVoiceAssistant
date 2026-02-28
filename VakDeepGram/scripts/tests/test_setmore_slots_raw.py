@@ -18,11 +18,15 @@ import os
 import sys
 from datetime import datetime, timedelta
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SRC_DIR = os.path.join(ROOT_DIR, "src")
+sys.path.insert(0, ROOT_DIR)
+sys.path.insert(0, SRC_DIR)
 
 import httpx
-import config
-from connection_store import resolve_business_context
+from vakdeepgram import config
+from vakdeepgram.connection_store import resolve_business_context
+from providers.clients import ensure_provider_access_context
 
 BUSINESS_NUMBER = "+15104054454"
 
@@ -37,10 +41,11 @@ async def main(selected_date_override: str | None = None) -> int:
         print(f"Provider is {ctx.get('provider')}, not setmore. Skip.")
         return 0
 
-    token = ctx.get("accessToken")
-    if not token:
-        print("FAIL: No access token")
+    auth = await ensure_provider_access_context(business_context=ctx)
+    if not auth.get("success") or not auth.get("access_token"):
+        print(f"FAIL: Could not resolve Setmore auth token: {auth.get('error')}")
         return 1
+    token = auth["access_token"]
 
     services = ctx.get("services") or []
     staff = ctx.get("staff") or []

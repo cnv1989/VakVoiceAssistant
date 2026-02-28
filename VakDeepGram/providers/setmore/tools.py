@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import time
 import logging
+from functools import wraps
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -20,16 +21,16 @@ try:
 except ImportError:  # pragma: no cover
     ZoneInfo = None  # type: ignore[assignment,misc]
 
-import config
-from connection_store import get_setmore_access_token_from_dynamodb
-from utils import setmore_api, booking_helpers
+from vakdeepgram import config
+from utils import booking_helpers
 from utils.phone import normalize_phone_number
-from business_logic import send_booking_link_sms, send_booking_link_whatsapp
+from vakdeepgram.business_logic import send_booking_link_sms, send_booking_link_whatsapp
+from providers.clients import SetmoreApiClient
+from vakdeepgram.services import resolve_auth_for_business_context
 
 from providers.common.helpers import (
     get_business_context,
     update_business_context,
-    get_access_token,
     parse_datetime,
     resolve_location_timezone,
     ensure_minimum_range,
@@ -50,6 +51,7 @@ logger = logging.getLogger(__name__)
 
 def tool_metric(tool_name: str):
     def decorator(func):
+        @wraps(func)
         async def wrapper(*args, **kwargs):
             tool_context = kwargs.get("tool_context") or (args[0] if args else None)
             start = time.monotonic()
@@ -79,70 +81,23 @@ def _normalized_eq(a: Optional[str], b: Optional[str]) -> bool:
 
 # ── Setmore access helper ────────────────────────────────────────────────────
 
-def _get_setmore_token(business_context: dict) -> Optional[str]:
-    """Get the Setmore access token from context."""
-    return get_access_token(business_context)
-
-
-def _get_refresh_token(business_context: dict) -> Optional[str]:
-    """Get the Setmore refresh token from context for automatic 401 retry."""
-    return business_context.get("refreshToken") or business_context.get("refresh_token")
-
-
-async def _ensure_setmore_token(
+async def _get_setmore_client(
     tool_context: ToolContext,
     business_context: dict,
     *,
     tool_name: str = "unknown",
-) -> Optional[str]:
-    """Return access token; always prefer fresh token from DynamoDB when business number is in context."""
-    business_number = business_context.get("business_number") or business_context.get("businessNumber")
-    if not business_number and tool_context is not None and getattr(tool_context, "agent", None):
-        agent_state = tool_context.agent.state
-        if agent_state is not None and hasattr(agent_state, "get"):
-            business_number = agent_state.get("business_number") or agent_state.get("businessNumber")
-            state_ctx = agent_state.get("business_context")
-            if isinstance(state_ctx, dict) and not business_number:
-                business_number = state_ctx.get("business_number") or state_ctx.get("businessNumber")
-        if business_number:
-            update_business_context(tool_context, {"business_number": business_number})
-    if business_number:
-        logger.info("Setmore: fetching access token from DynamoDB for business_number=%s", business_number)
-        result = await get_setmore_access_token_from_dynamodb(business_number)
-        if result.get("success") and result.get("access_token"):
-            access_token = result["access_token"]
-            update_business_context(tool_context, {"accessToken": access_token})
-            logger.info("Setmore: access token loaded from DynamoDB for %s", business_number)
-            return access_token
-        logger.warning(
-            "Setmore: token from DynamoDB failed for %s: %s (success=%s)",
-            business_number,
-            result.get("error"),
-            result.get("success"),
-        )
-    else:
-        logger.warning(
-            "Setmore: no businessNumber or business_number in context (keys=%s); cannot fetch token from DynamoDB",
-            list(business_context.keys()) if isinstance(business_context, dict) else "n/a",
-        )
+) -> Optional[SetmoreApiClient]:
+    """Resolve auth context and return a Setmore API client."""
+    auth = await resolve_auth_for_business_context(business_context)
+    if not auth.get("success"):
+        logger.warning("Setmore auth unavailable in %s: %s", tool_name, auth.get("error"))
         emit_missing_business_number("setmore", tool_name)
-    # Fallback: use token or refresh from context (e.g. voice/connection flow without businessNumber or business_number)
-    access_token = _get_setmore_token(business_context)
-    if access_token:
-        return access_token
-    refresh = _get_refresh_token(business_context)
-    if not refresh:
         return None
-    logger.info("Setmore access token missing; refreshing from context refresh_token.")
-    token_result = await setmore_api.get_access_token(refresh)
-    if not token_result.get("success"):
-        logger.warning("Setmore token refresh failed: %s", token_result.get("error"))
+    access_token = auth.get("access_token")
+    if not access_token:
         return None
-    new_token = token_result.get("access_token")
-    if new_token:
-        update_business_context(tool_context, {"accessToken": new_token})
-        logger.info("Setmore access token refreshed and context updated.")
-    return new_token
+    update_business_context(tool_context, {"accessToken": access_token})
+    return SetmoreApiClient(access_token, refresh_token=auth.get("refresh_token"))
 
 
 # Message to ask the customer before using their caller/call-in number
@@ -169,8 +124,8 @@ async def find_customer(
     confirm with the customer and pass customer_confirmed_use_of_caller_phone=True only after they agree.
     """
     business_context = get_business_context(tool_context)
-    access_token = await _ensure_setmore_token(tool_context, business_context, tool_name="find_customer")
-    if not access_token:
+    setmore_client = await _get_setmore_client(tool_context, business_context, tool_name="find_customer")
+    if not setmore_client:
         return {"success": False, "error": "Missing Setmore access token."}
 
     if not first_name:
@@ -186,8 +141,7 @@ async def find_customer(
                 "ask_customer": _ASK_CUSTOMER_USE_CALLER_PHONE,
             }
 
-    refresh = _get_refresh_token(business_context)
-    result = await setmore_api.fetch_customer(access_token, first_name=first_name, phone=phone, email=email, refresh_token=refresh)
+    result = await setmore_client.fetch_customer(first_name=first_name, phone=phone, email=email)
     if not result.get("success"):
         return result
     customers = result.get("customers") or []
@@ -214,8 +168,8 @@ async def create_customer(
     customer_confirmed_use_of_caller_phone=True only after they agree.
     """
     business_context = get_business_context(tool_context)
-    access_token = await _ensure_setmore_token(tool_context, business_context, tool_name="create_customer")
-    if not access_token:
+    setmore_client = await _get_setmore_client(tool_context, business_context, tool_name="create_customer")
+    if not setmore_client:
         return {"success": False, "error": "Missing Setmore access token."}
 
     phone = phone_number or caller_number or business_context.get("caller")
@@ -233,9 +187,8 @@ async def create_customer(
     if pf.get("cell_phone"):
         payload["cell_phone"] = pf["cell_phone"]
 
-    refresh = _get_refresh_token(business_context)
     logger.info("create_customer: Calling Setmore API (first_name=%s, last_name=%s, phone=%s)", first_name, last_name, phone)
-    result = await setmore_api.create_customer(access_token, payload, refresh_token=refresh)
+    result = await setmore_client.create_customer(payload)
     if not result.get("success"):
         logger.error("create_customer: Setmore API returned failure: %s", result)
         return result
@@ -340,8 +293,8 @@ async def get_appointments(
     Returns appointments within the next 30 days that match the customer key.
     """
     business_context = get_business_context(tool_context)
-    access_token = await _ensure_setmore_token(tool_context, business_context, tool_name="get_appointments")
-    if not access_token:
+    setmore_client = await _get_setmore_client(tool_context, business_context, tool_name="get_appointments")
+    if not setmore_client:
         return {"success": False, "error": "Missing Setmore access token."}
 
     from datetime import datetime
@@ -350,11 +303,7 @@ async def get_appointments(
     start_date = now.strftime("%d-%m-%Y")
     end_date = (now + timedelta(days=30)).strftime("%d-%m-%Y")
 
-    refresh = _get_refresh_token(business_context)
-    result = await setmore_api.fetch_appointments(
-        access_token, start_date=start_date, end_date=end_date, customer_details=True,
-        refresh_token=refresh,
-    )
+    result = await setmore_client.fetch_appointments(start_date=start_date, end_date=end_date, customer_details=True)
     if not result.get("success"):
         return result
 
@@ -380,8 +329,8 @@ async def check_availability(
     a relative keyword (TODAY, TOMORROW, NEXT_WEEK), or a weekday name.
     """
     business_context = get_business_context(tool_context)
-    access_token = await _ensure_setmore_token(tool_context, business_context, tool_name="check_availability")
-    if not access_token:
+    setmore_client = await _get_setmore_client(tool_context, business_context, tool_name="check_availability")
+    if not setmore_client:
         logger.error("check_availability: Missing Setmore access token")
         return {"success": False, "error": "Missing Setmore access token."}
     if not start_date:
@@ -427,7 +376,6 @@ async def check_availability(
             logger.error("check_availability: No staff in context (business_context keys: %s)", list(business_context.keys()) if isinstance(business_context, dict) else type(business_context))
             return {"success": False, "error": "No staff available for booking."}
 
-    refresh = _get_refresh_token(business_context)
     start_date_only = start_at_local.replace(hour=0, minute=0, second=0, microsecond=0)
     end_date_only = end_at_local.replace(hour=0, minute=0, second=0, microsecond=0)
     day_dts = []
@@ -444,7 +392,7 @@ async def check_availability(
         }
         if timezone_name:
             payload["timezone"] = timezone_name
-        result = await setmore_api.fetch_slots(access_token, payload, refresh_token=refresh)
+        result = await setmore_client.fetch_slots(payload)
         return (day_dt, staff_key, result)
 
     tasks = [_fetch_slots_one_day_staff(day_dt, staff_key) for day_dt in day_dts for staff_key in staff_keys]
@@ -495,8 +443,8 @@ async def create_appointment(
     Date should be in ISO format (YYYY-MM-DDTHH:MM:SS).
     """
     business_context = get_business_context(tool_context)
-    access_token = await _ensure_setmore_token(tool_context, business_context, tool_name="create_appointment")
-    if not access_token:
+    setmore_client = await _get_setmore_client(tool_context, business_context, tool_name="create_appointment")
+    if not setmore_client:
         return {"success": False, "error": "Missing Setmore access token."}
 
     if not all([first_name, last_name, date, service]):
@@ -535,9 +483,8 @@ async def create_appointment(
             payload["country_code"] = pf["country_code"]
         if pf.get("cell_phone"):
             payload["cell_phone"] = pf["cell_phone"]
-        refresh = _get_refresh_token(business_context)
         logger.info("create_appointment: Creating customer (first_name=%s, last_name=%s, phone=%s)", first_name, last_name, phone)
-        created = await setmore_api.create_customer(access_token, payload, refresh_token=refresh)
+        created = await setmore_client.create_customer(payload)
         if not created.get("success"):
             logger.error("create_appointment: Setmore API returned failure: %s", created)
             return {"success": False, "error": created.get("error")}
@@ -590,7 +537,7 @@ async def create_appointment(
         "start_time": start_time_str,
         "end_time": end_time_str,
     }
-    link_result = setmore_api.generate_booking_link(booking_page_url, appointment_payload)
+    link_result = setmore_client.generate_booking_link(booking_page_url, appointment_payload)
     if not link_result.get("success"):
         return {"success": False, "error": link_result.get("error") or "Failed to generate booking link."}
     prefilled_url = link_result.get("booking_url")
