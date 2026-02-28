@@ -203,6 +203,47 @@ async def _end_twilio_call(
             exc_info=True,
         )
 
+
+def _parse_twilio_start_event(data: dict) -> dict:
+    """Parse Twilio WebSocket start event. Returns stream_sid, to_number, from_number, call_sid, account_sid, service_name, custom_params.
+    Used so we can unit-test parsing and support both nested start.* and root-level fields (per Twilio docs)."""
+    start_data = data.get("start", {}) or {}
+    custom_params = start_data.get("customParameters") or start_data.get("custom_parameters") or {}
+    custom_params_lower = {str(k).lower(): v for k, v in custom_params.items()}
+    sid = start_data.get("streamSid") or data.get("streamSid")
+    to_number = (
+        custom_params.get("Called") or custom_params.get("To")
+        or custom_params_lower.get("called") or custom_params_lower.get("to")
+        or start_data.get("to") or start_data.get("called") or start_data.get("To")
+        or data.get("To") or data.get("Called")
+    )
+    from_number = (
+        custom_params.get("Caller") or custom_params.get("From")
+        or custom_params_lower.get("caller") or custom_params_lower.get("from")
+        or start_data.get("from") or start_data.get("Caller") or start_data.get("From")
+        or data.get("From") or data.get("Caller")
+    )
+    call_sid = (
+        custom_params.get("CallSid") or custom_params_lower.get("callsid")
+        or start_data.get("callSid") or start_data.get("CallSid")
+        or data.get("callSid") or data.get("CallSid")
+    )
+    account_sid = (
+        start_data.get("accountSid") or start_data.get("AccountSid")
+        or data.get("accountSid") or data.get("AccountSid")
+    )
+    service_name = custom_params.get("Service") or custom_params_lower.get("service")
+    return {
+        "stream_sid": sid,
+        "to_number": to_number,
+        "from_number": from_number,
+        "call_sid": call_sid,
+        "account_sid": account_sid,
+        "service_name": service_name,
+        "custom_params": custom_params,
+    }
+
+
 # CORS middleware - restrict origins in production
 _cors_origins = config.settings.cors_allowed_origins
 if not _cors_origins and config.settings.environment.value == "development":
@@ -1367,41 +1408,20 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                 
                 if event == "start":
                     logger.info(f"Twilio stream started: {connection_id}")
-                    start_data = data.get("start", {})
-                    custom_params = start_data.get("customParameters") or start_data.get("custom_parameters") or {}
-                    custom_params_lower = {
-                        str(key).lower(): value for key, value in custom_params.items()
-                    }
-                    sid = start_data.get("streamSid")
-                    to_number = (
-                        custom_params.get("Called")
-                        or custom_params.get("To")
-                        or custom_params_lower.get("called")
-                        or custom_params_lower.get("to")
-                        or start_data.get("to")
-                        or start_data.get("called")
-                        or start_data.get("To")
+                    parsed = _parse_twilio_start_event(data)
+                    sid = parsed["stream_sid"]
+                    to_number = parsed["to_number"]
+                    from_number = parsed["from_number"]
+                    call_sid = parsed["call_sid"]
+                    account_sid = parsed["account_sid"]
+                    service_name = parsed["service_name"]
+                    custom_params = parsed["custom_params"]
+                    # Log full start payload at INFO so AWS/CloudWatch logs show exact Twilio payload for debugging
+                    logger.info(
+                        "Twilio start event full payload (connectionId=%s): %s",
+                        connection_id,
+                        json.dumps(data, default=str),
                     )
-                    from_number = (
-                        custom_params.get("Caller")
-                        or custom_params.get("From")
-                        or custom_params_lower.get("caller")
-                        or custom_params_lower.get("from")
-                        or start_data.get("from")
-                        or start_data.get("From")
-                    )
-                    call_sid = (
-                        custom_params.get("CallSid")
-                        or custom_params_lower.get("callsid")
-                        or start_data.get("callSid")
-                        or start_data.get("CallSid")
-                    )
-                    service_name = (
-                        custom_params.get("Service")
-                        or custom_params_lower.get("service")
-                    )
-                    account_sid = start_data.get("accountSid") or start_data.get("AccountSid")
-                    
                     logger.info(
                         "Twilio start event: connectionId=%s streamSid=%s callSid=%s accountSid=%s from=%s to=%s service=%s",
                         connection_id,
@@ -1414,7 +1434,6 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                     )
                     if custom_params:
                         logger.info("Twilio custom parameters: %s", json.dumps(custom_params, default=str))
-                    logger.debug("Twilio start event full data: %s", json.dumps(data, default=str))
                     normalized_number = normalize_phone_number(to_number)
                     if normalized_number:
                         extra_context = {
