@@ -18,7 +18,6 @@ from vakdeepgram.connection_store import get_localized_datetime_for_connection, 
 from utils.metrics import (
     emit_deepgram_session_start,
     emit_deepgram_session_error,
-    emit_audio_bytes,
 )
 
 logger = logging.getLogger(__name__)
@@ -687,12 +686,6 @@ class DeepgramManager:
     async def _handle_audio_message(self, session: DeepgramSession, audio_data: bytes):
         """Handle binary audio messages (TTS) from Deepgram Voice Agent"""
         logger.debug("DeepgramManager._handle_audio_message called (connection_id=%s bytes=%d)", session.connection_id, len(audio_data))
-        emit_audio_bytes(
-            "Out",
-            _endpoint_from_connection_id(session.connection_id),
-            "mulaw" if session.use_mulaw else "linear16",
-            len(audio_data),
-        )
         if len(audio_data) > 0:
             # Always encode as base64 for the callback (JSON-compatible)
             # The callback will decode and handle appropriately
@@ -753,14 +746,9 @@ class DeepgramManager:
                 logger.info(f"🛑 Stopped Deepgram session for {connection_id}")
     
     async def _send_audio_to_deepgram(self, session: DeepgramSession, audio_data: bytes):
-        """Send audio data to Deepgram Voice Agent"""
+        """Send audio data to Deepgram Voice Agent.
+        Per-chunk metrics are not emitted here to avoid blocking the voice hot path (was causing noise)."""
         logger.debug("DeepgramManager._send_audio_to_deepgram called (connection_id=%s bytes=%d)", session.connection_id, len(audio_data))
-        emit_audio_bytes(
-            "In",
-            _endpoint_from_connection_id(session.connection_id),
-            "mulaw" if session.use_mulaw else "linear16",
-            len(audio_data),
-        )
         try:
             if session.sts_ws and session.is_active:
                 # Check WebSocket state (websockets 16.0+ uses state instead of closed property)
