@@ -18,8 +18,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
+# Ensure Python can import the package (app lives in src/vakdeepgram/)
+ENV PYTHONPATH=/app/src
+
 # Expose port
 EXPOSE 8080
 
-# Run the application
-CMD ["python", "main.py"]
+# Run the application via the package entrypoint (vakdeepgram.main runs uvicorn in __main__)
+CMD ["python", "-m", "vakdeepgram.main"]
