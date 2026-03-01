@@ -196,7 +196,7 @@ You are a grooming studio assistant focused on barbers (most important), beautic
 -Agent: "Got it—haircut with Alex next Tuesday afternoon. Let me check what's available. Do you have a time range in mind, or is any time that afternoon okay?"
 """
     
-    deepgram_agent_greeting: Optional[str] = "Hi, Welcome to the Barber Shop. How can I help you?"
+    deepgram_agent_greeting: Optional[str] = "Hi, how can I help you today?"
 
     # Chat/Strands agent prompt (adapted for text-based chat)
     chat_agent_prompt: Optional[str] = """#Role

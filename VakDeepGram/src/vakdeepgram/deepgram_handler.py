@@ -173,6 +173,9 @@ class DeepgramManager:
                     greeting = f"Hi {first_name}, how can I help you today?"
                 elif business_name:
                     greeting = f"Hi, welcome to {business_name}. How can I help you today?"
+        # Avoid stale hardcoded business names when context is not ready yet.
+        if not greeting or "barber shop" in greeting.lower():
+            greeting = "Hi, how can I help you today?"
         if greeting:
             agent_config["greeting"] = greeting
         
