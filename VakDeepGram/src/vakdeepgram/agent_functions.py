@@ -120,7 +120,16 @@ async def lookup_or_create_customer_using_caller(params):
         connection_id=connection_id,
     )
     if lookup.get("success") and lookup.get("customer"):
-        return {"success": True, "customer": lookup.get("customer"), "new_customer": False}
+        customer = lookup.get("customer")
+        update_connection_context(
+            connection_id,
+            {
+                "customer": customer,
+                "new_customer": False,
+                "customer_lookup_source": "caller_phone",
+            },
+        )
+        return {"success": True, "customer": customer, "new_customer": False}
 
     last_name = params.get("last_name")
     if not last_name:
@@ -137,7 +146,16 @@ async def lookup_or_create_customer_using_caller(params):
         phone_number=caller_phone,
     )
     if created.get("success") and created.get("customer"):
-        return {"success": True, "customer": created.get("customer"), "new_customer": True}
+        customer = created.get("customer")
+        update_connection_context(
+            connection_id,
+            {
+                "customer": customer,
+                "new_customer": True,
+                "customer_lookup_source": "caller_phone",
+            },
+        )
+        return {"success": True, "customer": customer, "new_customer": True}
     return created
 
 
