@@ -81,6 +81,66 @@ async def create_customer(params):
     return result
 
 
+async def lookup_or_create_customer_using_caller(params):
+    """Look up customer by caller phone; create when missing once name is provided."""
+    logger.debug(
+        "agent_functions.lookup_or_create_customer_using_caller called (keys=%s)",
+        list(params.keys()),
+    )
+    connection_id = params.get("connection_id")
+    if not connection_id:
+        return {"success": False, "error": "connection_id is required"}
+
+    if params.get("customer_confirmed_use_of_caller_phone") is not True:
+        return {
+            "success": False,
+            "error": "Confirm with the customer before using their phone number.",
+            "ask_customer": "Can I use the number you're calling from to look up your account or create one?",
+        }
+
+    context = get_connection_context(connection_id)
+    caller_phone = context.get("caller") if isinstance(context, dict) else None
+    if not caller_phone:
+        return {
+            "success": False,
+            "error": "No caller number available. Ask the customer for their phone number.",
+        }
+
+    first_name = params.get("first_name")
+    if not first_name:
+        return {
+            "success": False,
+            "error": "To look you up I need your first name. What's your first name?",
+            "need_first_name": True,
+        }
+
+    lookup = await get_customer(
+        phone=caller_phone,
+        first_name=first_name,
+        connection_id=connection_id,
+    )
+    if lookup.get("success") and lookup.get("customer"):
+        return {"success": True, "customer": lookup.get("customer"), "new_customer": False}
+
+    last_name = params.get("last_name")
+    if not last_name:
+        return {
+            "success": False,
+            "error": "Customer not found. To create an account I need your last name.",
+            "need_last_name": True,
+        }
+
+    created = await create_customer_record(
+        connection_id,
+        first_name,
+        last_name,
+        phone_number=caller_phone,
+    )
+    if created.get("success") and created.get("customer"):
+        return {"success": True, "customer": created.get("customer"), "new_customer": True}
+    return created
+
+
 async def create_appointment(params):
     """Schedule a new appointment."""
     logger.debug("agent_functions.create_appointment called (keys=%s)", list(params.keys()))
@@ -383,6 +443,30 @@ FUNCTION_DEFINITIONS = [
         },
     },
     {
+        "name": "lookup_or_create_customer_using_caller",
+        "description": """Look up a customer using the caller number and create one if needed.
+        Use this only after the customer confirms you can use their caller phone number.
+        Provide first_name for lookup. If not found, provide last_name to create a new account.""",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "customer_confirmed_use_of_caller_phone": {
+                    "type": "boolean",
+                    "description": "Must be true only after explicit customer confirmation.",
+                },
+                "first_name": {
+                    "type": "string",
+                    "description": "Customer first name for lookup.",
+                },
+                "last_name": {
+                    "type": "string",
+                    "description": "Customer last name required if account creation is needed.",
+                },
+            },
+            "required": ["customer_confirmed_use_of_caller_phone"],
+        },
+    },
+    {
         "name": "create_appointment",
         "description": """Schedule a new appointment for a customer. Use this when:
         - A customer wants to book a new appointment
@@ -652,6 +736,7 @@ FUNCTION_MAP = {
     "get_appointments": get_appointments,
     "get_orders": get_orders,
     "create_customer": create_customer,
+    "lookup_or_create_customer_using_caller": lookup_or_create_customer_using_caller,
     "create_appointment": create_appointment,
     "update_appointment": update_appointment_booking,
     "check_availability": check_availability,
