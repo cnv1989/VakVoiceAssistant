@@ -597,10 +597,39 @@ async def get_setmore_access_token_from_dynamodb(business_number: str) -> Dict[s
         or record.get("setmore_refresh_token")
         or record.get("refreshToken")
     )
+    account = None
     if not refresh_token:
         account = await _fetch_setmore_account_record(account_id, account_user_id)
         refresh_token = (account or {}).get("refreshToken") or (account or {}).get("refresh_token")
     if not refresh_token:
+        stored_access_token = (
+            record.get("setmoreAccessToken")
+            or record.get("setmore_access_token")
+            or record.get("accessToken")
+            or (account or {}).get("accessToken")
+            or (account or {}).get("access_token")
+        )
+        expires_at_ts = (
+            record.get("setmoreAccessTokenExpiresAt")
+            or record.get("setmore_access_token_expires_at")
+            or record.get("accessTokenExpiresAt")
+            or (account or {}).get("accessTokenExpiresAt")
+            or (account or {}).get("access_token_expires_at")
+        )
+        if stored_access_token:
+            logger.warning(
+                "get_setmore_access_token_from_dynamodb: no refresh token (account_id=%s), using stored access token",
+                account_id,
+            )
+            result = {
+                "success": True,
+                "access_token": stored_access_token,
+                "expires_at": expires_at_ts or (time.time() + 300),
+                "source": "stored_access_token",
+            }
+            _setmore_token_cache[cache_key] = copy.deepcopy(result)
+            _setmore_token_cache_timestamps[cache_key] = time.time()
+            return result
         logger.warning("get_setmore_access_token_from_dynamodb: no refresh token (account_id=%s)", account_id)
         return {"success": False, "error": "Setmore refresh token not found."}
     token_result = await setmore_api.get_access_token(refresh_token)
