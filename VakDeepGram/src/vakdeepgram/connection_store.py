@@ -509,9 +509,10 @@ async def _fetch_setmore_account_record(
                     return item
             except Exception as exc:
                 # Key structure may not match table schema — try next candidate
-                logger.debug(
-                    "Setmore account lookup failed for key %s: %s",
+                logger.warning(
+                    "Setmore account lookup failed for key %s on table %s: %s",
                     list(key.keys()),
+                    config.settings.setmore_account_table,
                     exc,
                 )
                 continue

@@ -144,10 +144,13 @@ export class VakAppStack extends cdk.Stack {
     sessionsTable.grantReadWriteData(taskRole);
     const squareAccountTableArn = `arn:aws:dynamodb:${this.region}:${this.account}:table/SquareAccount-pxy5meaaojbaxjwedt6v6oidw4-NONE`;
     const businessNumberTableArn = `arn:aws:dynamodb:${this.region}:${this.account}:table/BusinessNumber-pxy5meaaojbaxjwedt6v6oidw4-NONE`;
+    const setmoreAccountTableArn = `arn:aws:dynamodb:${this.region}:${this.account}:table/SetmoreAccount-pxy5meaaojbaxjwedt6v6oidw4-NONE`;
     const squareAccountTable = dynamodb.Table.fromTableArn(this, 'SquareAccountTable', squareAccountTableArn);
     const businessNumberTable = dynamodb.Table.fromTableArn(this, 'BusinessNumberTable', businessNumberTableArn);
+    const setmoreAccountTable = dynamodb.Table.fromTableArn(this, 'SetmoreAccountTable', setmoreAccountTableArn);
     squareAccountTable.grantReadWriteData(taskRole);
     businessNumberTable.grantReadWriteData(taskRole);
+    setmoreAccountTable.grantReadWriteData(taskRole);
 
     // Allow ECS tasks to invoke Bedrock models (for Strands Agent / chat endpoint)
     taskRole.addToPolicy(new iam.PolicyStatement({
