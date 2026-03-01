@@ -1576,8 +1576,11 @@ if __name__ == "__main__":
     else:
         logger.info(f"   Speaking: Deepgram ({config.settings.deepgram_speaking_model})")
     
+    # Pass app as import string when using reload or multiple workers (uvicorn requirement)
+    use_import_string = config.settings.reload or config.settings.workers != 1
+    app_ref: str | FastAPI = "vakdeepgram.main:app" if use_import_string else app
     uvicorn.run(
-        app,
+        app_ref,
         workers=config.settings.workers,
         host=config.settings.host,
         port=config.settings.port,

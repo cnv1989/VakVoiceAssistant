@@ -187,14 +187,21 @@ export class VakMonitoringStack extends cdk.Stack {
       statistic: 'p95',
       period,
     });
-    const agentLatencyP95 = new cloudwatch.MathExpression({
-      expression: 'MAX(MAX(chatSquare, chatSetmore), MAX(twilioSquare, twilioSetmore))',
+    // Alarms don't support SEARCH or MAX(m1,m2); use average of four metrics for the alarm
+    const agentLatencyP95ForAlarm = new cloudwatch.MathExpression({
+      expression: '(chatSquare + chatSetmore + twilioSquare + twilioSetmore) / 4',
       usingMetrics: {
         chatSquare: agentLatencyChatSquare,
         chatSetmore: agentLatencyChatSetmore,
         twilioSquare: agentLatencyTwilioSquare,
         twilioSetmore: agentLatencyTwilioSetmore,
       },
+      period,
+      label: 'Agent latency p95 (avg)',
+    });
+    // Dashboard can use SEARCH for max across all dimensions
+    const agentLatencyP95 = new cloudwatch.MathExpression({
+      expression: "MAX(SEARCH('{VakDeepGram,AgentResponseLatencyMs} MetricName=\"AgentResponseLatencyMs\"', 'p95', 300))",
       period,
       label: 'Agent latency p95 (max)',
     });
@@ -443,7 +450,7 @@ export class VakMonitoringStack extends cdk.Stack {
     agentErrorAlarm.addAlarmAction(alarmAction);
 
     const agentLatencyAlarm = new cloudwatch.Alarm(this, 'VakAgentLatencyHigh', {
-      metric: agentLatencyP95,
+      metric: agentLatencyP95ForAlarm,
       threshold: 3000,
       evaluationPeriods: 2,
       datapointsToAlarm: 2,
