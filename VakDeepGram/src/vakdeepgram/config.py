@@ -88,8 +88,8 @@ class Settings(BaseSettings):
     deepgram_agent_language: str = "en"
     deepgram_listening_model: str = "flux-general-en"
     deepgram_listening_version: str = "v2"
-    deepgram_thinking_provider: str = "google"
-    deepgram_thinking_model: str = "gemini-2.5-flash"
+    deepgram_thinking_provider: str = "open_ai"
+    deepgram_thinking_model: str = "gpt-5.2-instant"
     
     # Speaking/TTS Configuration
     # Set to "eleven_labs" to use ElevenLabs, "deepgram" (or empty) for Deepgram TTS
