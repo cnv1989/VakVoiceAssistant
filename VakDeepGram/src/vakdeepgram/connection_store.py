@@ -1019,16 +1019,124 @@ async def resolve_business_context(
         account = await _fetch_setmore_account_record(account_id, account_user_id)
         if not refresh_token:
             refresh_token = (account or {}).get("refreshToken") or (account or {}).get("refresh_token")
-        if not refresh_token:
-            logger.warning("Setmore account missing refresh token (account_id=%s user_id=%s)", account_id, account_user_id)
-            _emit("setmore", False)
-            return {"success": False, "error": "Setmore refresh token not found."}
+        acct = account or {}
+        stored_access_token = (
+            record.get("setmoreAccessToken")
+            or record.get("setmore_access_token")
+            or record.get("accessToken")
+            or record.get("access_token")
+            or acct.get("accessToken")
+            or acct.get("access_token")
+        )
 
-        token_result = await setmore_api.get_access_token(refresh_token)
-        if not token_result.get("success"):
-            _emit("setmore", False)
-            return {"success": False, "error": token_result.get("error")}
-        access_token = token_result.get("access_token")
+        # Read business details from SetmoreAccount / BusinessNumber records.
+        timezone_name = (
+            acct.get("timezone")
+            or record.get("timezone")
+            or record.get("timeZone")
+        )
+        booking_page_url = (
+            acct.get("bookingUrl")
+            or acct.get("bookingPageUrl")
+            or record.get("bookingPageUrl")
+            or record.get("booking_page_url")
+            or record.get("setmoreBookingPage")
+        )
+        business_name = (
+            acct.get("businessName")
+            or acct.get("accountLabel")
+            or record.get("businessName")
+            or record.get("business_name")
+        )
+        business_phone = (
+            acct.get("businessPhone")
+            or record.get("phoneNumber")
+            or record.get("phone_number")
+        )
+        whatsapp_number = acct.get("whatsAppNumber")
+        business_address = (
+            acct.get("businessAddress")
+            or record.get("businessAddress")
+            or record.get("business_address")
+        )
+        business_city = acct.get("businessCity")
+        business_state = acct.get("businessState")
+        business_zip = acct.get("businessZip")
+        business_hours = acct.get("businessHours")
+        business_hours_structured = _parse_setmore_business_hours(business_hours)
+        business_hours_text = _format_setmore_hours_summary(business_hours_structured)
+        business_email = acct.get("businessEmail") or record.get("businessEmail")
+        forwarding_number = record.get("forwardingNumber") or record.get("forwarding_number")
+
+        # Build full address from parts if not a single string.
+        if not business_address and (business_city or business_state):
+            business_address = ", ".join(
+                p for p in [business_city, business_state, business_zip] if p
+            )
+        elif business_address and business_city:
+            business_address = f"{business_address}, {business_city}, {business_state or ''} {business_zip or ''}".strip()
+
+        location = {
+            "timezone": timezone_name,
+            "business_name": business_name,
+            "phone_number": business_phone,
+            "whatsapp_number": whatsapp_number,
+            "address": business_address,
+            "email": business_email,
+            "business_hours": business_hours_structured,
+            "business_hours_raw": business_hours,
+            "business_hours_text": business_hours_text,
+        }
+
+        access_token = stored_access_token
+        if refresh_token:
+            token_result = await setmore_api.get_access_token(refresh_token)
+            if token_result.get("success") and token_result.get("access_token"):
+                access_token = token_result.get("access_token")
+            elif not access_token:
+                _emit("setmore", False)
+                return {"success": False, "error": token_result.get("error")}
+            else:
+                logger.warning(
+                    "Setmore token refresh failed; using stored access token for account_id=%s: %s",
+                    account_id,
+                    token_result.get("error"),
+                )
+        elif access_token:
+            logger.warning(
+                "Setmore account missing refresh token (account_id=%s user_id=%s); using stored access token",
+                account_id,
+                account_user_id,
+            )
+        else:
+            logger.warning(
+                "Setmore account missing refresh token and stored access token (account_id=%s user_id=%s); returning limited context",
+                account_id,
+                account_user_id,
+            )
+            result = {
+                "success": True,
+                "provider": "setmore",
+                "business_number": matched_number,
+                "forwarding_number": forwarding_number,
+                "access_token": None,
+                "refresh_token": None,
+                "account_id": account_id or acct.get("accountId") or acct.get("id"),
+                "user_id": account_user_id or acct.get("userId"),
+                "location": location,
+                "timezone": timezone_name,
+                "services": [],
+                "staff": [],
+                "appointments": [],
+                "customer": None,
+                "setmore_services": [],
+                "setmore_staff": [],
+                "setmore_appointments": [],
+                "booking_page_url": booking_page_url,
+                "setmore_api_ready": False,
+            }
+            _emit("setmore", True)
+            return to_snake_case(result)
 
         # Fetch services, categories, staff, and appointments in parallel
         now = datetime.now(timezone.utc)
@@ -1083,67 +1191,6 @@ async def resolve_business_context(
         appointments_raw = appointments_result.get("appointments") if appointments_result.get("success") else []
         if not appointments_result.get("success"):
             logger.warning("Setmore appointments lookup failed: %s", appointments_result.get("error"))
-
-        # Read business details from the SetmoreAccount record (user-provided at
-        # connect time) and fall back to the BusinessNumber record fields.
-        acct = account or {}
-        timezone_name = (
-            acct.get("timezone")
-            or record.get("timezone")
-            or record.get("timeZone")
-        )
-        booking_page_url = (
-            acct.get("bookingUrl")
-            or acct.get("bookingPageUrl")
-            or record.get("bookingPageUrl")
-            or record.get("booking_page_url")
-            or record.get("setmoreBookingPage")
-        )
-        business_name = (
-            acct.get("businessName")
-            or acct.get("accountLabel")
-            or record.get("businessName")
-            or record.get("business_name")
-        )
-        business_phone = (
-            acct.get("businessPhone")
-            or record.get("phoneNumber")
-            or record.get("phone_number")
-        )
-        whatsapp_number = acct.get("whatsAppNumber")
-        business_address = (
-            acct.get("businessAddress")
-            or record.get("businessAddress")
-            or record.get("business_address")
-        )
-        business_city = acct.get("businessCity")
-        business_state = acct.get("businessState")
-        business_zip = acct.get("businessZip")
-        business_hours = acct.get("businessHours")
-        business_hours_structured = _parse_setmore_business_hours(business_hours)
-        business_hours_text = _format_setmore_hours_summary(business_hours_structured)
-        business_email = acct.get("businessEmail") or record.get("businessEmail")
-        forwarding_number = record.get("forwardingNumber") or record.get("forwarding_number")
-
-        # Build full address from parts if not a single string
-        if not business_address and (business_city or business_state):
-            business_address = ", ".join(
-                p for p in [business_city, business_state, business_zip] if p
-            )
-        elif business_address and business_city:
-            business_address = f"{business_address}, {business_city}, {business_state or ''} {business_zip or ''}".strip()
-
-        location = {
-            "timezone": timezone_name,
-            "business_name": business_name,
-            "phone_number": business_phone,
-            "whatsapp_number": whatsapp_number,
-            "address": business_address,
-            "email": business_email,
-            "business_hours": business_hours_structured,
-            "business_hours_raw": business_hours,
-            "business_hours_text": business_hours_text,
-        }
 
         result = {
             "success": True,
