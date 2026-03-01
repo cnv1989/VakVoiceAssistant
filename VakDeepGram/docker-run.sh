@@ -95,6 +95,30 @@ container_running() {
     docker ps --filter "name=^${CONTAINER_NAME}$" --format "{{.Names}}" | grep -q "^${CONTAINER_NAME}$"
 }
 
+# Wait for HTTP health endpoint to become ready.
+wait_for_health() {
+    local url="http://127.0.0.1:8080/health"
+    local max_attempts=30
+    local attempt=1
+
+    echo -e "${YELLOW}Waiting for health endpoint: ${url}${NC}"
+    while [ "$attempt" -le "$max_attempts" ]; do
+        if ! container_running; then
+            echo -e "${RED}❌ Container exited during startup${NC}"
+            return 1
+        fi
+        if curl -fsS "$url" > /dev/null 2>&1; then
+            echo -e "${GREEN}✅ Health check passed${NC}"
+            return 0
+        fi
+        sleep 1
+        attempt=$((attempt + 1))
+    done
+
+    echo -e "${RED}❌ Health check timed out after ${max_attempts}s${NC}"
+    return 1
+}
+
 case "$ACTION" in
     build)
         echo -e "${BLUE}🔨 Building Docker image...${NC}"
@@ -130,8 +154,14 @@ case "$ACTION" in
                 --env-file .env \
                 --restart unless-stopped \
                 "$IMAGE_NAME"
-            echo -e "${GREEN}✅ Server started in background${NC}"
-            echo -e "${BLUE}View logs with: $0 logs${NC}"
+            if wait_for_health; then
+                echo -e "${GREEN}✅ Server started in background${NC}"
+                echo -e "${BLUE}View logs with: $0 logs${NC}"
+            else
+                echo -e "${RED}❌ Server failed to start cleanly. Recent logs:${NC}"
+                docker logs --tail 200 "$CONTAINER_NAME" || true
+                exit 1
+            fi
         else
             echo -e "${BLUE}Starting server (press Ctrl+C to stop)...${NC}"
             echo ""
