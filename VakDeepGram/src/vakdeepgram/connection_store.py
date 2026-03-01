@@ -488,11 +488,24 @@ async def _fetch_setmore_account_record(
             key_candidates.append({"id": user_id})
             key_candidates.append({"userId": user_id})
             key_candidates.append({"setmoreUserId": user_id})
+        logger.info(
+            "Fetching SetmoreAccount record (table=%s account_id=%s user_id=%s key_candidates=%d)",
+            config.settings.setmore_account_table,
+            bool(account_id),
+            bool(user_id),
+            len(key_candidates),
+        )
         for key in key_candidates:
             try:
                 response = await table.get_item(Key=key)
                 item = response.get("Item")
                 if item:
+                    logger.info(
+                        "Found SetmoreAccount record using key fields=%s (has_refresh=%s has_access=%s)",
+                        list(key.keys()),
+                        bool(item.get("refreshToken") or item.get("refresh_token")),
+                        bool(item.get("accessToken") or item.get("access_token")),
+                    )
                     return item
             except Exception as exc:
                 # Key structure may not match table schema — try next candidate
@@ -502,6 +515,12 @@ async def _fetch_setmore_account_record(
                     exc,
                 )
                 continue
+        logger.warning(
+            "SetmoreAccount record not found (table=%s account_id=%s user_id=%s)",
+            config.settings.setmore_account_table,
+            account_id,
+            user_id,
+        )
         return None
 
 
