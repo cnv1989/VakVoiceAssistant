@@ -69,6 +69,12 @@ class Settings(BaseSettings):
     setmore_api_base_url: str = "https://developer.setmore.com/api/v1"
     setmore_request_timeout_seconds: int = 30
 
+    # Business Automations Configuration (for voice settings)
+    business_automations_table: str = "BusinessAutomations-pxy5meaaojbaxjwedt6v6oidw4-NONE"
+
+    # Call Analytics - DynamoDB table for per-call records written by VakDeepGram
+    call_record_table: Optional[str] = None  # e.g. "CallRecord-<env_id>-NONE"
+
     bedrock_model_id: str = "us.anthropic.claude-opus-4-6-v1"
     bedrock_max_tokens: int = 8192  # Maximum tokens for Claude models - increased for tool usage
     bedrock_temperature: float = 0.4
@@ -88,15 +94,15 @@ class Settings(BaseSettings):
     deepgram_agent_language: str = "en"
     deepgram_listening_model: str = "flux-general-en"
     deepgram_listening_version: str = "v2"
-    deepgram_thinking_provider: str = "open_ai"
-    deepgram_thinking_model: str = "gpt-5.2-instant"
+    deepgram_thinking_provider: str = "google"
+    deepgram_thinking_model: str = "gemini-2.5-flash"
     
     # Speaking/TTS Configuration
     # Set to "eleven_labs" to use ElevenLabs, "deepgram" (or empty) for Deepgram TTS
     deepgram_speaking_provider: str = "eleven_labs"
     deepgram_speaking_model: Optional[str] = None  # Used for Deepgram TTS
     deepgram_speaking_model_id: Optional[str] = "eleven_multilingual_v2"  # Used for ElevenLabs
-    deepgram_speaking_voice_id: Optional[str] = "0mevMNFMwHxBOUTpeMGN"  # Used for ElevenLabs
+    deepgram_speaking_voice_id: Optional[str] = "cgSgspJ2msm6clMCkdW9"  # Used for ElevenLabs
     
     deepgram_input_sample_rate: int = 48000
     deepgram_output_sample_rate: int = 24000

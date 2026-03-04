@@ -38,6 +38,7 @@ from utils.metrics import (
     emit_active_connections,
     emit_message_delivery,
 )
+from utils.call_records import write_call_record
 
 
 def _make_json_serializable(obj):
@@ -164,7 +165,13 @@ async def _resolve_and_set_context(
         business_number,
         extra_context=extra_context,
     )
-    if not merged_context.get("success"):
+    if merged_context.get("success"):
+        logger.info(
+            "Business context resolved and stored for connection_id=%s businessNumber=%s",
+            connection_id,
+            business_number,
+        )
+    else:
         logger.warning("Failed to resolve business context: %s", merged_context.get("error"))
 
 
@@ -1206,9 +1213,37 @@ async def websocket_endpoint(websocket: WebSocket):
         # Clean up session
         if session:
             await deepgram_manager.close_session(connection_id)
+        duration_ms = (time.monotonic() - connection_start) * 1000
+        emit_call_duration("ws", duration_ms)
+        # Persist call record before clearing context
+        if config.settings.call_record_table:
+            ctx = get_connection_context_by_id(connection_id)
+            outcome = (
+                "forwarded" if ctx.get("callForwarded")
+                else "no_context" if not ctx.get("success")
+                else "completed"
+            )
+            await write_call_record(
+                connection_id=connection_id,
+                endpoint="ws",
+                duration_ms=duration_ms,
+                table_name=config.settings.call_record_table,
+                aws_region=config.settings.aws_region,
+                business_number=ctx.get("businessNumber"),
+                caller_number=ctx.get("caller"),
+                call_sid=ctx.get("callSid"),
+                provider=ctx.get("provider"),
+                merchant_id=ctx.get("merchantId"),
+                location_id=ctx.get("locationId"),
+                setmore_account_id=ctx.get("setmoreAccountId"),
+                outcome=outcome,
+                booking_created=bool(ctx.get("bookingCreated")),
+                customer_found=bool(ctx.get("customerFound")),
+                sms_booking_link_sent=bool(ctx.get("smsBookingLinkSent")),
+                forwarded_call=bool(ctx.get("callForwarded")),
+            )
         clear_connection_context_by_id(connection_id)
         _decrement_websocket_count(client_ip, "ws")
-        emit_call_duration("ws", (time.monotonic() - connection_start) * 1000)
         logger.info("Cleaned up connection: %s", connection_id)
 
 
@@ -1434,7 +1469,21 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                     )
                     if custom_params:
                         logger.info("Twilio custom parameters: %s", json.dumps(custom_params, default=str))
-                    normalized_number = normalize_phone_number(to_number)
+                    if to_number is None:
+                        start_keys = list((data.get("start") or {}).keys())
+                        logger.warning(
+                            "Twilio start: no To/Called in payload (business number unknown). "
+                            "Pass <Parameter name=\"To\" value=\"+1...\"/> and <Parameter name=\"From\" value=\"+1...\"/> in TwiML <Stream>. "
+                            "Payload top-level keys=%s start keys=%s",
+                            list(data.keys()),
+                            start_keys,
+                        )
+                    normalized_number = normalize_phone_number(to_number) if to_number else None
+                    if to_number and not normalized_number:
+                        logger.warning(
+                            "Twilio start: to_number not valid for normalization (use E.164 e.g. +1XXXXXXXXXX): %r",
+                            to_number,
+                        )
                     if normalized_number:
                         extra_context = {
                             "called": to_number,
@@ -1456,6 +1505,11 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                             connection_id,
                             normalized_number,
                             extra_context=extra_context,
+                        )
+                        logger.info(
+                            "Twilio business context resolve requested for connectionId=%s businessNumber=%s",
+                            connection_id,
+                            normalized_number,
                         )
                     else:
                         logger.info("No Twilio business number available for %s", connection_id)
@@ -1561,9 +1615,37 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
         # Clean up session
         if session_ref["value"]:
             await deepgram_manager.close_session(connection_id)
+        duration_ms = (time.monotonic() - connection_start) * 1000
+        emit_call_duration("twilio_ws", duration_ms)
+        # Persist call record before clearing context
+        if config.settings.call_record_table:
+            ctx = get_connection_context_by_id(connection_id)
+            outcome = (
+                "forwarded" if ctx.get("callForwarded")
+                else "no_context" if not ctx.get("success")
+                else "completed"
+            )
+            await write_call_record(
+                connection_id=connection_id,
+                endpoint="twilio_ws",
+                duration_ms=duration_ms,
+                table_name=config.settings.call_record_table,
+                aws_region=config.settings.aws_region,
+                business_number=ctx.get("businessNumber"),
+                caller_number=ctx.get("caller"),
+                call_sid=ctx.get("callSid"),
+                provider=ctx.get("provider"),
+                merchant_id=ctx.get("merchantId"),
+                location_id=ctx.get("locationId"),
+                setmore_account_id=ctx.get("setmoreAccountId"),
+                outcome=outcome,
+                booking_created=bool(ctx.get("bookingCreated")),
+                customer_found=bool(ctx.get("customerFound")),
+                sms_booking_link_sent=bool(ctx.get("smsBookingLinkSent")),
+                forwarded_call=bool(ctx.get("callForwarded")),
+            )
         clear_connection_context_by_id(connection_id)
         _decrement_websocket_count(client_ip, "twilio_ws")
-        emit_call_duration("twilio_ws", (time.monotonic() - connection_start) * 1000)
         logger.info("Cleaned up Twilio connection: %s", connection_id)
 
 

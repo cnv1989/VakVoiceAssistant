@@ -37,6 +37,8 @@ async def find_customer(params):
         first_name=first_name,
         connection_id=connection_id,
     )
+    if connection_id and result.get("success") and result.get("customer"):
+        update_connection_context(connection_id, {"customerFound": True})
     return result
 
 
@@ -127,6 +129,7 @@ async def lookup_or_create_customer_using_caller(params):
                 "customer": customer,
                 "new_customer": False,
                 "customer_lookup_source": "caller_phone",
+                "customerFound": True,
             },
         )
         return {"success": True, "customer": customer, "new_customer": False}
@@ -153,6 +156,7 @@ async def lookup_or_create_customer_using_caller(params):
                 "customer": customer,
                 "new_customer": True,
                 "customer_lookup_source": "caller_phone",
+                "customerFound": True,
             },
         )
         return {"success": True, "customer": customer, "new_customer": True}
@@ -182,6 +186,11 @@ async def create_appointment(params):
         customer_id=customer_id,
         staff_id=staff_id,
     )
+    if connection_id and result.get("success"):
+        updates: dict = {"bookingCreated": True}
+        if result.get("booking_link_sent"):
+            updates["smsBookingLinkSent"] = True
+        update_connection_context(connection_id, updates)
     return result
 
 
@@ -317,6 +326,18 @@ async def transfer_to_staff(params):
     logger.debug("agent_functions.transfer_to_staff called (keys=%s)", list(params.keys()))
     connection_id = params.get("connection_id")
     result = await forward_call_to_location(connection_id)
+    if connection_id and result.get("success"):
+        update_connection_context(connection_id, {"callForwarded": True})
+    return result
+
+
+async def talk_to_owner(params):
+    """Transfer the caller to speak with the business owner/manager."""
+    logger.debug("agent_functions.talk_to_owner called (keys=%s)", list(params.keys()))
+    connection_id = params.get("connection_id")
+    result = await forward_call_to_location(connection_id)
+    if connection_id and result.get("success"):
+        update_connection_context(connection_id, {"callForwarded": True})
     return result
 
 
@@ -697,6 +718,21 @@ FUNCTION_DEFINITIONS = [
         },
     },
     {
+        "name": "talk_to_owner",
+        "description": """Transfer the caller to speak with the business owner or manager. Use this when:
+        - Customer explicitly asks for owner, manager, or human
+        - Customer is escalating an issue
+        - Customer says "let me talk to someone"
+        - Customer expresses frustration and wants to speak to a person
+        - Customer says "I want to speak to a real person"
+        The call will be forwarded to the configured forwarding number.""",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
         "name": "get_store_hours",
         "description": """Get store operating hours. Use this when customers ask:
         - "What time do you open/close?"
@@ -760,6 +796,7 @@ FUNCTION_MAP = {
     "check_availability": check_availability,
     "end_call": end_call,
     "transfer_to_staff": transfer_to_staff,
+    "talk_to_owner": talk_to_owner,
     "get_store_hours": get_store_hours,
     "get_store_location": get_store_location,
     "get_services": get_services,
