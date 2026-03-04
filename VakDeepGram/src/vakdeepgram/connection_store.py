@@ -756,6 +756,80 @@ def _normalize_setmore_staff(staffs: Optional[list[Dict[str, Any]]]) -> list[Dic
     return normalized
 
 
+def _extract_setmore_customer_candidates(appointment: Dict[str, Any]) -> list[Dict[str, Any]]:
+    """Extract customer dict candidates from a Setmore appointment payload."""
+    candidates: list[Dict[str, Any]] = []
+
+    def _add(candidate: Any) -> None:
+        if isinstance(candidate, dict) and candidate:
+            candidates.append(candidate)
+
+    _add(appointment.get("customer"))
+    _add(appointment.get("customer_details"))
+    _add(appointment.get("customerDetails"))
+    _add(appointment.get("customer_detail"))
+    _add(appointment.get("customerDetail"))
+
+    # Some payloads flatten customer fields into the appointment object.
+    flattened = {
+        "key": appointment.get("customer_key") or appointment.get("customerKey"),
+        "first_name": appointment.get("customer_first_name") or appointment.get("customerFirstName"),
+        "last_name": appointment.get("customer_last_name") or appointment.get("customerLastName"),
+        "cell_phone": appointment.get("customer_cell_phone") or appointment.get("customerCellPhone"),
+        "country_code": appointment.get("customer_country_code") or appointment.get("customerCountryCode"),
+        "email": appointment.get("customer_email") or appointment.get("customerEmail"),
+    }
+    if any(flattened.values()):
+        candidates.append({k: v for k, v in flattened.items() if v is not None})
+
+    return candidates
+
+
+def _setmore_customer_phone_digits(customer: Dict[str, Any]) -> set[str]:
+    """Collect normalized phone-digit variants for a Setmore customer object."""
+    phone_candidates: list[str] = []
+    for key in ("cell_phone", "cellPhone", "phone", "phone_number", "phoneNumber", "customer_phone"):
+        value = customer.get(key)
+        if isinstance(value, str) and value.strip():
+            phone_candidates.append(value.strip())
+
+    country_code = customer.get("country_code") or customer.get("countryCode")
+    cell_phone = customer.get("cell_phone") or customer.get("cellPhone")
+    if isinstance(country_code, str) and isinstance(cell_phone, str) and cell_phone.strip():
+        merged = f"{country_code}{cell_phone}".replace(" ", "")
+        if merged:
+            phone_candidates.append(merged)
+
+    digit_variants: set[str] = set()
+    for raw in phone_candidates:
+        normalized = normalize_phone_number(raw) or raw
+        digit_variants.update(_phone_digit_variants(normalized))
+    return digit_variants
+
+
+def _find_setmore_customer_by_caller(
+    appointments: list[Dict[str, Any]],
+    caller_number: str,
+) -> Optional[Dict[str, Any]]:
+    """Find a Setmore customer in appointment payloads by matching caller phone digits."""
+    caller_digits = _phone_digit_variants(caller_number)
+    if not caller_digits:
+        return None
+
+    # Iterate from latest to earliest; Setmore typically returns chronological results.
+    for appointment in reversed(appointments or []):
+        for candidate in _extract_setmore_customer_candidates(appointment):
+            candidate_digits = _setmore_customer_phone_digits(candidate)
+            if candidate_digits and caller_digits.intersection(candidate_digits):
+                # Ensure customer key is present when available in appointment.
+                if not candidate.get("key"):
+                    appt_customer_key = appointment.get("customer_key") or appointment.get("customerKey")
+                    if appt_customer_key:
+                        candidate = {**candidate, "key": appt_customer_key}
+                return candidate
+    return None
+
+
 _SETMORE_DAY_ORDER = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
 _SETMORE_DAY_LABELS = {
     "MON": "Monday",
@@ -930,6 +1004,44 @@ async def _fetch_square_staff(access_token: str, location_id: str) -> Dict[str, 
     return {"success": True, "team_members": team_members}
 
 
+
+
+async def _fetch_voice_config(business_number: str) -> Optional[Dict[str, Any]]:
+    """Fetch voice config from BusinessNumber table by phone number.
+
+    This is the primary source for per-number voice selection and works for
+    both Square and Setmore accounts.
+    """
+    if not business_number:
+        return None
+    logger.info("connection_store._fetch_voice_config called (business_number=%s)", business_number)
+    try:
+        session = aioboto3.Session()
+        async with session.resource("dynamodb", region_name=config.settings.aws_region) as dynamodb:
+            table = dynamodb.Table(config.settings.business_number_table)
+            if asyncio.iscoroutine(table):
+                table = await table
+            response = await table.get_item(Key={"phoneNumber": business_number})
+            item = response.get("Item")
+            if item and item.get("voiceType"):
+                voice_config = {
+                    "voiceType": item.get("voiceType"),
+                    "voiceProvider": item.get("voiceProvider"),
+                    "voiceId": item.get("voiceId"),
+                    "voiceModelId": item.get("voiceModelId"),
+                }
+                logger.info(
+                    "Found voice config for %s (voice_type=%s provider=%s)",
+                    business_number,
+                    voice_config.get("voiceType"),
+                    voice_config.get("voiceProvider"),
+                )
+                return voice_config
+            logger.debug("No voice config set for %s, using defaults", business_number)
+            return None
+    except Exception as exc:
+        logger.warning("Failed to fetch voice config for %s: %s", business_number, exc)
+        return None
 
 
 async def _fetch_square_customers(access_token: str) -> Dict[str, Any]:
@@ -1163,6 +1275,7 @@ async def resolve_business_context(
                 account_id,
                 account_user_id,
             )
+            voice_config_limited = await _fetch_voice_config(matched_number)
             result = {
                 "success": True,
                 "provider": "setmore",
@@ -1183,14 +1296,25 @@ async def resolve_business_context(
                 "setmore_appointments": [],
                 "booking_page_url": booking_page_url,
                 "setmore_api_ready": False,
+                "voiceConfig": voice_config_limited,
             }
             _emit("setmore", True)
             return to_snake_case(result)
 
-        # Fetch services, categories, staff, and appointments in parallel
+        # Fetch services, categories, staff, and appointments in parallel.
+        # For caller-based customer auto-match, include recent appointment history.
         now = datetime.now(timezone.utc)
-        appt_start = now.strftime("%d-%m-%Y")
+        caller_lookup_history_days = 180 if caller_number else 0
+        appt_start_dt = now - timedelta(days=caller_lookup_history_days)
+        appt_start = appt_start_dt.strftime("%d-%m-%Y")
         appt_end = (now + timedelta(days=prefetch_availability_days)).strftime("%d-%m-%Y")
+        if caller_lookup_history_days:
+            logger.info(
+                "Including %d days of appointment history for Setmore caller auto-match (start=%s end=%s)",
+                caller_lookup_history_days,
+                appt_start,
+                appt_end,
+            )
 
         services_task = setmore_api.fetch_services(access_token, refresh_token=refresh_token)
         categories_task = setmore_api.fetch_service_categories(access_token, refresh_token=refresh_token)
@@ -1241,6 +1365,23 @@ async def resolve_business_context(
         if not appointments_result.get("success"):
             logger.warning("Setmore appointments lookup failed: %s", appointments_result.get("error"))
 
+        customer = None
+        if caller_number:
+            normalized_caller = normalize_phone_number(caller_number) or caller_number
+            customer = _find_setmore_customer_by_caller(appointments_raw, normalized_caller)
+            if customer:
+                logger.info(
+                    "Matched Setmore customer from caller number for %s (customer_key=%s)",
+                    matched_number,
+                    customer.get("key"),
+                )
+            else:
+                logger.info(
+                    "No Setmore customer matched caller %s in prefetched appointments",
+                    normalized_caller,
+                )
+
+        setmore_voice_config = await _fetch_voice_config(matched_number)
         result = {
             "success": True,
             "provider": "setmore",
@@ -1255,11 +1396,12 @@ async def resolve_business_context(
             "services": services,
             "staff": staff,
             "appointments": appointments_raw,
-            "customer": None,
+            "customer": customer,
             "setmore_services": services_raw,
             "setmore_staff": staff_raw,
             "setmore_appointments": appointments_raw,
             "booking_page_url": booking_page_url,
+            "voiceConfig": setmore_voice_config,
         }
         _emit("setmore", True)
         return to_snake_case(result)
@@ -1333,6 +1475,9 @@ async def resolve_business_context(
             staff_result.get("error"),
         )
 
+    # Fetch voice config from BusinessNumber (works for all providers)
+    voice_config = await _fetch_voice_config(matched_number)
+
     customer = None
     if caller_number:
         normalized_caller = normalize_phone_number(caller_number) or caller_number
@@ -1374,6 +1519,7 @@ async def resolve_business_context(
         "services": services,
         "staff": staff,
         "customer": customer,
+        "voiceConfig": voice_config,
     }
     _emit("square", True)
     return to_snake_case(result)

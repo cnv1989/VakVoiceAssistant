@@ -71,6 +71,8 @@ class Settings(BaseSettings):
 
     # Business Automations Configuration (for voice settings)
     business_automations_table: str = "BusinessAutomations-pxy5meaaojbaxjwedt6v6oidw4-NONE"
+    # BusinessNumber table — primary source for per-number voice config
+    business_number_table: str = "BusinessNumber-pxy5meaaojbaxjwedt6v6oidw4-NONE"
 
     # Call Analytics - DynamoDB table for per-call records written by VakDeepGram
     call_record_table: Optional[str] = None  # e.g. "CallRecord-<env_id>-NONE"

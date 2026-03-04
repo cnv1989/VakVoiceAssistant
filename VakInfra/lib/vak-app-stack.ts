@@ -212,6 +212,7 @@ export class VakAppStack extends cdk.Stack {
         DEEPGRAM_SPEAKING_PROVIDER: 'eleven_labs',
         DEEPGRAM_SPEAKING_MODEL_ID: 'eleven_multilingual_v2',
         DEEPGRAM_SPEAKING_VOICE_ID: 'cgSgspJ2msm6clMCkdW9',
+        BUSINESS_NUMBER_TABLE: 'BusinessNumber-pxy5meaaojbaxjwedt6v6oidw4-NONE',
         DEEPGRAM_INPUT_SAMPLE_RATE: '48000',
         DEEPGRAM_OUTPUT_SAMPLE_RATE: '24000',
         // Twilio configuration (Account SID is not sensitive, only Auth Token is)
