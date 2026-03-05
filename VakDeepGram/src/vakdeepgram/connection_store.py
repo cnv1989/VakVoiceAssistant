@@ -1006,15 +1006,14 @@ async def _fetch_square_staff(access_token: str, location_id: str) -> Dict[str, 
 
 
 
-async def _fetch_voice_config(business_number: str) -> Optional[Dict[str, Any]]:
-    """Fetch voice config from BusinessNumber table by phone number.
+async def _fetch_voice_config_from_business_number(business_number: str) -> Optional[Dict[str, Any]]:
+    """Fetch voice config from BusinessNumber DynamoDB table by phone number.
 
-    This is the primary source for per-number voice selection and works for
-    both Square and Setmore accounts.
+    Primary source for voice selection — works for both Square and Setmore.
+    Returns None if the record has no voiceType set yet.
     """
     if not business_number:
         return None
-    logger.info("connection_store._fetch_voice_config called (business_number=%s)", business_number)
     try:
         session = aioboto3.Session()
         async with session.resource("dynamodb", region_name=config.settings.aws_region) as dynamodb:
@@ -1031,17 +1030,72 @@ async def _fetch_voice_config(business_number: str) -> Optional[Dict[str, Any]]:
                     "voiceModelId": item.get("voiceModelId"),
                 }
                 logger.info(
-                    "Found voice config for %s (voice_type=%s provider=%s)",
+                    "Voice config from BusinessNumber for %s: voice_type=%s provider=%s",
                     business_number,
                     voice_config.get("voiceType"),
                     voice_config.get("voiceProvider"),
                 )
                 return voice_config
-            logger.debug("No voice config set for %s, using defaults", business_number)
             return None
     except Exception as exc:
-        logger.warning("Failed to fetch voice config for %s: %s", business_number, exc)
+        logger.warning("Failed to fetch voice config from BusinessNumber for %s: %s", business_number, exc)
         return None
+
+
+async def _fetch_voice_config_from_automations(merchant_id: str, location_id: str) -> Optional[Dict[str, Any]]:
+    """Fallback: fetch voice config from BusinessAutomations table (Square only)."""
+    try:
+        session = aioboto3.Session()
+        async with session.resource("dynamodb", region_name=config.settings.aws_region) as dynamodb:
+            table = dynamodb.Table(config.settings.business_automations_table)
+            if asyncio.iscoroutine(table):
+                table = await table
+            response = await table.get_item(
+                Key={"merchantId": merchant_id, "locationId": location_id}
+            )
+            item = response.get("Item")
+            if item and item.get("voiceAiConfig"):
+                voice_config = item.get("voiceAiConfig")
+                logger.info(
+                    "Voice config from BusinessAutomations for merchantId=%s locationId=%s: voice_type=%s",
+                    merchant_id,
+                    location_id,
+                    voice_config.get("voiceType"),
+                )
+                return voice_config
+            return None
+    except Exception as exc:
+        logger.warning(
+            "Failed to fetch voice config from BusinessAutomations for %s/%s: %s",
+            merchant_id, location_id, exc,
+        )
+        return None
+
+
+async def _fetch_voice_config(
+    business_number: str,
+    merchant_id: Optional[str] = None,
+    location_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Fetch voice config for a business number.
+
+    Checks BusinessNumber first (works for all providers). Falls back to
+    BusinessAutomations for Square when merchant_id and location_id are provided.
+    """
+    logger.info("_fetch_voice_config: business_number=%s", business_number)
+    voice_config = await _fetch_voice_config_from_business_number(business_number)
+    if voice_config:
+        return voice_config
+
+    # Fallback: read from BusinessAutomations (Square only, legacy source)
+    if merchant_id and location_id:
+        logger.debug(
+            "_fetch_voice_config: falling back to BusinessAutomations for %s/%s",
+            merchant_id, location_id,
+        )
+        return await _fetch_voice_config_from_automations(merchant_id, location_id)
+
+    return None
 
 
 async def _fetch_square_customers(access_token: str) -> Dict[str, Any]:
@@ -1475,8 +1529,8 @@ async def resolve_business_context(
             staff_result.get("error"),
         )
 
-    # Fetch voice config from BusinessNumber (works for all providers)
-    voice_config = await _fetch_voice_config(matched_number)
+    # Fetch voice config: BusinessNumber first, fallback to BusinessAutomations
+    voice_config = await _fetch_voice_config(matched_number, merchant_id, location_id)
 
     customer = None
     if caller_number:
