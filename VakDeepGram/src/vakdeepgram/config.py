@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     twilio_account_sid: Optional[str] = None  # Required for sending SMS via Twilio API
     twilio_auth_token: Optional[str] = None  # Required for signature verification and sending SMS
     twilio_signature_verification_enabled: bool = True  # Set to False to skip verification
+    twilio_from_number: Optional[str] = None  # Override from-number for outbound SMS (defaults to business number)
 
     # Application Environment
     environment: Environment = Environment.DEVELOPMENT
@@ -71,11 +72,9 @@ class Settings(BaseSettings):
 
     # Business Automations Configuration (for voice settings)
     business_automations_table: str = "BusinessAutomations-pxy5meaaojbaxjwedt6v6oidw4-NONE"
-    # BusinessNumber table — primary source for per-number voice config
-    business_number_table: str = "BusinessNumber-pxy5meaaojbaxjwedt6v6oidw4-NONE"
 
     # Call Analytics - DynamoDB table for per-call records written by VakDeepGram
-    call_record_table: Optional[str] = None  # e.g. "CallRecord-<env_id>-NONE"
+    call_record_table: str = "CallRecord-pxy5meaaojbaxjwedt6v6oidw4-NONE"
 
     bedrock_model_id: str = "us.anthropic.claude-opus-4-6-v1"
     bedrock_max_tokens: int = 8192  # Maximum tokens for Claude models - increased for tool usage
@@ -97,13 +96,13 @@ class Settings(BaseSettings):
     deepgram_listening_model: str = "flux-general-en"
     deepgram_listening_version: str = "v2"
     deepgram_thinking_provider: str = "google"
-    deepgram_thinking_model: str = "gemini-2.5-flash"
+    deepgram_thinking_model: str = "gemini-2.5-flash-preview-04-17"
     
     # Speaking/TTS Configuration
     # Set to "eleven_labs" to use ElevenLabs, "deepgram" (or empty) for Deepgram TTS
     deepgram_speaking_provider: str = "eleven_labs"
     deepgram_speaking_model: Optional[str] = None  # Used for Deepgram TTS
-    deepgram_speaking_model_id: Optional[str] = "eleven_multilingual_v2"  # Used for ElevenLabs
+    deepgram_speaking_model_id: Optional[str] = "eleven_flash_v2_5"  # Used for ElevenLabs (low latency)
     deepgram_speaking_voice_id: Optional[str] = "cgSgspJ2msm6clMCkdW9"  # Used for ElevenLabs
     
     deepgram_input_sample_rate: int = 48000
@@ -145,6 +144,7 @@ You are a grooming studio assistant focused on barbers (most important), beautic
 -If transfer is unavailable (missing phone or after-hours), apologize and offer to take a message or help with scheduling.
 -If Square tool calls fail, apologize and offer to transfer the call to the main store line.
 -If booking fails two or more times, apologize and offer to transfer the call to the main store line.
+-When the customer says goodbye or signals they are done (e.g., "bye", "thanks, bye", "that's all"), always say a warm farewell out loud (e.g., "Goodbye!", "Take care!", "Have a great day!", "See you next time!") before calling end_call. Never end the call silently.
 
 #Tool Usage
 -Before calling any tool, use a brief transition phrase when it feels natural.

@@ -164,6 +164,40 @@ Open `test_client.html` in your browser. This provides full audio recording and 
 
 ## API Endpoints
 
+### Endpoint Overview
+
+| Endpoint | Protocol | Auth | Purpose |
+|----------|----------|------|---------|
+| `GET /` | HTTP | None | Health / version |
+| `GET /health` | HTTP | None | Health check |
+| `POST /chat` | HTTP | API key | Text chat |
+| `POST /chat/oauth` | HTTP | Cognito JWT | Text chat (Integrin) |
+| `POST /voice/oauth/connect` | HTTP | Cognito JWT | Get WebSocket URL for browser voice |
+| `POST /twilio-chat` | HTTP | Twilio signature | Inbound SMS webhook |
+| `POST /twilio/twiml` | HTTP | Twilio signature | Inbound voice call → returns `<Connect><Stream>` TwiML |
+| `WebSocket /ws` | WS | Cognito JWT | Browser voice (Integrin voice tester) |
+| `WebSocket /twilio` | WS | Twilio signature | Twilio Media Streams (phone calls) |
+
+### Multi-Tenant SMS & Voice Routing
+
+Each business (Integrin customer) has a dedicated Twilio phone number stored in the `BusinessNumber` DynamoDB table. Both inbound SMS and inbound voice calls are routed to the correct business's AI agent based on the `To` number:
+
+```
+Inbound SMS:   Twilio → POST /twilio-chat  {To, From, Body}
+                         └─ lookup BusinessNumber by To
+                         └─ resolve Square/Setmore context
+                         └─ AI agent (Strands) → reply SMS
+
+Inbound Voice: Twilio → POST /twilio/twiml  {To, From, ...}
+                         └─ return <Connect><Stream url="wss://.../twilio?phone={To}"/>
+               Twilio → WSS /twilio
+                         └─ start event: customParameters.businessNumber
+                         └─ resolve Square/Setmore context
+                         └─ Deepgram Voice Agent answers
+```
+
+See [`docs/SMS_MULTI_NUMBER_PLAN.md`](docs/SMS_MULTI_NUMBER_PLAN.md) for the full multi-number implementation plan.
+
 ### WebSocket: `/ws`
 
 Connect to this endpoint for real-time audio streaming.
