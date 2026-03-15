@@ -809,15 +809,21 @@ async def twilio_twiml(request: Request):
     ws_scheme = "wss" if forwarded_proto == "https" else "ws"
     stream_url = f"{ws_scheme}://{forwarded_host}/twilio"
 
+    logger.info("twilio_twiml: proto=%s host=%s stream_url=%s", forwarded_proto, forwarded_host, stream_url)
+
     # Parse Twilio POST body for call metadata
     form = await request.form()
     to_number = form.get("To", "")
     from_number = form.get("From", "")
     call_sid = form.get("CallSid", "")
+    call_status = form.get("CallStatus", "")
     env = config.settings.environment
     call_type = "DEV" if env == "development" else ("STAGING" if env == "staging" else "PROD")
 
-    logger.info("twilio_twiml: connecting call to %s (from=%s to=%s sid=%s)", stream_url, from_number, to_number, call_sid)
+    logger.info(
+        "twilio_twiml: inbound call — from=%s to=%s sid=%s status=%s env=%s call_type=%s",
+        from_number, to_number, call_sid, call_status, env, call_type,
+    )
 
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -832,6 +838,8 @@ async def twilio_twiml(request: Request):
     </Stream>
   </Connect>
 </Response>"""
+
+    logger.info("twilio_twiml: returning TwiML:\n%s", twiml)
     return Response(content=twiml, media_type="application/xml")
 
 
