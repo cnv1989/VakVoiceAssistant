@@ -59,20 +59,12 @@ jobs:
             echo "ℹ️  PR #$EXISTING already open: alpha → beta"
           fi
 
-      # beta → prod: open PR (or note existing)
-      - name: Open PR beta → prod
+      # beta → prod: auto merge
+      - name: Promote beta → prod
         if: github.ref_name == 'beta'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          EXISTING=$(gh pr list --base prod --head beta --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
-          if [ -z "$EXISTING" ]; then
-            gh pr create \
-              --base prod \
-              --head beta \
-              --title "Promote beta → prod" \
-              --body "Automated promotion from beta. Review and merge to deploy to api.groommate.ai."
-            echo "✅ PR created: beta → prod"
-          else
-            echo "ℹ️  PR #$EXISTING already open: beta → prod"
-          fi
+          git fetch origin prod
+          git checkout prod
+          git merge --ff-only origin/beta
+          git push origin prod
+          echo "✅ Promoted beta → prod"
