@@ -789,6 +789,37 @@ def verify_twilio_http_signature(request: Request, body: bytes) -> bool:
         return False
 
 
+@app.post("/twilio/twiml")
+async def twilio_twiml(request: Request):
+    """TwiML webhook for inbound Twilio voice calls.
+
+    Twilio calls this endpoint when a call comes in. Returns TwiML that
+    connects the call to the /twilio WebSocket for media streaming.
+    """
+    body = await request.body()
+    if not verify_twilio_http_signature(request, body):
+        verification_enabled = config.settings.twilio_signature_verification_enabled
+        if verification_enabled:
+            logger.error("Rejecting /twilio/twiml request: invalid Twilio signature")
+            raise HTTPException(status_code=403, detail="Invalid Twilio signature")
+        logger.warning("Allowing /twilio/twiml request despite failed signature verification (non-production)")
+
+    forwarded_proto = request.headers.get("X-Forwarded-Proto", "https")
+    forwarded_host = request.headers.get("X-Forwarded-Host", request.headers.get("Host", ""))
+    ws_scheme = "wss" if forwarded_proto == "https" else "ws"
+    stream_url = f"{ws_scheme}://{forwarded_host}/twilio"
+
+    logger.info("twilio_twiml: connecting call to %s", stream_url)
+
+    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="{stream_url}"/>
+  </Connect>
+</Response>"""
+    return Response(content=twiml, media_type="application/xml")
+
+
 @app.post("/twilio-chat")
 @limiter.limit(lambda: f"{config.settings.rate_limit_per_minute}/minute")
 async def twilio_chat(request: Request):
