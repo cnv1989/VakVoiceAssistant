@@ -201,6 +201,28 @@ async def _resolve_and_set_context(
         logger.warning("Failed to resolve business context: %s", merged_context.get("error"))
 
 
+async def _say_and_end_twilio_call(
+    connection_id: str,
+    account_sid: Optional[str],
+    call_sid: Optional[str],
+    message: str = "We're sorry, something went wrong on our end. Please call back in a few minutes.",
+) -> None:
+    """Redirect the active Twilio call to a <Say> TwiML then hang up."""
+    if not account_sid or not call_sid:
+        logger.warning("_say_and_end_twilio_call: missing identifiers for %s", connection_id)
+        return
+    if not config.settings.twilio_auth_token:
+        logger.warning("_say_and_end_twilio_call: no auth token for %s", connection_id)
+        return
+    twiml = f'<Response><Say voice="Polly.Joanna">{message}</Say><Hangup/></Response>'
+    try:
+        client = TwilioClient(account_sid, config.settings.twilio_auth_token)
+        client.calls(call_sid).update(twiml=twiml)
+        logger.info("_say_and_end_twilio_call: fallback message played for %s (sid=%s)", connection_id, call_sid)
+    except Exception as exc:
+        logger.error("_say_and_end_twilio_call: failed for %s: %s", connection_id, exc, exc_info=True)
+
+
 async def _end_twilio_call(
     connection_id: str,
     account_sid: Optional[str],
@@ -1668,10 +1690,17 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                             session = await deepgram_manager.create_session(connection_id, use_mulaw=True)
                             session_ref["value"] = session
                             session.set_send_callback(send_to_deepgram_wrapper)
+
+                            async def _twilio_fatal_error_fallback(error_msg: str) -> None:
+                                logger.error("Fatal Deepgram error on Twilio call %s — playing fallback message", connection_id)
+                                await _say_and_end_twilio_call(connection_id, account_sid, call_sid)
+
+                            session.on_fatal_error = _twilio_fatal_error_fallback
                             session_ready.set()
                             logger.info(f"Deepgram session created and callback set for {connection_id}")
                         except Exception as e:
                             logger.error(f"Failed to create Deepgram session: {e}", exc_info=True)
+                            await _say_and_end_twilio_call(connection_id, account_sid, call_sid)
                             await websocket.close()
                             return
                 

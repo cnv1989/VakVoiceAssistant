@@ -46,6 +46,7 @@ class DeepgramSession:
         self.is_ready = False  # Track if settings have been applied and session is ready
         self.message_id: Optional[str] = None
         self.send_to_client: Optional[Callable] = None
+        self.on_fatal_error: Optional[Callable] = None  # Called on unrecoverable errors (e.g. Twilio fallback)
         self.audio_buffer: list = []  # Buffer audio until session is ready
         self.max_audio_buffer_size = config.settings.max_audio_buffer_size
         self.use_mulaw = use_mulaw  # Track if using mulaw encoding (for Twilio)
@@ -505,6 +506,9 @@ class DeepgramManager:
                     "type": "error",
                     "message": error_msg,
                 })
+                if session.on_fatal_error:
+                    logger.info("Triggering fatal error fallback for %s (code=%s)", session.connection_id, error_code)
+                    await session.on_fatal_error(error_msg)
         
         elif msg_type in ("FunctionCall", "FunctionCallRequest"):
             # Handle function call request from Deepgram
