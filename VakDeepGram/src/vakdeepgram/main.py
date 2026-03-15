@@ -809,12 +809,27 @@ async def twilio_twiml(request: Request):
     ws_scheme = "wss" if forwarded_proto == "https" else "ws"
     stream_url = f"{ws_scheme}://{forwarded_host}/twilio"
 
-    logger.info("twilio_twiml: connecting call to %s", stream_url)
+    # Parse Twilio POST body for call metadata
+    form = await request.form()
+    to_number = form.get("To", "")
+    from_number = form.get("From", "")
+    call_sid = form.get("CallSid", "")
+    env = config.settings.environment
+    call_type = "DEV" if env == "development" else ("STAGING" if env == "staging" else "PROD")
+
+    logger.info("twilio_twiml: connecting call to %s (from=%s to=%s sid=%s)", stream_url, from_number, to_number, call_sid)
 
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="{stream_url}"/>
+    <Stream url="{stream_url}">
+      <Parameter name="Called" value="{to_number}"/>
+      <Parameter name="Caller" value="{from_number}"/>
+      <Parameter name="CallSid" value="{call_sid}"/>
+      <Parameter name="CallType" value="{call_type}"/>
+      <Parameter name="Stage" value="CustomerQuery"/>
+      <Parameter name="Service" value="Groomers"/>
+    </Stream>
   </Connect>
 </Response>"""
     return Response(content=twiml, media_type="application/xml")
