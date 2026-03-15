@@ -1,10 +1,10 @@
 name: Promote
 
-# CI/CD promotion pipeline: main → alpha (auto) → beta (PR) → prod (PR)
+# CI/CD promotion pipeline: main → alpha → beta → prod (all auto)
 #
-# On every push to main: auto-merge into alpha so alpha always mirrors main.
-# On every push to alpha: open a PR alpha → beta (or note existing).
-# On every push to beta:  open a PR beta  → prod (requires manual approval).
+# On every push to main:  auto fast-forward into alpha, dispatch alpha deploy.
+# On every push to alpha: auto fast-forward into beta,  dispatch beta deploy.
+# On every push to beta:  auto fast-forward into prod,  dispatch prod deploy.
 #
 # Actual ECS + CDK deploys are handled by deploy-vakdeepgram.yml and
 # deploy-vak-infra.yml, which trigger on pushes to alpha/beta/prod/main.
@@ -46,23 +46,19 @@ jobs:
           gh workflow run deploy-vakdeepgram.yml --ref alpha --field stage=alpha
           echo "✅ Dispatched deploy for alpha"
 
-      # alpha → beta: open PR (or note existing)
-      - name: Open PR alpha → beta
+      # alpha → beta: auto fast-forward then dispatch deploy
+      - name: Promote alpha → beta
         if: github.ref_name == 'alpha'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          EXISTING=$(gh pr list --base beta --head alpha --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
-          if [ -z "$EXISTING" ]; then
-            gh pr create \
-              --base beta \
-              --head alpha \
-              --title "Promote alpha → beta" \
-              --body "Automated promotion from alpha. Review and merge to deploy to beta-api.groommate.ai."
-            echo "✅ PR created: alpha → beta"
-          else
-            echo "ℹ️  PR #$EXISTING already open: alpha → beta"
-          fi
+          git fetch origin beta
+          git checkout beta
+          git merge --ff-only origin/alpha
+          git push origin beta
+          echo "✅ Promoted alpha → beta"
+          gh workflow run deploy-vakdeepgram.yml --ref beta --field stage=beta
+          echo "✅ Dispatched deploy for beta"
 
       # beta → prod: auto merge then dispatch deploy
       - name: Promote beta → prod
