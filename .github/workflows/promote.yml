@@ -1,24 +1,22 @@
 name: Promote
 
-# CI/CD promotion pipeline: main → alpha → beta → prod (all auto)
+# CI/CD promotion pipeline: main → alpha → beta → prod (all auto, single job)
 #
-# On every push to main:  auto fast-forward into alpha, dispatch alpha deploy.
-# On every push to alpha: auto fast-forward into beta,  dispatch beta deploy.
-# On every push to beta:  auto fast-forward into prod,  dispatch prod deploy.
+# On every push to main: fast-forward alpha, beta, and prod in sequence
+# then dispatch ECS deploys for all three stages.
 #
-# Actual ECS + CDK deploys are handled by deploy-vakdeepgram.yml and
-# deploy-vak-infra.yml, which trigger on pushes to alpha/beta/prod/main.
+# Single job avoids GITHUB_TOKEN cascade limitation (bot pushes don't
+# re-trigger workflows, so we do the full chain here instead of chaining).
 
 on:
   push:
-    branches: [main, alpha, beta]
+    branches: [main]
 
 jobs:
   promote:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
       actions: write
     steps:
       - name: Checkout
@@ -32,44 +30,28 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      # main → alpha: fast-forward merge then dispatch deploy
-      - name: Promote main → alpha
-        if: github.ref_name == 'main'
+      - name: Promote main → alpha → beta → prod
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git fetch origin alpha
+          git fetch origin alpha beta prod
+
           git checkout alpha
           git merge --ff-only origin/main
           git push origin alpha
           echo "✅ Promoted main → alpha"
-          gh workflow run deploy-vakdeepgram.yml --ref alpha --field stage=alpha
-          echo "✅ Dispatched deploy for alpha"
 
-      # alpha → beta: auto fast-forward then dispatch deploy
-      - name: Promote alpha → beta
-        if: github.ref_name == 'alpha'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git fetch origin beta
           git checkout beta
           git merge --ff-only origin/alpha
           git push origin beta
           echo "✅ Promoted alpha → beta"
-          gh workflow run deploy-vakdeepgram.yml --ref beta --field stage=beta
-          echo "✅ Dispatched deploy for beta"
 
-      # beta → prod: auto merge then dispatch deploy
-      - name: Promote beta → prod
-        if: github.ref_name == 'beta'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git fetch origin prod
           git checkout prod
           git merge --ff-only origin/beta
           git push origin prod
           echo "✅ Promoted beta → prod"
-          gh workflow run deploy-vakdeepgram.yml --ref prod --field stage=prod
-          echo "✅ Dispatched deploy for prod"
+
+          gh workflow run deploy-vakdeepgram.yml --ref alpha --field stage=alpha
+          gh workflow run deploy-vakdeepgram.yml --ref beta  --field stage=beta
+          gh workflow run deploy-vakdeepgram.yml --ref prod  --field stage=prod
+          echo "✅ Dispatched deploys for alpha, beta, prod"
