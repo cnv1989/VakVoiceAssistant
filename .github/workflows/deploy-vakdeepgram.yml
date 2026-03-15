@@ -80,10 +80,16 @@ jobs:
           STAGE: ${{ steps.stage.outputs.stage }}
         run: |
           CLUSTER="vak-cluster-${STAGE}"
-          SERVICE_ARN=$(aws ecs list-services \
-            --cluster "$CLUSTER" \
-            --query 'serviceArns[0]' \
-            --output text 2>/dev/null || echo "")
+          # Retry up to 3 times to handle transient AWS API errors
+          for attempt in 1 2 3; do
+            SERVICE_ARN=$(aws ecs list-services \
+              --cluster "$CLUSTER" \
+              --query 'serviceArns[0]' \
+              --output text 2>/dev/null || echo "")
+            [ -n "$SERVICE_ARN" ] && [ "$SERVICE_ARN" != "None" ] && break
+            echo "Attempt $attempt: no service found, retrying in 5s..."
+            sleep 5
+          done
           if [ -z "$SERVICE_ARN" ] || [ "$SERVICE_ARN" = "None" ]; then
             echo "No ECS service found in cluster $CLUSTER — skipping force-deploy (stack may not be deployed yet)."
             echo "skip=true" >> "$GITHUB_OUTPUT"
