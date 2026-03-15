@@ -354,9 +354,11 @@ export class VakMonitoringStack extends cdk.Stack {
       period,
     });
 
+    const stage = appStack.stage;
+
     const alarmTopic = new sns.Topic(this, 'VakMonitoringAlarms', {
-      topicName: 'vak-monitoring-alarms',
-      displayName: 'Vak Monitoring Alarms',
+      topicName: `vak-monitoring-alarms-${stage}`,
+      displayName: `Vak Monitoring Alarms (${stage})`,
     });
 
     alarmTopic.addSubscription(
@@ -511,8 +513,10 @@ export class VakMonitoringStack extends cdk.Stack {
     });
     ddbThrottleAlarm.addAlarmAction(alarmAction);
 
+    const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
     const serviceDashboard = new cloudwatch.Dashboard(this, 'VakDeepGramDashboard', {
-      dashboardName: 'VakDeepGram-Service',
+      dashboardName: `VakDeepGram-Service-${cap(stage)}`,
     });
 
     serviceDashboard.addWidgets(
@@ -634,7 +638,7 @@ export class VakMonitoringStack extends cdk.Stack {
     );
 
     const infraDashboard = new cloudwatch.Dashboard(this, 'VakInfraDashboard', {
-      dashboardName: 'VakInfra-Core',
+      dashboardName: `VakInfra-Core-${cap(stage)}`,
     });
 
     const albConnections = alb.metrics.activeConnectionCount({ period });
@@ -702,7 +706,8 @@ export class VakMonitoringStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, 'VakAlarmTopicArn', {
       value: alarmTopic.topicArn,
-      description: 'SNS topic ARN for Vak monitoring alarms.',
+      description: `SNS topic ARN for Vak monitoring alarms (${stage}).`,
+      exportName: `VakAlarmTopicArn-${stage.charAt(0).toUpperCase() + stage.slice(1)}`,
     });
   }
 }

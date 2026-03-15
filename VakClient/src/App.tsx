@@ -36,6 +36,15 @@ const STATUS_META: Record<MessagePair['status'], { icon: string; label: string; 
 
 type EndpointType = 'local' | 'alb';
 
+/** Voice options for Deepgram Aura (backend applies via voiceConfigOverride). */
+const VOICE_OPTIONS: { value: string; label: string; provider: string }[] = [
+  { value: '', label: 'Default (server)', provider: 'deepgram' },
+  { value: 'aura-2-thalia-en', label: 'Thalia (female)', provider: 'deepgram' },
+  { value: 'aura-2-odysseus-en', label: 'Odysseus (male)', provider: 'deepgram' },
+  { value: 'aura-2-stella-en', label: 'Stella (female)', provider: 'deepgram' },
+  { value: 'aura-2-zeus-en', label: 'Zeus (male)', provider: 'deepgram' },
+];
+
 function App() {
   // Default to Deepgram server WebSocket for local development
   // For ALB, use: wss://vak.tutzi.ai/ws
@@ -48,6 +57,7 @@ function App() {
   const [systemMessages, setSystemMessages] = useState<SystemMessageEntry[]>([]);
   const [businessNumber, setBusinessNumber] = useState('+15104054454');
   const [customerPhone, setCustomerPhone] = useState('');
+  const [selectedVoiceId, setSelectedVoiceId] = useState<string>(''); // '' = use server default; else e.g. aura-2-thalia-en
   const [isRecording, setIsRecording] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<string>('Disconnected');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -147,13 +157,27 @@ function App() {
           url.searchParams.set('customerPhone', customerPhone.trim());
           console.log('📞 Using customerPhone:', customerPhone.trim());
         }
+        if (selectedVoiceId.trim()) {
+          const payload = {
+            voiceType: selectedVoiceId.split('-').slice(-2, -1)[0] || selectedVoiceId,
+            voiceProvider: 'deepgram',
+            voiceId: selectedVoiceId.trim(),
+          };
+          const json = JSON.stringify(payload);
+          const b64 = btoa(unescape(encodeURIComponent(json)))
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=+$/, '');
+          url.searchParams.set('voiceConfigOverride', b64);
+          console.log('🔊 Using voice override:', selectedVoiceId.trim());
+        }
         url.protocol = scheme;
         return url.toString();
     } catch (error) {
       console.error('Invalid WebSocket URL:', error);
       return baseUrl;
     }
-  }, [businessNumber, customerPhone]);
+  }, [businessNumber, customerPhone, selectedVoiceId]);
 
   const connectWebSocket = async () => {
     if (!wsUrl) {
@@ -1499,6 +1523,40 @@ function App() {
               }}
             />
           </div>
+          <div style={{ marginTop: '12px' }}>
+            <label style={{ 
+              display: 'block', 
+              fontSize: '14px', 
+              fontWeight: '500', 
+              color: '#374151',
+              marginBottom: '5px'
+            }}>
+              Voice:
+            </label>
+            <select
+              value={selectedVoiceId}
+              onChange={(e) => setSelectedVoiceId(e.target.value)}
+              disabled={connected}
+              style={{
+                width: '100%',
+                padding: '10px',
+                fontSize: '14px',
+                borderRadius: '6px',
+                border: '1px solid #d1d5db',
+                backgroundColor: connected ? '#f3f4f6' : '#ffffff',
+                cursor: connected ? 'not-allowed' : 'pointer'
+              }}
+            >
+              {VOICE_OPTIONS.map((opt) => (
+                <option key={opt.value || 'default'} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <span style={{ fontSize: '12px', color: '#6b7280', marginTop: '4px', display: 'block' }}>
+              Applied when connecting (voice switching via voiceConfigOverride).
+            </span>
+          </div>
           <div className="status">
             Status:{' '}
             <span className={connected ? 'status-connected' : 'status-disconnected'}>
@@ -1509,7 +1567,6 @@ function App() {
                 : '🔴 Disconnected'}
             </span>
           </div>
-          {/* TTS Engine selection removed - Deepgram Voice Agents handles TTS automatically */}
         </div>
 
         <div className="conversation-section">

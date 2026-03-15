@@ -11,7 +11,7 @@ from square import AsyncSquare
 from square.core.api_error import ApiError as SquareApiError
 
 from vakdeepgram import config
-from vakdeepgram.repositories import get_connection_context_by_id
+from vakdeepgram.repositories import get_connection_context_by_id, update_connection_context_by_id
 from vakdeepgram.services import resolve_auth_for_connection
 from utils.phone import normalize_phone_number
 from utils import booking_helpers
@@ -142,6 +142,7 @@ def send_booking_link_sms(
     service_key: Optional[str] = None,
     staff_key: Optional[str] = None,
     customer_key: Optional[str] = None,
+    connection_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Send an SMS with a prefilled Setmore booking link.
 
@@ -197,6 +198,9 @@ def send_booking_link_sms(
             prefilled_url,
         )
         emit_message_delivery("sms", True)
+        if connection_id:
+            ctx = get_connection_context_by_id(connection_id) or {}
+            update_connection_context_by_id(connection_id, {"smsSentCount": (ctx.get("smsSentCount") or ctx.get("sms_sent_count") or 0) + 1})
         return {
             "success": True,
             "sms_sid": sms_message.sid,
@@ -220,6 +224,7 @@ def send_booking_link_whatsapp(
     service_key: Optional[str] = None,
     staff_key: Optional[str] = None,
     customer_key: Optional[str] = None,
+    connection_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Send a WhatsApp message with a prefilled Setmore booking link via Twilio.
 
@@ -290,6 +295,9 @@ def send_booking_link_whatsapp(
             prefilled_url,
         )
         emit_message_delivery("whatsapp", True)
+        if connection_id:
+            ctx = get_connection_context_by_id(connection_id) or {}
+            update_connection_context_by_id(connection_id, {"whatsappSentCount": (ctx.get("whatsappSentCount") or ctx.get("whatsapp_sent_count") or 0) + 1})
         return {
             "success": True,
             "message_sid": wa_message.sid,
@@ -1302,6 +1310,7 @@ async def schedule_appointment_with_contact(
                         service_key=service_key,
                         staff_key=resolved_staff_id,
                         customer_key=resolved_customer_id,
+                        connection_id=connection_id,
                     )
                     if wa_result.get("success"):
                         msg_sent = True
@@ -1312,7 +1321,7 @@ async def schedule_appointment_with_contact(
                     logger.warning("schedule_appointment_with_contact (setmore): WhatsApp exception: %s", exc)
             if not msg_sent and from_number:
                 sms_result = send_booking_link_sms(
-                    from_number=from_number,
+                    from_number=config.settings.twilio_from_number or from_number,
                     to_number=to_number,
                     booking_page_url=booking_page_url or "",
                     service_name=service_name,
@@ -1322,6 +1331,7 @@ async def schedule_appointment_with_contact(
                     service_key=service_key,
                     staff_key=resolved_staff_id,
                     customer_key=resolved_customer_id,
+                    connection_id=connection_id,
                 )
                 msg_sent = sms_result.get("success", False)
                 if msg_sent:
@@ -1661,7 +1671,12 @@ async def update_appointment(
 
 
 async def forward_call_to_location(connection_id: Optional[str]) -> Dict[str, Any]:
-    """Forward the active call to the business location phone number."""
+    """Forward the active call to the business forwarding number or location phone.
+
+    Priority for forwarding number:
+    1. voiceConfig.forwardingNumber (configured in business settings)
+    2. location.phone_number (fallback)
+    """
     logger.info("business_logic.forward_call_to_location called (connection_id=%s)", connection_id)
     if not connection_id:
         emit_forward_call_metrics(False)
@@ -1674,15 +1689,28 @@ async def forward_call_to_location(connection_id: Optional[str]) -> Dict[str, An
     account_sid = context.get("accountSid")
     call_sid = context.get("callSid")
     location = context.get("location") or {}
-    location_phone = location.get("phone_number")
+    voice_config = context.get("voice_config") or {}
+
+    # Priority: voice_config.forwarding_number > location.phone_number
+    forwarding_number = (
+        voice_config.get("forwarding_number")
+        or location.get("phone_number")
+    )
+
     if not account_sid or not call_sid:
         emit_forward_call_metrics(False)
         return {"success": False, "error": "Missing Twilio call identifiers."}
-    if not location_phone:
+    if not forwarding_number:
         emit_forward_call_metrics(False)
-        return {"success": False, "error": "Location phone number not available."}
+        return {"success": False, "error": "No forwarding number configured."}
 
-    normalized = normalize_phone_number(location_phone) or location_phone
+    normalized = normalize_phone_number(forwarding_number) or forwarding_number
+    logger.info(
+        "Forwarding call %s to %s (source=%s)",
+        connection_id,
+        normalized,
+        "voice_config" if voice_config.get("forwarding_number") else "location",
+    )
     client = TwilioClient(account_sid, config.settings.twilio_auth_token)
     try:
         client.calls(call_sid).update(

@@ -11,7 +11,7 @@ Resolves the provider first, then runs the appropriate test suite:
 Usage:
   cd VakDeepGram
   python -m scripts.tests.run_all
-  python -m scripts.tests.run_all --with-e2e --base-url http://localhost:8080
+  python -m scripts.tests.run_all --with-e2e --base-url http://localhost:8080 [--oauth-token TOKEN]
 """
 from __future__ import annotations
 
@@ -108,7 +108,7 @@ async def main(args: argparse.Namespace) -> int:
             from scripts.tests.test_full_stack_e2e import main as full_stack_main
             ns = argparse.Namespace(
                 base_url=args.base_url,
-                api_key=args.api_key,
+                oauth_token=args.oauth_token,
                 skip_twilio_voice=args.skip_twilio_voice,
             )
             rc = await full_stack_main(ns)
@@ -145,9 +145,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Server base URL for E2E tests.",
     )
     parser.add_argument(
-        "--api-key",
-        default=os.environ.get("CHAT_API_KEY"),
-        help="Optional API key for /chat E2E.",
+        "--oauth-token",
+        default=os.environ.get("INTEGRIN_OAUTH_TOKEN"),
+        help="OAuth bearer token for /chat and /ws E2E (required for --with-e2e).",
     )
     parser.add_argument(
         "--skip-twilio-voice",

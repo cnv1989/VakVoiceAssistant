@@ -40,6 +40,8 @@ async def write_call_record(
     max_tokens_reached: bool = False,
     forwarded_call: bool = False,
     hour_of_day: Optional[int] = None,
+    sms_sent_count: int = 0,
+    whatsapp_sent_count: int = 0,
 ) -> None:
     """Write a call record to DynamoDB for analytics.
 
@@ -50,8 +52,6 @@ async def write_call_record(
     now = datetime.now(timezone.utc)
     hour = hour_of_day if hour_of_day is not None else now.hour
     date_str = now.strftime("%Y-%m-%d")
-
-    # Partially anonymise caller number for privacy
     anon_caller: Optional[str] = None
     if caller_number:
         digits = "".join(c for c in caller_number if c.isdigit())
@@ -79,11 +79,15 @@ async def write_call_record(
         "forwardedCall": forwarded_call,
         "createdAt": now.isoformat(),
         "updatedAt": now.isoformat(),
-        # Amplify DataStore compatibility fields
-        "__typename": "CallRecord",
-        "_version": 1,
-        "_lastChangedAt": int(now.timestamp() * 1000),
     }
+    if sms_sent_count:
+        item["smsSentCount"] = sms_sent_count
+    if whatsapp_sent_count:
+        item["whatsappSentCount"] = whatsapp_sent_count
+    # Amplify DataStore compatibility fields
+    item["__typename"] = "CallRecord"
+    item["_version"] = 1
+    item["_lastChangedAt"] = int(now.timestamp() * 1000)
 
     if business_number:
         item["businessNumber"] = business_number

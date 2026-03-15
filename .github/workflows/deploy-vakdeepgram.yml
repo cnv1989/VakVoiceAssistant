@@ -2,11 +2,16 @@ name: Deploy VakDeepGram
 
 on:
   push:
-    branches: [main]
+    branches: [alpha, beta, prod, main]
   workflow_dispatch:
+    inputs:
+      stage:
+        description: 'Stage to deploy (alpha/beta/prod)'
+        required: false
+        default: ''
 
 concurrency:
-  group: deploy-vakdeepgram
+  group: deploy-vakdeepgram-${{ github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -18,12 +23,25 @@ jobs:
     env:
       AWS_REGION: us-west-2
       ECR_REPO_NAME: vak-deepgram
-      IMAGE_TAG: latest
-      ECS_CLUSTER: vak-cluster
-      ECS_SERVICE: VakAppStack-VakService087430DF-8fNpTRvwuDhe
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Resolve stage from branch
+        id: stage
+        run: |
+          INPUT="${{ github.event.inputs.stage }}"
+          BRANCH="${{ github.ref_name }}"
+          # manual override wins; main branch → prod
+          RAW="${INPUT:-$BRANCH}"
+          case "$RAW" in
+            alpha) STAGE=alpha ;;
+            beta)  STAGE=beta  ;;
+            prod|main) STAGE=prod ;;
+            *) echo "Unknown branch/stage '$RAW'"; exit 1 ;;
+          esac
+          echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
+          echo "Deploying stage: $STAGE"
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -35,9 +53,11 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Ensure ECR repository
+      - name: Ensure ECR repository exists
         run: |
-          aws ecr describe-repositories --repository-names "${ECR_REPO_NAME}" --region "${AWS_REGION}" >/dev/null 2>&1 || \
+          aws ecr describe-repositories \
+            --repository-names "${ECR_REPO_NAME}" \
+            --region "${AWS_REGION}" >/dev/null 2>&1 || \
           aws ecr create-repository \
             --repository-name "${ECR_REPO_NAME}" \
             --region "${AWS_REGION}" \
@@ -47,15 +67,39 @@ jobs:
       - name: Build and push image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          STAGE: ${{ steps.stage.outputs.stage }}
         working-directory: VakDeepGram
         run: |
-          docker build --platform linux/amd64 -t "${ECR_REPO_NAME}:${IMAGE_TAG}" .
-          docker tag "${ECR_REPO_NAME}:${IMAGE_TAG}" "${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG}"
-          docker push "${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG}"
+          docker build --platform linux/amd64 -t "${ECR_REPO_NAME}:${STAGE}" .
+          docker tag "${ECR_REPO_NAME}:${STAGE}" "${ECR_REGISTRY}/${ECR_REPO_NAME}:${STAGE}"
+          docker push "${ECR_REGISTRY}/${ECR_REPO_NAME}:${STAGE}"
+
+      - name: Resolve ECS cluster and service
+        id: ecs
+        env:
+          STAGE: ${{ steps.stage.outputs.stage }}
+        run: |
+          CLUSTER="vak-cluster-${STAGE}"
+          SERVICE_ARN=$(aws ecs list-services \
+            --cluster "$CLUSTER" \
+            --query 'serviceArns[0]' \
+            --output text 2>/dev/null || echo "")
+          if [ -z "$SERVICE_ARN" ] || [ "$SERVICE_ARN" = "None" ]; then
+            echo "No ECS service found in cluster $CLUSTER — skipping force-deploy (stack may not be deployed yet)."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "cluster=$CLUSTER" >> "$GITHUB_OUTPUT"
+            echo "service=$(basename $SERVICE_ARN)" >> "$GITHUB_OUTPUT"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Force ECS deployment
+        if: steps.ecs.outputs.skip != 'true'
+        env:
+          CLUSTER: ${{ steps.ecs.outputs.cluster }}
+          SERVICE: ${{ steps.ecs.outputs.service }}
         run: |
           aws ecs update-service \
-            --cluster "${ECS_CLUSTER}" \
-            --service "${ECS_SERVICE}" \
+            --cluster "${CLUSTER}" \
+            --service "${SERVICE}" \
             --force-new-deployment

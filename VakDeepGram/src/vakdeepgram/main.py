@@ -77,6 +77,7 @@ from vakdeepgram.connection_store import (
 from vakdeepgram.repositories import (
     get_connection_context_by_id,
     set_connection_context_by_id,
+    update_connection_context_by_id,
     clear_connection_context_by_id,
 )
 from vakdeepgram.services import (
@@ -91,6 +92,31 @@ configure_pii_safe_logging(level=config.settings.log_level)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="VakDeepGram", version="1.0.0")
+
+# Short-lived store for pre-resolved business context from /voice/oauth/connect.
+# Key: short token passed in the WS URL. Value: (context_dict, expiry_timestamp).
+# Avoids re-resolution in /ws and keeps the WS URL short.
+_pre_resolved_contexts: dict[str, tuple[dict, float]] = {}
+_PRE_RESOLVED_TTL = 120  # seconds — plenty of time for client to open WS
+
+def _store_pre_resolved(context: dict) -> str:
+    token = uuid.uuid4().hex[:16]
+    _pre_resolved_contexts[token] = (context, time.monotonic() + _PRE_RESOLVED_TTL)
+    # Prune expired entries
+    now = time.monotonic()
+    expired = [k for k, (_, exp) in _pre_resolved_contexts.items() if exp < now]
+    for k in expired:
+        _pre_resolved_contexts.pop(k, None)
+    return token
+
+def _pop_pre_resolved(token: str) -> dict | None:
+    entry = _pre_resolved_contexts.pop(token, None)
+    if not entry:
+        return None
+    context, expiry = entry
+    if time.monotonic() > expiry:
+        return None
+    return context
 
 # Rate limiting setup
 limiter = Limiter(key_func=get_remote_address)
@@ -640,6 +666,11 @@ async def voice_oauth_connect(
     if not business_number:
         raise HTTPException(status_code=400, detail="business_number is required")
 
+    # Optional voice config override — allows callers to pass test config without
+    # requiring a saved "Done" configuration in the dashboard.
+    voice_config_override = payload.get("voice_config") or payload.get("voiceConfig")
+
+
     claims = oauth_auth.get("claims") or {}
     token = oauth_auth.get("token")
     _validate_token_business_match(claims, business_number)
@@ -661,6 +692,15 @@ async def voice_oauth_connect(
         query_params["customerPhone"] = customer_phone
     if token:
         query_params["access_token"] = token
+    import json as _json
+    # Store pre-resolved context server-side; pass a short token in the URL.
+    # This lets /ws skip re-resolution without bloating the WS URL.
+    ctx_token = _store_pre_resolved(_make_json_serializable(business_context))
+    query_params["ctxToken"] = ctx_token
+    if voice_config_override and isinstance(voice_config_override, dict):
+        query_params["voiceConfigOverride"] = base64.urlsafe_b64encode(
+            _json.dumps(voice_config_override).encode()
+        ).decode()
     websocket_url = f"{ws_scheme}://{forwarded_host}/ws?{urlencode(query_params)}"
 
     return {
@@ -1100,20 +1140,54 @@ async def websocket_endpoint(websocket: WebSocket):
     customer_phone = websocket.query_params.get("customerPhone")
     if business_number:
         logger.info("Browser client provided businessNumber=%s for %s", business_number, connection_id)
-        set_connection_context_by_id(
-            connection_id,
-            {
-                "success": False,
-                "pending": True,
-                "businessNumber": business_number,
-                "caller": customer_phone,
-            },
-        )
-        await _resolve_and_set_context(
-            connection_id,
-            business_number,
-            extra_context={"caller": customer_phone} if customer_phone else None,
-        )
+
+        # If /voice/oauth/connect already resolved the context, use it directly via token
+        ctx_token = websocket.query_params.get("ctxToken")
+        pre_resolved = _pop_pre_resolved(ctx_token) if ctx_token else None
+        if pre_resolved:
+            pre_resolved_snake = to_snake_case(pre_resolved)
+            if customer_phone:
+                pre_resolved_snake["caller"] = customer_phone
+            set_connection_context_by_id(connection_id, pre_resolved_snake)
+            logger.info("Using pre-resolved business context for %s via ctxToken (skipping re-resolution)", connection_id)
+
+        if not pre_resolved:
+            set_connection_context_by_id(
+                connection_id,
+                {"success": False, "pending": True, "businessNumber": business_number, "caller": customer_phone},
+            )
+            await _resolve_and_set_context(
+                connection_id,
+                business_number,
+                extra_context={"caller": customer_phone} if customer_phone else None,
+            )
+
+        # Apply inline voice config override (for testing without saved config)
+        voice_config_override_b64 = websocket.query_params.get("voiceConfigOverride")
+        if voice_config_override_b64:
+            try:
+                import json as _json
+                _b64_clean = voice_config_override_b64.rstrip("=")
+                _b64_padding = (-len(_b64_clean)) % 4
+                override_raw = _json.loads(
+                    base64.urlsafe_b64decode(_b64_clean + "=" * _b64_padding)
+                )
+                override_snake = to_snake_case(override_raw)
+                existing_ctx = get_connection_context_by_id(connection_id)
+                existing_voice = existing_ctx.get("voice_config") or {}
+                # Override wins for voice keys; saved config fills missing keys (e.g. forwarding_number)
+                merged_voice = {**existing_voice, **override_snake}
+                update_connection_context_by_id(connection_id, {"voice_config": merged_voice})
+                logger.info(
+                    "Applied voice config override for %s: override_keys=%s -> provider=%s voice_id=%s",
+                    connection_id,
+                    list(override_snake.keys()),
+                    merged_voice.get("voice_provider"),
+                    merged_voice.get("voice_id"),
+                )
+            except Exception as exc:
+                logger.warning("Failed to apply voiceConfigOverride for %s: %s", connection_id, exc)
+
     else:
         logger.info("No businessNumber provided for %s", connection_id)
     
@@ -1229,18 +1303,24 @@ async def websocket_endpoint(websocket: WebSocket):
                 duration_ms=duration_ms,
                 table_name=config.settings.call_record_table,
                 aws_region=config.settings.aws_region,
-                business_number=ctx.get("businessNumber"),
+                business_number=ctx.get("business_number") or ctx.get("businessNumber"),
                 caller_number=ctx.get("caller"),
                 call_sid=ctx.get("callSid"),
                 provider=ctx.get("provider"),
-                merchant_id=ctx.get("merchantId"),
-                location_id=ctx.get("locationId"),
-                setmore_account_id=ctx.get("setmoreAccountId"),
+                merchant_id=ctx.get("merchant_id"),
+                location_id=ctx.get("location_id"),
+                setmore_account_id=ctx.get("setmore_account_id"),
                 outcome=outcome,
-                booking_created=bool(ctx.get("bookingCreated")),
-                customer_found=bool(ctx.get("customerFound")),
-                sms_booking_link_sent=bool(ctx.get("smsBookingLinkSent")),
-                forwarded_call=bool(ctx.get("callForwarded")),
+                user_message_count=int(ctx.get("userMessageCount") or ctx.get("user_message_count") or 0),
+                tool_call_count=int(ctx.get("toolCallCount") or ctx.get("tool_call_count") or 0),
+                tool_call_error_count=int(ctx.get("toolCallErrorCount") or ctx.get("tool_call_error_count") or 0),
+                booking_created=bool(ctx.get("bookingCreated") or ctx.get("booking_created")),
+                customer_found=bool(ctx.get("customerFound") or ctx.get("customer_found")),
+                sms_booking_link_sent=bool(ctx.get("smsBookingLinkSent") or ctx.get("sms_booking_link_sent")),
+                max_tokens_reached=bool(ctx.get("maxTokensReached") or ctx.get("max_tokens_reached")),
+                forwarded_call=bool(ctx.get("callForwarded") or ctx.get("call_forwarded")),
+                sms_sent_count=int(ctx.get("smsSentCount") or ctx.get("sms_sent_count") or 0),
+                whatsapp_sent_count=int(ctx.get("whatsappSentCount") or ctx.get("whatsapp_sent_count") or 0),
             )
         clear_connection_context_by_id(connection_id)
         _decrement_websocket_count(client_ip, "ws")
@@ -1631,18 +1711,24 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                 duration_ms=duration_ms,
                 table_name=config.settings.call_record_table,
                 aws_region=config.settings.aws_region,
-                business_number=ctx.get("businessNumber"),
+                business_number=ctx.get("business_number") or ctx.get("businessNumber"),
                 caller_number=ctx.get("caller"),
                 call_sid=ctx.get("callSid"),
                 provider=ctx.get("provider"),
-                merchant_id=ctx.get("merchantId"),
-                location_id=ctx.get("locationId"),
-                setmore_account_id=ctx.get("setmoreAccountId"),
+                merchant_id=ctx.get("merchant_id"),
+                location_id=ctx.get("location_id"),
+                setmore_account_id=ctx.get("setmore_account_id"),
                 outcome=outcome,
-                booking_created=bool(ctx.get("bookingCreated")),
-                customer_found=bool(ctx.get("customerFound")),
-                sms_booking_link_sent=bool(ctx.get("smsBookingLinkSent")),
-                forwarded_call=bool(ctx.get("callForwarded")),
+                user_message_count=int(ctx.get("userMessageCount") or ctx.get("user_message_count") or 0),
+                tool_call_count=int(ctx.get("toolCallCount") or ctx.get("tool_call_count") or 0),
+                tool_call_error_count=int(ctx.get("toolCallErrorCount") or ctx.get("tool_call_error_count") or 0),
+                booking_created=bool(ctx.get("bookingCreated") or ctx.get("booking_created")),
+                customer_found=bool(ctx.get("customerFound") or ctx.get("customer_found")),
+                sms_booking_link_sent=bool(ctx.get("smsBookingLinkSent") or ctx.get("sms_booking_link_sent")),
+                max_tokens_reached=bool(ctx.get("maxTokensReached") or ctx.get("max_tokens_reached")),
+                forwarded_call=bool(ctx.get("callForwarded") or ctx.get("call_forwarded")),
+                sms_sent_count=int(ctx.get("smsSentCount") or ctx.get("sms_sent_count") or 0),
+                whatsapp_sent_count=int(ctx.get("whatsappSentCount") or ctx.get("whatsapp_sent_count") or 0),
             )
         clear_connection_context_by_id(connection_id)
         _decrement_websocket_count(client_ip, "twilio_ws")

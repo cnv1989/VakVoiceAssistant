@@ -126,3 +126,52 @@ def test_ws_requires_oauth_token():
     with pytest.raises(WebSocketDisconnect):
         with client.websocket_connect("/ws?businessNumber=%2B15104054454"):
             pass
+
+
+def test_ws_unauth_voice_localhost_bypass(monkeypatch):
+    """Deepgram 'unauth' voice API: /ws accepts without token when Host is localhost and OAUTH_ALLOW_LOCALHOST_NOAUTH=true."""
+    monkeypatch.setattr(
+        "vakdeepgram.main.config.settings.oauth_allow_localhost_noauth",
+        True,
+    )
+    # _validate_websocket_oauth should allow connection (no token) for localhost
+    from vakdeepgram.main import _validate_websocket_oauth
+
+    query_params = {"businessNumber": "+15104054454"}
+    headers = {"Host": "localhost"}
+    is_valid, error, _ = _validate_websocket_oauth(query_params, headers)
+    assert is_valid is True, f"Expected localhost unauth bypass, got error: {error}"
+
+    # Non-localhost without token should still require auth
+    headers_remote = {"Host": "vak.example.com"}
+    is_valid_remote, error_remote, _ = _validate_websocket_oauth(query_params, headers_remote)
+    assert is_valid_remote is False
+    assert "Bearer" in (error_remote or "")
+
+
+@pytest.mark.asyncio
+async def test_hello(monkeypatch):
+    """Smoke test: chat with message 'hello' (used by Slack task 'test hello')."""
+    async def _fake_chat(request, oauth_auth):
+        payload = await request.json()
+        assert payload.get("message") == "hello"
+        return {"reply": "ok", "model_id": "test-model"}
+
+    monkeypatch.setattr(
+        "vakdeepgram.main.validate_oauth_token",
+        lambda token: {
+            "success": True,
+            "claims": {"sub": "user-123", "business_number": "+15104054454"},
+        },
+    )
+    monkeypatch.setattr("vakdeepgram.main.chat", _fake_chat)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/chat/oauth",
+            headers={"Authorization": "Bearer valid-token"},
+            json={"message": "hello", "business_number": "+15104054454"},
+        )
+    assert response.status_code == 200
+    assert response.json()["reply"] == "ok"

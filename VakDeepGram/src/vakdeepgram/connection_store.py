@@ -139,7 +139,7 @@ def update_connection_context(connection_id: str, updates: Dict[str, Any]) -> Di
 
 
 def get_connection_context(connection_id: str) -> Dict[str, Any]:
-    logger.info("connection_store.get_connection_context called (connection_id=%s)", connection_id)
+    logger.debug("connection_store.get_connection_context called (connection_id=%s)", connection_id)
     return _connection_contexts.get(connection_id, {})
 
 

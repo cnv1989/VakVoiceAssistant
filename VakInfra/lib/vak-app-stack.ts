@@ -10,59 +10,65 @@ import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as route53 from 'aws-cdk-lib/aws-route53';
+import * as route53Targets from 'aws-cdk-lib/aws-route53-targets';
 import { Construct } from 'constructs';
 import { VakNetworkStack } from './vak-network-stack';
 
 export interface VakAppStackProps extends cdk.StackProps {
   networkStack: VakNetworkStack;
+
+  /** Deployment stage: 'alpha' | 'beta' | 'prod' */
+  stage: string;
+
   /**
-   * Optional Deepgram API key secret ARN from AWS Secrets Manager.
-   * Secret should be stored as plaintext in Secrets Manager.
-   * If not provided, falls back to deepgramApiKey prop or empty string.
-   * Example: 'arn:aws:secretsmanager:us-west-2:123456789012:secret:vak/deepgram-api-key-xxxxx'
+   * Amplify Gen 2 environment ID embedded in DynamoDB table names.
+   * Format: <ModelName>-<amplifyEnvId>-NONE
+   * For prod: 'pxy5meaaojbaxjwedt6v6oidw4'
+   * For alpha/beta: discover after first Amplify branch deploy via
+   *   aws dynamodb list-tables | grep BusinessNumber
+   * Then update cdk.json stages.<stage>.amplifyEnvId.
    */
+  amplifyEnvId: string;
+
+  /**
+   * Custom domain for this stage's VakDeepGram API.
+   * e.g. 'api.groommate.ai' | 'beta-api.groommate.ai' | 'alpha-api.groommate.ai'
+   * A Route53 A alias record is created pointing to the ALB.
+   */
+  apiDomain: string;
+
+  /** Route53 hosted zone for groommate.ai (from VakDnsStack). */
+  hostedZone: route53.IHostedZone;
+
+  /**
+   * ACM certificate ARN covering *.groommate.ai (from VakDnsStack).
+   * Used for the HTTPS/WSS ALB listener.
+   */
+  certificateArn: string;
+
+  /** Deepgram API key secret ARN from Secrets Manager. */
   deepgramApiKeySecretArn?: string;
-  /**
-   * Optional Deepgram API key (deprecated, use deepgramApiKeySecretArn instead).
-   * Kept for backward compatibility.
-   */
+  /** Fallback Deepgram API key (deprecated). */
   deepgramApiKey?: string;
-  /**
-   * Optional Twilio auth token secret ARN from AWS Secrets Manager.
-   * Secret should be stored as plaintext in Secrets Manager.
-   * If not provided, falls back to twilioAuthToken prop or hardcoded value.
-   * Example: 'arn:aws:secretsmanager:us-west-2:123456789012:secret:vak/twilio-auth-token-xxxxx'
-   */
+
+  /** Twilio auth token secret ARN from Secrets Manager. */
   twilioAuthTokenSecretArn?: string;
-  /**
-   * Optional Twilio auth token (deprecated, use twilioAuthTokenSecretArn instead).
-   * Kept for backward compatibility.
-   */
+  /** Fallback Twilio auth token (deprecated). */
   twilioAuthToken?: string;
-  /**
-   * Optional ACM certificate ARN for HTTPS/WSS support.
-   * If provided, an HTTPS listener will be added on port 443.
-   * Certificate must be in the same region as the ALB (us-west-2).
-   * Example: 'arn:aws:acm:us-west-2:123456789012:certificate/12345678-1234-1234-1234-123456789012'
-   */
-  certificateArn?: string;
-  /**
-   * Optional: Enable WAF protection to restrict access to Twilio IPs only.
-   * If true, creates a WAF WebACL that only allows traffic from Twilio IP ranges.
-   * Default: false (allow all traffic)
-   */
+
+  /** Enable WAF IP allowlist restricting ALB to Twilio IPs only. */
   enableTwilioOnlyAccess?: boolean;
+
   /**
-   * Hostname to protect with Cognito auth.
-   */
-  cognitoHost?: string;
-  /**
-   * Cognito hosted UI domain prefix (e.g. vak-auth).
+   * Cognito hosted-UI domain prefix for ALB auth.
+   * e.g. 'groommate-auth-prod' | 'groommate-auth-beta' | 'groommate-auth-alpha'
    */
   cognitoDomainPrefix?: string;
 }
 
 export class VakAppStack extends cdk.Stack {
+  public readonly stage: string;
   public readonly cluster: ecs.Cluster;
   public readonly service: ecs.FargateService;
   public readonly alb: elbv2.ApplicationLoadBalancer;
@@ -70,15 +76,21 @@ export class VakAppStack extends cdk.Stack {
   public readonly sessionsTable: dynamodb.Table;
   public readonly artifactsBucket: s3.Bucket;
   public readonly serviceLogGroup: logs.LogGroup;
+  public readonly taskRole: iam.Role;
 
   constructor(scope: Construct, id: string, props: VakAppStackProps) {
     super(scope, id, props);
 
+    const { stage, amplifyEnvId, apiDomain } = props;
     const { vpc, deepgramEcrRepo } = props.networkStack;
 
-    // DynamoDB table for sessions
+    // ─── Stage helpers ────────────────────────────────────────────────────────
+    this.stage = stage;
+    const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+    // ─── DynamoDB — Sessions table (owned by VakDeepGram) ────────────────────
     const sessionsTable = new dynamodb.Table(this, 'SessionsTable', {
-      tableName: 'Sessions',
+      tableName: `Sessions-${cap(stage)}`,
       partitionKey: { name: 'sid', type: dynamodb.AttributeType.STRING },
       timeToLiveAttribute: 'ttl',
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -86,22 +98,22 @@ export class VakAppStack extends cdk.Stack {
     });
     this.sessionsTable = sessionsTable;
 
-    // S3 bucket for artifacts
+    // ─── S3 Artifacts bucket ─────────────────────────────────────────────────
     const artifactsBucket = new s3.Bucket(this, 'ArtifactsBucket', {
-      bucketName: `vak-artifacts-${this.account}-${this.region}`,
+      bucketName: `vak-artifacts-${this.account}-${this.region}-${stage}`,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
     });
     this.artifactsBucket = artifactsBucket;
 
-    // ECS Cluster
+    // ─── ECS Cluster ─────────────────────────────────────────────────────────
     const cluster = new ecs.Cluster(this, 'VakCluster', {
       vpc,
-      clusterName: 'vak-cluster',
+      clusterName: `vak-cluster-${stage}`,
     });
     this.cluster = cluster;
 
-    // Task execution role
+    // ─── IAM roles ───────────────────────────────────────────────────────────
     const taskExecutionRole = new iam.Role(this, 'TaskExecutionRole', {
       assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
       managedPolicies: [
@@ -109,92 +121,91 @@ export class VakAppStack extends cdk.Stack {
       ],
     });
 
-    // Create secret references from ARNs (if provided)
     let deepgramSecret: secretsmanager.ISecret | undefined;
     let twilioSecret: secretsmanager.ISecret | undefined;
 
     if (props.deepgramApiKeySecretArn) {
       deepgramSecret = secretsmanager.Secret.fromSecretCompleteArn(
-        this,
-        'DeepgramSecret',
-        props.deepgramApiKeySecretArn
+        this, 'DeepgramSecret', props.deepgramApiKeySecretArn
       );
-      // Grant task execution role permission to read the secret
       deepgramSecret.grantRead(taskExecutionRole);
     }
-
     if (props.twilioAuthTokenSecretArn) {
       twilioSecret = secretsmanager.Secret.fromSecretCompleteArn(
-        this,
-        'TwilioSecret',
-        props.twilioAuthTokenSecretArn
+        this, 'TwilioSecret', props.twilioAuthTokenSecretArn
       );
-      // Grant task execution role permission to read the secret
       twilioSecret.grantRead(taskExecutionRole);
     }
 
-
-    // Task role - minimal permissions for Deepgram Voice Agents
-    // Deepgram uses API key authentication, not AWS services
-    const taskRole = new iam.Role(this, 'TaskRole', {
+    this.taskRole = new iam.Role(this, 'TaskRole', {
       assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
     });
+    const taskRole = this.taskRole;
 
-    // Allow ECS tasks to access DynamoDB sessions table.
+    // Sessions table (owned by this stack)
     sessionsTable.grantReadWriteData(taskRole);
-    const squareAccountTableArn = `arn:aws:dynamodb:${this.region}:${this.account}:table/SquareAccount-pxy5meaaojbaxjwedt6v6oidw4-NONE`;
-    const businessNumberTableArn = `arn:aws:dynamodb:${this.region}:${this.account}:table/BusinessNumber-pxy5meaaojbaxjwedt6v6oidw4-NONE`;
-    const setmoreAccountTableArn = `arn:aws:dynamodb:${this.region}:${this.account}:table/SetmoreAccount-pxy5meaaojbaxjwedt6v6oidw4-NONE`;
-    const squareAccountTable = dynamodb.Table.fromTableArn(this, 'SquareAccountTable', squareAccountTableArn);
-    const businessNumberTable = dynamodb.Table.fromTableArn(this, 'BusinessNumberTable', businessNumberTableArn);
-    const setmoreAccountTable = dynamodb.Table.fromTableArn(this, 'SetmoreAccountTable', setmoreAccountTableArn);
-    squareAccountTable.grantReadWriteData(taskRole);
-    businessNumberTable.grantReadWriteData(taskRole);
-    setmoreAccountTable.grantReadWriteData(taskRole);
 
-    // Allow ECS tasks to invoke Bedrock models (for Strands Agent / chat endpoint)
+    // Amplify-owned DynamoDB tables — grant access by ARN
+    const amplifyTableArn = (model: string) =>
+      `arn:aws:dynamodb:${this.region}:${this.account}:table/${model}-${amplifyEnvId}-NONE`;
+
+    const amplifyTables = [
+      'SquareAccount',
+      'BusinessNumber',
+      'SetmoreAccount',
+      'BusinessAutomations',
+      'CallRecord',
+    ].map(model => dynamodb.Table.fromTableArn(this, `${model}Table`, amplifyTableArn(model)));
+
+    amplifyTables.forEach(t => t.grantReadWriteData(taskRole));
+
+    // Also grant GSI access for CallRecord (queried by businessNumber + dateStr)
     taskRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
-        'bedrock:InvokeModel',
-        'bedrock:InvokeModelWithResponseStream',
+        'dynamodb:Query',
+        'dynamodb:Scan',
       ],
       resources: [
-        `arn:aws:bedrock:${this.region}::foundation-model/*`,
+        `${amplifyTableArn('CallRecord')}/index/*`,
+        `${amplifyTableArn('BusinessNumber')}/index/*`,
+        `${amplifyTableArn('SetmoreAccount')}/index/*`,
       ],
     }));
 
-    // ECS Task Definition
-    // Valid Fargate CPU/Memory combinations: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-cpu-memory-error.html
+    // Bedrock for Strands Agent / chat endpoint
+    taskRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
+      resources: [`arn:aws:bedrock:${this.region}::foundation-model/*`],
+    }));
+
+    // ─── ECS Task Definition ─────────────────────────────────────────────────
     const taskDefinition = new ecs.FargateTaskDefinition(this, 'VakTaskDefinition', {
-      memoryLimitMiB: 1024,  // 1 GB
-      cpu: 512,              // 0.5 vCPU (valid combination with 1024 MB)
+      memoryLimitMiB: 1024,
+      cpu: 512,
       executionRole: taskExecutionRole,
-      taskRole: taskRole,
+      taskRole,
     });
 
     const serviceLogGroup = new logs.LogGroup(this, 'VakServiceLogGroup', {
-      logGroupName: '/ecs/vak-service',
+      logGroupName: `/ecs/vak-service-${stage}`,
       retention: logs.RetentionDays.ONE_MONTH,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
     this.serviceLogGroup = serviceLogGroup;
 
-    // Build secrets object conditionally
     const containerSecrets: { [key: string]: ecs.Secret } = {};
-    if (deepgramSecret) {
-      containerSecrets.DEEPGRAM_API_KEY = ecs.Secret.fromSecretsManager(deepgramSecret);
-    }
-    if (twilioSecret) {
-      containerSecrets.TWILIO_AUTH_TOKEN = ecs.Secret.fromSecretsManager(twilioSecret);
-    }
+    if (deepgramSecret) containerSecrets.DEEPGRAM_API_KEY = ecs.Secret.fromSecretsManager(deepgramSecret);
+    if (twilioSecret) containerSecrets.TWILIO_AUTH_TOKEN = ecs.Secret.fromSecretsManager(twilioSecret);
 
-    // Container definition using Deepgram ECR image
-    // Image must be built and pushed to ECR manually before deployment
-    // Use the Deepgram ECR repository from the network stack
+    // Stage-specific table names derived from amplifyEnvId
+    const tableEnv = (model: string) => `${model}-${amplifyEnvId}-NONE`;
+
     const container = taskDefinition.addContainer('VakDeepGram', {
-      image: ecs.ContainerImage.fromEcrRepository(deepgramEcrRepo, 'latest'),
-      cpu: 512,  // 0.5 vCPU (matching task definition CPU allocation)
+      // Each stage has its own image tag (alpha/beta/prod) in the shared ECR repo
+      image: ecs.ContainerImage.fromEcrRepository(deepgramEcrRepo, stage),
+      cpu: 512,
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: 'vak-deepgram',
         logGroup: serviceLogGroup,
@@ -202,95 +213,80 @@ export class VakAppStack extends cdk.Stack {
       environment: {
         HOST: '0.0.0.0',
         PORT: '8080',
-        LOG_LEVEL: 'info',
+        LOG_LEVEL: stage === 'prod' ? 'info' : 'debug',
+        LOCAL_MODE: 'false',
+        DEPLOY_STAGE: stage,
+
         // Deepgram configuration
         DEEPGRAM_AGENT_LANGUAGE: 'en',
         DEEPGRAM_LISTENING_MODEL: 'flux-general-en',
         DEEPGRAM_LISTENING_VERSION: 'v2',
         DEEPGRAM_THINKING_PROVIDER: 'google',
-        DEEPGRAM_THINKING_MODEL: 'gemini-2.5-flash',
+        DEEPGRAM_THINKING_MODEL: 'gemini-2.5-flash-preview-04-17',
         DEEPGRAM_SPEAKING_PROVIDER: 'eleven_labs',
-        DEEPGRAM_SPEAKING_MODEL_ID: 'eleven_multilingual_v2',
+        DEEPGRAM_SPEAKING_MODEL_ID: 'eleven_flash_v2_5',
         DEEPGRAM_SPEAKING_VOICE_ID: 'cgSgspJ2msm6clMCkdW9',
-        BUSINESS_NUMBER_TABLE: 'BusinessNumber-pxy5meaaojbaxjwedt6v6oidw4-NONE',
         DEEPGRAM_INPUT_SAMPLE_RATE: '48000',
         DEEPGRAM_OUTPUT_SAMPLE_RATE: '24000',
-        // Twilio configuration (Account SID is not sensitive, only Auth Token is)
+
+        // Twilio configuration (non-sensitive)
         TWILIO_ACCOUNT_SID: 'ACd00787e66384ec2d2ed3e262748525af',
+
+        // DynamoDB table names (stage-specific via amplifyEnvId)
+        BUSINESS_NUMBER_TABLE: tableEnv('BusinessNumber'),
+        SQUARE_ACCOUNT_TABLE: tableEnv('SquareAccount'),
+        SETMORE_ACCOUNT_TABLE: tableEnv('SetmoreAccount'),
+        BUSINESS_AUTOMATIONS_TABLE: tableEnv('BusinessAutomations'),
+        CALL_RECORD_TABLE: tableEnv('CallRecord'),
+
+        // Service URL for this stage
+        ALB_DNS: apiDomain,
       },
       secrets: Object.keys(containerSecrets).length > 0 ? containerSecrets : undefined,
       healthCheck: {
-        command: [
-          'CMD-SHELL',
-          'curl -f http://localhost:8080/health || exit 1'
-        ],
+        command: ['CMD-SHELL', 'curl -f http://localhost:8080/health || exit 1'],
         interval: cdk.Duration.seconds(30),
         timeout: cdk.Duration.seconds(5),
         retries: 3,
-        startPeriod: cdk.Duration.seconds(60), // Grace period for container startup
+        startPeriod: cdk.Duration.seconds(60),
       },
     });
 
-    // Fallback: If secrets are not provided, use environment variables or hardcoded values
-    // This maintains backward compatibility
-    if (!deepgramSecret) {
-      container.addEnvironment('DEEPGRAM_API_KEY', props.deepgramApiKey || '');
-    }
+    if (!deepgramSecret) container.addEnvironment('DEEPGRAM_API_KEY', props.deepgramApiKey || '');
+    if (!twilioSecret) container.addEnvironment('TWILIO_AUTH_TOKEN', props.twilioAuthToken || '');
 
-    if (!twilioSecret) {
-      container.addEnvironment('TWILIO_AUTH_TOKEN', props.twilioAuthToken || '203d5f5968243a3b4bc09da73e7b998c');
-    }
+    container.addPortMappings({ containerPort: 8080, protocol: ecs.Protocol.TCP });
 
-    container.addPortMappings({
-      containerPort: 8080,
-      protocol: ecs.Protocol.TCP,
-    });
-
-    // ECS Service
+    // ─── ECS Service ─────────────────────────────────────────────────────────
     const service = new ecs.FargateService(this, 'VakService', {
       cluster,
       taskDefinition,
       desiredCount: 1,
-      vpcSubnets: {
-        subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
-      },
-      healthCheckGracePeriod: cdk.Duration.seconds(60), // Grace period before health checks start counting failures
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      healthCheckGracePeriod: cdk.Duration.seconds(60),
     });
     this.service = service;
 
-    // Application Load Balancer
-    // Internet-facing ALB for direct WebSocket connections with IAM authentication
+    // ─── Application Load Balancer ───────────────────────────────────────────
     const alb = new elbv2.ApplicationLoadBalancer(this, 'VakAlb', {
       vpc,
       internetFacing: true,
-      vpcSubnets: {
-        subnetType: ec2.SubnetType.PUBLIC,
-      },
+      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
     });
     this.alb = alb;
 
-    // Configure ALB attributes for WebSocket support
-    // Disable HTTP/2 (WebSocket upgrades require HTTP/1.1)
-    // Increase idle timeout for long-lived WebSocket connections
     const cfnAlb = alb.node.defaultChild as elbv2.CfnLoadBalancer;
     cfnAlb.loadBalancerAttributes = [
-      {
-        key: 'routing.http2.enabled',
-        value: 'false',
-      },
-      {
-        key: 'idle_timeout.timeout_seconds',
-        value: '3600', // 1 hour for WebSocket connections
-      },
+      { key: 'routing.http2.enabled', value: 'false' },
+      { key: 'idle_timeout.timeout_seconds', value: '3600' },
     ];
 
-    // Target Group
-    // For Fargate tasks with awsvpc network mode, targetType must be 'ip'
+    // ─── Target Group ────────────────────────────────────────────────────────
     const targetGroup = new elbv2.ApplicationTargetGroup(this, 'VakTargetGroup', {
       vpc,
-      port: 8080, 
+      port: 8080,
       protocol: elbv2.ApplicationProtocol.HTTP,
-      targetType: elbv2.TargetType.IP, // Required for Fargate with awsvpc network mode
+      targetType: elbv2.TargetType.IP,
       healthCheck: {
         enabled: true,
         healthyHttpCodes: '200',
@@ -301,24 +297,14 @@ export class VakAppStack extends cdk.Stack {
       },
     });
     this.targetGroup = targetGroup;
-
     service.attachToApplicationTargetGroup(targetGroup);
 
-    const cognitoConfigured = Boolean(props.cognitoHost && props.cognitoDomainPrefix);
-
-    if (cognitoConfigured && !props.certificateArn) {
-      throw new Error('Cognito auth on /ws requires an HTTPS listener (certificateArn is missing).');
-    }
-
-    // HTTP listener on port 80 for WebSocket connections
-    // Note: ALB supports WebSocket connections over HTTP
-    // Keep the same logical ID 'VakListener' to update existing listener
+    // ─── HTTP Listener ───────────────────────────────────────────────────────
     const httpListener = alb.addListener('VakListener', {
       port: 80,
       protocol: elbv2.ApplicationProtocol.HTTP,
       defaultTargetGroups: [targetGroup],
     });
-
     httpListener.addAction('BlockWsOverHttp', {
       priority: 5,
       conditions: [elbv2.ListenerCondition.pathPatterns(['/ws*'])],
@@ -327,8 +313,6 @@ export class VakAppStack extends cdk.Stack {
         messageBody: 'WebSocket auth requires WSS. Use wss://<host>/ws.',
       }),
     });
-
-    // Block /chat over HTTP - require HTTPS for Cognito auth
     httpListener.addAction('BlockChatOverHttp', {
       priority: 6,
       conditions: [elbv2.ListenerCondition.pathPatterns(['/chat*'])],
@@ -338,244 +322,152 @@ export class VakAppStack extends cdk.Stack {
       }),
     });
 
-    // HTTPS listener on port 443 for secure WebSocket (WSS) connections
-    // Only added if certificate ARN is provided
-    if (props.certificateArn) {
-      const certificate = elbv2.ListenerCertificate.fromArn(props.certificateArn);
-      const httpsListener = alb.addListener('VakHttpsListener', {
-        port: 443,
-        protocol: elbv2.ApplicationProtocol.HTTPS,
-        certificates: [certificate],
-        defaultTargetGroups: [targetGroup],
+    // ─── HTTPS Listener + Cognito auth ───────────────────────────────────────
+    const certificate = elbv2.ListenerCertificate.fromArn(props.certificateArn);
+    const httpsListener = alb.addListener('VakHttpsListener', {
+      port: 443,
+      protocol: elbv2.ApplicationProtocol.HTTPS,
+      certificates: [certificate],
+      defaultTargetGroups: [targetGroup],
+    });
+
+    if (props.cognitoDomainPrefix) {
+      const userPool = new cognito.UserPool(this, 'VakUserPool', {
+        selfSignUpEnabled: false,
+        signInAliases: { email: true },
+        userInvitation: {
+          emailSubject: 'You are invited to Vak',
+          emailBody: 'Your username is {username} and temporary password is {####}.',
+        },
+      });
+      const callbackUrl = `https://${apiDomain}/oauth2/idpresponse`;
+      const logoutUrl = `https://${apiDomain}/logout`;
+      const userPoolClient = new cognito.UserPoolClient(this, 'VakUserPoolClient', {
+        userPool,
+        generateSecret: true,
+        oAuth: {
+          flows: { authorizationCodeGrant: true },
+          scopes: [cognito.OAuthScope.OPENID, cognito.OAuthScope.EMAIL, cognito.OAuthScope.PROFILE],
+          callbackUrls: [callbackUrl],
+          logoutUrls: [logoutUrl],
+        },
+        supportedIdentityProviders: [cognito.UserPoolClientIdentityProvider.COGNITO],
+      });
+      const userPoolDomain = userPool.addDomain('VakUserPoolDomain', {
+        cognitoDomain: { domainPrefix: props.cognitoDomainPrefix },
       });
 
-      if (cognitoConfigured) {
-        const userPool = new cognito.UserPool(this, 'VakUserPool', {
-          selfSignUpEnabled: false,
-          signInAliases: { email: true },
-          userInvitation: {
-            emailSubject: 'You are invited to Vak',
-            emailBody: 'Your username is {username} and temporary password is {####}.',
-          },
-        });
-        const callbackUrl = `https://${props.cognitoHost}/oauth2/idpresponse`;
-        const logoutUrl = `https://${props.cognitoHost}/logout`;
-        const userPoolClient = new cognito.UserPoolClient(this, 'VakUserPoolClient', {
+      httpsListener.addAction('AuthenticateWs', {
+        priority: 5,
+        conditions: [
+          elbv2.ListenerCondition.pathPatterns(['/ws*']),
+          elbv2.ListenerCondition.hostHeaders([apiDomain]),
+        ],
+        action: new elbv2Actions.AuthenticateCognitoAction({
           userPool,
-          generateSecret: true,
-          oAuth: {
-            flows: { authorizationCodeGrant: true },
-            scopes: [cognito.OAuthScope.OPENID, cognito.OAuthScope.EMAIL, cognito.OAuthScope.PROFILE],
-            callbackUrls: [callbackUrl],
-            logoutUrls: [logoutUrl],
-          },
-          supportedIdentityProviders: [cognito.UserPoolClientIdentityProvider.COGNITO],
-        });
-        const userPoolDomain = userPool.addDomain('VakUserPoolDomain', {
-          cognitoDomain: { domainPrefix: props.cognitoDomainPrefix! },
-        });
-
-        httpsListener.addAction('AuthenticateWs', {
-          priority: 5,
-          conditions: [
-            elbv2.ListenerCondition.pathPatterns(['/ws*']),
-            elbv2.ListenerCondition.hostHeaders([props.cognitoHost!]),
-          ],
-          action: new elbv2Actions.AuthenticateCognitoAction({
-            userPool,
-            userPoolClient,
-            userPoolDomain,
-            next: elbv2.ListenerAction.forward([targetGroup]),
-          }),
-        });
-
-        // Add Cognito auth for /chat endpoint (similar to /ws)
-        httpsListener.addAction('AuthenticateChat', {
-          priority: 6,
-          conditions: [
-            elbv2.ListenerCondition.pathPatterns(['/chat*']),
-            elbv2.ListenerCondition.hostHeaders([props.cognitoHost!]),
-          ],
-          action: new elbv2Actions.AuthenticateCognitoAction({
-            userPool,
-            userPoolClient,
-            userPoolDomain,
-            next: elbv2.ListenerAction.forward([targetGroup]),
-          }),
-        });
-      }
-
-      // Output secure WebSocket URL
-      new cdk.CfnOutput(this, 'WebSocketSecureUrl', {
-        value: `wss://${alb.loadBalancerDnsName}/ws`,
-        description: 'Secure WebSocket endpoint URL (WSS)',
-        exportName: 'VakWebSocketSecureUrl',
+          userPoolClient,
+          userPoolDomain,
+          next: elbv2.ListenerAction.forward([targetGroup]),
+        }),
+      });
+      httpsListener.addAction('AuthenticateChat', {
+        priority: 6,
+        conditions: [
+          elbv2.ListenerCondition.pathPatterns(['/chat*']),
+          elbv2.ListenerCondition.hostHeaders([apiDomain]),
+        ],
+        action: new elbv2Actions.AuthenticateCognitoAction({
+          userPool,
+          userPoolClient,
+          userPoolDomain,
+          next: elbv2.ListenerAction.forward([targetGroup]),
+        }),
       });
     }
 
-    // WAF Protection: Restrict access to Twilio IPs only (if enabled)
-    if (props.enableTwilioOnlyAccess) {
-      // Twilio IP ranges (as of 2024)
-      // Source: https://www.twilio.com/docs/voice/ip-addresses
-      // Note: These IPs may change - update periodically via AWS Console or CDK
-      const twilioIpRanges = [
-        // Twilio Voice IPs (US)
-        '54.172.60.0/22',
-        '54.244.51.0/24',
-        '54.171.127.192/26',
-        '54.173.34.0/24',
-        '54.235.223.0/24',
-        '54.236.1.0/24',
-        '54.236.2.0/24',
-        '54.236.3.0/24',
-        '54.236.4.0/24',
-        '54.236.5.0/24',
-        '54.236.6.0/24',
-        '54.236.7.0/24',
-        '54.236.8.0/24',
-        '54.236.9.0/24',
-        '54.236.10.0/24',
-        '54.236.11.0/24',
-        '54.236.12.0/24',
-        '54.236.13.0/24',
-        '54.236.14.0/24',
-        '54.236.15.0/24',
-        '54.236.16.0/24',
-        '54.236.17.0/24',
-        '54.236.18.0/24',
-        '54.236.19.0/24',
-        '54.236.20.0/24',
-        '54.236.21.0/24',
-        '54.236.22.0/24',
-        '54.236.23.0/24',
-        '54.236.24.0/24',
-        '54.236.25.0/24',
-        '54.236.26.0/24',
-        '54.236.27.0/24',
-        '54.236.28.0/24',
-        '54.236.29.0/24',
-        '54.236.30.0/24',
-        '54.236.31.0/24',
-        // Additional Twilio IPs
-        '54.172.60.0/22',
-        '54.244.51.0/24',
-        '54.171.127.192/26',
-        '54.173.34.0/24',
-        '54.235.223.0/24',
-      ];
+    // ─── Route53 A record: apiDomain → ALB ───────────────────────────────────
+    new route53.ARecord(this, 'ApiDnsRecord', {
+      zone: props.hostedZone,
+      recordName: apiDomain,
+      target: route53.RecordTarget.fromAlias(new route53Targets.LoadBalancerTarget(alb)),
+    });
 
-      // Create IP Set for Twilio IPs
+    // ─── WAF (optional) ──────────────────────────────────────────────────────
+    if (props.enableTwilioOnlyAccess) {
+      const twilioIpRanges = [
+        '54.172.60.0/22', '54.244.51.0/24', '54.171.127.192/26',
+        '54.173.34.0/24', '54.235.223.0/24', '54.236.1.0/24',
+        '54.236.2.0/24', '54.236.3.0/24', '54.236.4.0/24', '54.236.5.0/24',
+        '54.236.6.0/24', '54.236.7.0/24', '54.236.8.0/24', '54.236.9.0/24',
+        '54.236.10.0/24', '54.236.11.0/24', '54.236.12.0/24', '54.236.13.0/24',
+        '54.236.14.0/24', '54.236.15.0/24', '54.236.16.0/24', '54.236.17.0/24',
+        '54.236.18.0/24', '54.236.19.0/24', '54.236.20.0/24', '54.236.21.0/24',
+        '54.236.22.0/24', '54.236.23.0/24', '54.236.24.0/24', '54.236.25.0/24',
+        '54.236.26.0/24', '54.236.27.0/24', '54.236.28.0/24', '54.236.29.0/24',
+        '54.236.30.0/24', '54.236.31.0/24',
+      ];
       const twilioIpSet = new wafv2.CfnIPSet(this, 'TwilioIpSet', {
-        name: `vak-twilio-ips-${this.stackName}`,
+        name: `vak-twilio-ips-${stage}`,
         description: 'Twilio IP ranges for Media Streams',
-        scope: 'REGIONAL', // Must be REGIONAL for ALB
+        scope: 'REGIONAL',
         ipAddressVersion: 'IPV4',
         addresses: twilioIpRanges,
       });
-
-      // Create WAF WebACL with IP allowlist rule
-      // Default action: BLOCK all traffic
-      // Rule: ALLOW only Twilio IPs
       const webAcl = new wafv2.CfnWebACL(this, 'TwilioOnlyWebAcl', {
-        name: `vak-twilio-only-${this.stackName}`,
-        description: 'WAF WebACL to restrict access to Twilio IPs only',
-        scope: 'REGIONAL', // Must be REGIONAL for ALB
-        defaultAction: {
-          block: {}, // Block all traffic by default
-        },
-        rules: [
-          {
-            name: 'AllowTwilioIPs',
-            priority: 1,
-            statement: {
-              ipSetReferenceStatement: {
-                arn: twilioIpSet.attrArn,
-              },
-            },
-            action: {
-              allow: {}, // Allow traffic from Twilio IPs
-            },
-            visibilityConfig: {
-              sampledRequestsEnabled: true,
-              cloudWatchMetricsEnabled: true,
-              metricName: 'AllowTwilioIPs',
-            },
+        name: `vak-twilio-only-${stage}`,
+        description: `WAF: allow Twilio IPs only (${stage})`,
+        scope: 'REGIONAL',
+        defaultAction: { block: {} },
+        rules: [{
+          name: 'AllowTwilioIPs',
+          priority: 1,
+          statement: { ipSetReferenceStatement: { arn: twilioIpSet.attrArn } },
+          action: { allow: {} },
+          visibilityConfig: {
+            sampledRequestsEnabled: true,
+            cloudWatchMetricsEnabled: true,
+            metricName: `AllowTwilioIPs-${stage}`,
           },
-        ],
+        }],
         visibilityConfig: {
           sampledRequestsEnabled: true,
           cloudWatchMetricsEnabled: true,
-          metricName: 'TwilioOnlyWebAcl',
+          metricName: `TwilioOnlyWebAcl-${stage}`,
         },
       });
-
-      // Associate WebACL with ALB
       new wafv2.CfnWebACLAssociation(this, 'AlbWebAclAssociation', {
         resourceArn: alb.loadBalancerArn,
         webAclArn: webAcl.attrArn,
       });
-
-      // Output WAF ARN
-      new cdk.CfnOutput(this, 'WebAclArn', {
-        value: webAcl.attrArn,
-        description: 'WAF WebACL ARN (Twilio IP allowlist)',
-        exportName: 'VakWebAclArn',
-      });
-
-      new cdk.CfnOutput(this, 'IpSetArn', {
-        value: twilioIpSet.attrArn,
-        description: 'Twilio IP Set ARN',
-        exportName: 'VakTwilioIpSetArn',
-      });
     }
 
-    // IAM policy for clients to connect to ALB
-    // Clients will sign WebSocket upgrade requests with AWS credentials
-    // The server will validate these signatures
-    const albAccessPolicy = new iam.PolicyDocument({
-      statements: [
-        new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: ['elasticloadbalancing:DescribeLoadBalancers'],
-          resources: ['*'],
-        }),
-      ],
+    // ─── Outputs ──────────────────────────────────────────────────────────────
+    const stageCap = cap(stage);
+
+    new cdk.CfnOutput(this, 'ApiUrl', {
+      value: `https://${apiDomain}`,
+      description: `VakDeepGram API URL (${stage})`,
+      exportName: `VakApiUrl-${stageCap}`,
     });
-
-    // Update container environment - no longer using API Gateway
-    // Server will handle WebSocket connections directly
-    container.addEnvironment('LOCAL_MODE', 'false');
-    container.addEnvironment('ALB_DNS', alb.loadBalancerDnsName);
-
-    // Outputs
-    new cdk.CfnOutput(this, 'WebSocketUrl', {
-      value: `ws://${alb.loadBalancerDnsName}/ws`,
-      description: 'WebSocket endpoint URL (HTTP, direct to ALB)',
-      exportName: 'VakWebSocketUrl',
+    new cdk.CfnOutput(this, 'WebSocketSecureUrl', {
+      value: `wss://${apiDomain}/ws`,
+      description: `Secure WebSocket URL (${stage})`,
+      exportName: `VakWebSocketSecureUrl-${stageCap}`,
     });
-
     new cdk.CfnOutput(this, 'AlbDns', {
       value: alb.loadBalancerDnsName,
-      description: 'Application Load Balancer DNS name',
-      exportName: 'VakAlbDns',
+      description: `ALB DNS name (${stage})`,
+      exportName: `VakAlbDns-${stageCap}`,
     });
-
-    new cdk.CfnOutput(this, 'AlbArn', {
-      value: alb.loadBalancerArn,
-      description: 'Application Load Balancer ARN (for IAM policies)',
-      exportName: 'VakAlbArn',
+    new cdk.CfnOutput(this, 'EcsCluster', {
+      value: cluster.clusterName,
+      description: `ECS cluster name (${stage})`,
+      exportName: `VakEcsCluster-${stageCap}`,
     });
-
-    new cdk.CfnOutput(this, 'DynamoDbTableName', {
+    new cdk.CfnOutput(this, 'SessionsTableName', {
       value: sessionsTable.tableName,
-      description: 'DynamoDB Sessions table name',
-      exportName: 'VakDynamoDbTableName',
-    });
-
-    new cdk.CfnOutput(this, 'S3BucketName', {
-      value: artifactsBucket.bucketName,
-      description: 'S3 Artifacts bucket name',
-      exportName: 'VakS3BucketName',
+      description: `Sessions DynamoDB table (${stage})`,
+      exportName: `VakSessionsTable-${stageCap}`,
     });
   }
 }

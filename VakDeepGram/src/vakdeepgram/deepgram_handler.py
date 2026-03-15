@@ -14,7 +14,8 @@ from websockets.protocol import State
 from vakdeepgram import config
 from providers import get_voice_prompt_for_provider
 from vakdeepgram.agent_functions import FUNCTION_DEFINITIONS, FUNCTION_MAP, get_function_definitions_for_provider
-from vakdeepgram.connection_store import get_localized_datetime_for_connection, get_connection_context
+from vakdeepgram.connection_store import get_localized_datetime_for_connection, get_connection_context, update_connection_context
+from vakdeepgram.business_logic import forward_call_to_location
 from utils.metrics import (
     emit_deepgram_session_start,
     emit_deepgram_session_error,
@@ -50,6 +51,7 @@ class DeepgramSession:
         self.use_mulaw = use_mulaw  # Track if using mulaw encoding (for Twilio)
         self.pending_disconnect: bool = False
         self.pending_disconnect_reason: str = ""
+        self.consecutive_failures: int = 0  # Track consecutive function failures for auto-transfer
         
     def set_send_callback(self, callback: Callable):
         """Set the callback function to send messages to the client"""
@@ -83,13 +85,22 @@ class DeepgramManager:
 
     def _build_settings(self, use_mulaw: bool = False, connection_id: Optional[str] = None) -> dict:
         """Build the Settings message as JSON dict
-        
+
         Args:
             use_mulaw: If True, configure for mulaw (8kHz) - used for Twilio
                       If False, configure for linear16 (48kHz) - used for browser
         """
         provider = self._resolve_provider(connection_id)
         logger.debug("DeepgramManager._build_settings called (connection_id=%s use_mulaw=%s provider=%s)", connection_id, use_mulaw, provider)
+
+        # Get voice config from connection context (for per-business voice settings)
+        voice_config = {}
+        if connection_id:
+            context = get_connection_context(connection_id)
+            if context:
+                # Context keys are snake_case after to_snake_case() in connection_store
+                voice_config = context.get("voice_config") or {}
+
         # Build listen provider
         listen_provider = {
             "type": "deepgram",
@@ -97,7 +108,7 @@ class DeepgramManager:
         }
         if config.settings.deepgram_listening_version:
             listen_provider["version"] = config.settings.deepgram_listening_version
-        
+
         # Build think provider
         if config.settings.deepgram_thinking_provider == "open_ai":
             think_provider = {
@@ -118,7 +129,7 @@ class DeepgramManager:
                 "type": "open_ai",
                 "model": config.settings.deepgram_thinking_model or "gpt-4o-mini",
             }
-        
+
         # Build think config with provider-specific functions and prompt
         function_definitions = get_function_definitions_for_provider(provider)
         think_config = {
@@ -131,19 +142,31 @@ class DeepgramManager:
             prompt = f"Current date and time is {localized_datetime} (local time).\n{prompt}"
         if prompt:
             think_config["prompt"] = prompt
-        
-        # Build speak provider
-        if config.settings.deepgram_speaking_provider == "eleven_labs":
+
+        # Build speak provider - use voice config from business context or fall back to defaults
+        # Keys are snake_case: voice_provider, voice_id, voice_model_id
+        voice_provider = voice_config.get("voice_provider") or config.settings.deepgram_speaking_provider
+
+        if voice_provider == "eleven_labs":
             speak_provider = {
                 "type": "eleven_labs",
-                "model_id": config.settings.deepgram_speaking_model_id or "eleven_multilingual_v2",
-                "voice_id": config.settings.deepgram_speaking_voice_id or "0mevMNFMwHxBOUTpeMGN",
+                "model_id": voice_config.get("voice_model_id") or config.settings.deepgram_speaking_model_id or "eleven_multilingual_v2",
+                "voice_id": voice_config.get("voice_id") or config.settings.deepgram_speaking_voice_id or "0mevMNFMwHxBOUTpeMGN",
             }
         else:
             speak_provider = {
                 "type": "deepgram",
-                "model": config.settings.deepgram_speaking_model or "aura-2-thalia-en",
+                "model": voice_config.get("voice_id") or config.settings.deepgram_speaking_model or "aura-2-thalia-en",
             }
+
+        # Log voice config usage
+        if voice_config:
+            logger.info(
+                "Using business voice config for %s: provider=%s voice_id=%s",
+                connection_id,
+                voice_provider,
+                voice_config.get("voice_id") or "(default)",
+            )
         
         # Build agent config
         agent_config = {
@@ -293,8 +316,6 @@ class DeepgramManager:
         session = DeepgramSession(connection_id, sts_ws, event_loop, use_mulaw=use_mulaw)
         self.sessions[connection_id] = session
         
-        await self._wait_for_location_timezone(connection_id)
-
         # Build and send settings
         settings = self._build_settings(use_mulaw=use_mulaw, connection_id=connection_id)
         await sts_ws.send(json.dumps(settings))
@@ -640,6 +661,39 @@ class DeepgramManager:
                 json.dumps(result, indent=2, default=str),
             )
 
+            # Accumulate tool call metrics in connection context for call analytics
+            ctx = get_connection_context(session.connection_id) or {}
+            tool_count = (ctx.get("toolCallCount") or ctx.get("tool_call_count") or 0) + 1
+            tool_error_count = (ctx.get("toolCallErrorCount") or ctx.get("tool_call_error_count") or 0) + (0 if result.get("success") else 1)
+            update_connection_context(session.connection_id, {
+                "toolCallCount": tool_count,
+                "toolCallErrorCount": tool_error_count,
+            })
+
+            # Track consecutive failures for auto-transfer
+            if result.get("success"):
+                session.consecutive_failures = 0
+            else:
+                session.consecutive_failures += 1
+                # Check for auto-transfer on consecutive failures
+                context = get_connection_context(session.connection_id)
+                voice_config = (context.get("voice_config") or {}) if context else {}
+                enable_auto_transfer = voice_config.get("enable_auto_transfer", True)
+                max_failures = voice_config.get("max_failures_before_transfer", 2)
+
+                if enable_auto_transfer and session.consecutive_failures >= max_failures:
+                    logger.warning(
+                        "Auto-transfer triggered for %s after %d consecutive failures",
+                        session.connection_id,
+                        session.consecutive_failures,
+                    )
+                    transfer_result = await forward_call_to_location(session.connection_id)
+                    if transfer_result.get("success"):
+                        session.pending_disconnect = True
+                        session.pending_disconnect_reason = "auto_transfer_on_failure"
+                        # Reset failure count after transfer
+                        session.consecutive_failures = 0
+
             result_payload = result
             if isinstance(raw_args, str):
                 result_payload = json.dumps(result, default=str)
@@ -662,10 +716,10 @@ class DeepgramManager:
             if function_name == "end_call":
                 session.pending_disconnect = True
                 session.pending_disconnect_reason = "end_call"
-            elif function_name == "transfer_to_staff":
+            elif function_name in ("transfer_to_staff", "talk_to_owner"):
                 if result.get("success"):
                     session.pending_disconnect = True
-                    session.pending_disconnect_reason = "transfer_to_staff"
+                    session.pending_disconnect_reason = function_name
 
         except Exception as e:
             logger.error(f"❌ Error executing function '{function_name}': {str(e)}", exc_info=True)
@@ -751,18 +805,25 @@ class DeepgramManager:
     async def _send_audio_to_deepgram(self, session: DeepgramSession, audio_data: bytes):
         """Send audio data to Deepgram Voice Agent.
         Per-chunk metrics are not emitted here to avoid blocking the voice hot path (was causing noise)."""
-        logger.debug("DeepgramManager._send_audio_to_deepgram called (connection_id=%s bytes=%d)", session.connection_id, len(audio_data))
         try:
             if session.sts_ws and session.is_active:
                 # Check WebSocket state (websockets 16.0+ uses state instead of closed property)
                 if session.sts_ws.state != State.OPEN:
-                    logger.debug(f"⚠️ STS WebSocket not open for {session.connection_id} (state={session.sts_ws.state.name}), marking session inactive")
+                    logger.warning(
+                        "STS WebSocket not open for %s (state=%s), marking session inactive",
+                        session.connection_id,
+                        session.sts_ws.state.name,
+                    )
                     session.is_active = False
                     return
                 await session.sts_ws.send(audio_data)
-                logger.debug(f"✅ Sent {len(audio_data)} bytes to Deepgram for {session.connection_id}")
             else:
-                logger.debug(f"⚠️ Connection not ready for {session.connection_id} (ws={session.sts_ws is not None}, active={session.is_active})")
+                logger.warning(
+                    "Connection not ready for %s (ws=%s, active=%s)",
+                    session.connection_id,
+                    session.sts_ws is not None,
+                    session.is_active,
+                )
         except websockets.exceptions.ConnectionClosed as e:
             # Connection was closed (timeout, error, etc.) - this is expected
             logger.info(f"🔌 Deepgram connection closed for {session.connection_id}: {e.code} - {e.reason or 'no reason'}")
@@ -787,10 +848,9 @@ class DeepgramManager:
         If the session is not ready yet and force_send=False, audio will be buffered and sent
         once the SettingsApplied event is received.
         """
-        logger.debug("DeepgramManager.send_audio called (connection_id=%s bytes=%d force_send=%s)", connection_id, len(audio_data), force_send)
         session = self.get_session(connection_id)
         if not session or not session.is_active:
-            logger.warn(f"⚠️ No active Deepgram session for {connection_id}, ignoring audio")
+            logger.warning(f"⚠️ No active Deepgram session for {connection_id}, ignoring audio")
             return
         
         # For mulaw mode (Twilio), send immediately - Deepgram accepts audio right after settings
@@ -805,8 +865,6 @@ class DeepgramManager:
                     len(dropped),
                 )
             session.audio_buffer.append(audio_data)
-            if len(session.audio_buffer) == 1:  # Log only on first buffered chunk
-                logger.debug("Buffering audio for %s (session not ready yet, %d bytes)", connection_id, len(audio_data))
             return
         
         # Session is ready or force_send=True, send audio immediately

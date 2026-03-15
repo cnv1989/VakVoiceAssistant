@@ -563,6 +563,7 @@ async def create_appointment(
                     service_key=service_key,
                     staff_key=resolved_staff,
                     customer_key=resolved_customer_id,
+                    connection_id=business_context.get("connection_id"),
                 )
                 msg_sent = wa_result.get("success", False)
                 if msg_sent:
@@ -586,6 +587,7 @@ async def create_appointment(
                     service_key=service_key,
                     staff_key=resolved_staff,
                     customer_key=resolved_customer_id,
+                    connection_id=business_context.get("connection_id"),
                 )
                 msg_sent = sms_result.get("success", False)
                 if msg_sent:

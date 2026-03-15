@@ -35,4 +35,4 @@ uvicorn "${APP_MODULE}" \
         --port 8080 \
         --reload \
         --reload-dir . \
-        --log-level debug
+        --log-level info
