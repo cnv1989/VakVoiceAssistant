@@ -1,0 +1,78 @@
+name: Promote
+
+# CI/CD promotion pipeline: main → alpha (auto) → beta (PR) → prod (PR)
+#
+# On every push to main: auto-merge into alpha so alpha always mirrors main.
+# On every push to alpha: open a PR alpha → beta (or note existing).
+# On every push to beta:  open a PR beta  → prod (requires manual approval).
+#
+# Actual ECS + CDK deploys are handled by deploy-vakdeepgram.yml and
+# deploy-vak-infra.yml, which trigger on pushes to alpha/beta/prod/main.
+
+on:
+  push:
+    branches: [main, alpha, beta]
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # main → alpha: fast-forward merge (no PR, auto)
+      - name: Promote main → alpha
+        if: github.ref_name == 'main'
+        run: |
+          git fetch origin alpha
+          git checkout alpha
+          git merge --ff-only origin/main
+          git push origin alpha
+          echo "✅ Promoted main → alpha"
+
+      # alpha → beta: open PR (or note existing)
+      - name: Open PR alpha → beta
+        if: github.ref_name == 'alpha'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          EXISTING=$(gh pr list --base beta --head alpha --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
+          if [ -z "$EXISTING" ]; then
+            gh pr create \
+              --base beta \
+              --head alpha \
+              --title "Promote alpha → beta" \
+              --body "Automated promotion from alpha. Review and merge to deploy to beta-api.groommate.ai."
+            echo "✅ PR created: alpha → beta"
+          else
+            echo "ℹ️  PR #$EXISTING already open: alpha → beta"
+          fi
+
+      # beta → prod: open PR (or note existing)
+      - name: Open PR beta → prod
+        if: github.ref_name == 'beta'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          EXISTING=$(gh pr list --base prod --head beta --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
+          if [ -z "$EXISTING" ]; then
+            gh pr create \
+              --base prod \
+              --head beta \
+              --title "Promote beta → prod" \
+              --body "Automated promotion from beta. Review and merge to deploy to api.groommate.ai."
+            echo "✅ PR created: beta → prod"
+          else
+            echo "ℹ️  PR #$EXISTING already open: beta → prod"
+          fi
