@@ -76,6 +76,11 @@ class Settings(BaseSettings):
     # Call Analytics - DynamoDB table for per-call records written by VakDeepGram
     call_record_table: str = "CallRecord-pxy5meaaojbaxjwedt6v6oidw4-NONE"
 
+    # Session storage - S3 bucket for transcripts and recordings
+    # When set, transcripts are uploaded to S3 at the end of every call.
+    recordings_bucket: Optional[str] = None  # S3 bucket name (e.g. vak-artifacts-{account}-{region}-prod)
+    recordings_key_prefix: str = "call-sessions"  # S3 key prefix inside the bucket
+
     bedrock_model_id: str = "us.anthropic.claude-opus-4-6-v1"
     bedrock_max_tokens: int = 8192  # Maximum tokens for Claude models - increased for tool usage
     bedrock_temperature: float = 0.4

@@ -39,6 +39,7 @@ from utils.metrics import (
     emit_message_delivery,
 )
 from utils.call_records import write_call_record
+from utils.session_storage import upload_transcript, upload_recording
 
 
 def _make_json_serializable(obj):
@@ -1360,6 +1361,8 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         logger.error(f"Error in WebSocket handler for {connection_id}: {e}", exc_info=True)
     finally:
+        # Collect session recording data BEFORE closing the session (session is removed on close)
+        recording_data = deepgram_manager.get_session_recording_data(connection_id) if session else {}
         # Clean up session
         if session:
             await deepgram_manager.close_session(connection_id)
@@ -1373,6 +1376,36 @@ async def websocket_endpoint(websocket: WebSocket):
                 else "no_context" if not ctx.get("success")
                 else "completed"
             )
+            # Upload transcript and recording to S3 if bucket is configured
+            transcript_s3_key = None
+            recording_s3_key = None
+            if config.settings.recordings_bucket and recording_data:
+                transcript_s3_key = await upload_transcript(
+                    call_id=connection_id,
+                    transcript_turns=recording_data.get("transcript_turns", []),
+                    bucket_name=config.settings.recordings_bucket,
+                    aws_region=config.settings.aws_region,
+                    key_prefix=config.settings.recordings_key_prefix,
+                    metadata={
+                        "endpoint": "ws",
+                        "businessNumber": ctx.get("business_number") or ctx.get("businessNumber") or "",
+                    },
+                )
+                audio_chunks = recording_data.get("audio_chunks", [])
+                if audio_chunks:
+                    recording_s3_key = await upload_recording(
+                        call_id=connection_id,
+                        audio_chunks=audio_chunks,
+                        sample_rate=config.settings.deepgram_output_sample_rate or 24000,
+                        is_mulaw=False,
+                        bucket_name=config.settings.recordings_bucket,
+                        aws_region=config.settings.aws_region,
+                        key_prefix=config.settings.recordings_key_prefix,
+                        metadata={
+                            "endpoint": "ws",
+                            "businessNumber": ctx.get("business_number") or ctx.get("businessNumber") or "",
+                        },
+                    )
             await write_call_record(
                 connection_id=connection_id,
                 endpoint="ws",
@@ -1397,6 +1430,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 forwarded_call=bool(ctx.get("callForwarded") or ctx.get("call_forwarded")),
                 sms_sent_count=int(ctx.get("smsSentCount") or ctx.get("sms_sent_count") or 0),
                 whatsapp_sent_count=int(ctx.get("whatsappSentCount") or ctx.get("whatsapp_sent_count") or 0),
+                transcript_s3_key=transcript_s3_key,
+                recording_s3_key=recording_s3_key,
             )
         clear_connection_context_by_id(connection_id)
         _decrement_websocket_count(client_ip, "ws")
@@ -1576,7 +1611,11 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
         """Receive messages from Deepgram and forward to Twilio (matches sts-twilio sts_receiver)"""
         await session_ready.wait()
         # Wait for streamSid - callback is already set, but we need streamSid before sending audio
-        await streamsid_queue.get()
+        try:
+            await asyncio.wait_for(streamsid_queue.get(), timeout=30.0)
+        except asyncio.TimeoutError:
+            logger.warning("deepgram_receiver: timed out waiting for streamSid for %s", connection_id)
+            return
         logger.info(f"Deepgram receiver ready for {connection_id}, streamSid: {stream_sid_ref['value']}")
         
         # Keep this task alive - the actual receiving is handled by DeepgramManager's _sts_receiver
@@ -1738,6 +1777,7 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
             except Exception as e:
                 logger.error(f"Error in Twilio receiver: {e}")
                 break
+        audio_queue.put_nowait(None)
     
     async def deepgram_sender():
         """Send raw mulaw audio from Twilio to Deepgram (matches sts-twilio sts_sender)"""
@@ -1751,12 +1791,15 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
         while True:
             try:
                 mulaw_chunk = await audio_queue.get()
+                if mulaw_chunk is None:
+                    logger.info(f"deepgram_sender: received stop sentinel for {connection_id}")
+                    break
                 if session_ref["value"] and session_ref["value"].is_active:
                     # Send raw mulaw bytes directly with force_send=True (matches sts-twilio immediate sending)
                     await deepgram_manager.send_audio(connection_id, mulaw_chunk, force_send=True)
                     logger.debug(f"Sent {len(mulaw_chunk)} bytes of mulaw audio to Deepgram for {connection_id}")
                 else:
-                    logger.warn(f"Session not active, dropping audio chunk for {connection_id}")
+                    logger.warning(f"Session not active, dropping audio chunk for {connection_id}")
             except Exception as e:
                 logger.error(f"Error in Deepgram sender: {e}", exc_info=True)
                 break
@@ -1775,6 +1818,8 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         logger.error(f"Error in Twilio WebSocket handler: {e}")
     finally:
+        # Collect session recording data BEFORE closing the session
+        recording_data = deepgram_manager.get_session_recording_data(connection_id) if session_ref["value"] else {}
         # Clean up session
         if session_ref["value"]:
             await deepgram_manager.close_session(connection_id)
@@ -1788,6 +1833,36 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                 else "no_context" if not ctx.get("success")
                 else "completed"
             )
+            # Upload transcript and recording to S3 if bucket is configured
+            transcript_s3_key = None
+            recording_s3_key = None
+            if config.settings.recordings_bucket and recording_data:
+                transcript_s3_key = await upload_transcript(
+                    call_id=connection_id,
+                    transcript_turns=recording_data.get("transcript_turns", []),
+                    bucket_name=config.settings.recordings_bucket,
+                    aws_region=config.settings.aws_region,
+                    key_prefix=config.settings.recordings_key_prefix,
+                    metadata={
+                        "endpoint": "twilio_ws",
+                        "businessNumber": ctx.get("business_number") or ctx.get("businessNumber") or "",
+                    },
+                )
+                audio_chunks = recording_data.get("audio_chunks", [])
+                if audio_chunks:
+                    recording_s3_key = await upload_recording(
+                        call_id=connection_id,
+                        audio_chunks=audio_chunks,
+                        sample_rate=8000,
+                        is_mulaw=True,
+                        bucket_name=config.settings.recordings_bucket,
+                        aws_region=config.settings.aws_region,
+                        key_prefix=config.settings.recordings_key_prefix,
+                        metadata={
+                            "endpoint": "twilio_ws",
+                            "businessNumber": ctx.get("business_number") or ctx.get("businessNumber") or "",
+                        },
+                    )
             await write_call_record(
                 connection_id=connection_id,
                 endpoint="twilio_ws",
@@ -1812,6 +1887,8 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                 forwarded_call=bool(ctx.get("callForwarded") or ctx.get("call_forwarded")),
                 sms_sent_count=int(ctx.get("smsSentCount") or ctx.get("sms_sent_count") or 0),
                 whatsapp_sent_count=int(ctx.get("whatsappSentCount") or ctx.get("whatsapp_sent_count") or 0),
+                transcript_s3_key=transcript_s3_key,
+                recording_s3_key=recording_s3_key,
             )
         clear_connection_context_by_id(connection_id)
         _decrement_websocket_count(client_ip, "twilio_ws")

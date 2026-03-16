@@ -53,6 +53,9 @@ class DeepgramSession:
         self.pending_disconnect: bool = False
         self.pending_disconnect_reason: str = ""
         self.consecutive_failures: int = 0  # Track consecutive function failures for auto-transfer
+        # Transcript and recording collection
+        self.transcript_turns: list = []  # ConversationText turns [{role, content, ts}]
+        self.audio_chunks: list = []  # TTS PCM16/mulaw chunks for recording
         
     def set_send_callback(self, callback: Callable):
         """Set the callback function to send messages to the client"""
@@ -404,7 +407,16 @@ class DeepgramManager:
         elif msg_type == "ConversationText":
             role = data.get("role", "")
             content = data.get("content", "")
-            
+
+            # Collect transcript turns for S3 storage
+            if content:
+                from datetime import datetime, timezone as _tz
+                session.transcript_turns.append({
+                    "role": role,
+                    "content": content,
+                    "ts": datetime.now(_tz.utc).isoformat(),
+                })
+
             if role == "user" and content:
                 await session.send_to_client_safe({
                     "type": "transcript",
@@ -748,6 +760,9 @@ class DeepgramManager:
         """Handle binary audio messages (TTS) from Deepgram Voice Agent"""
         logger.debug("DeepgramManager._handle_audio_message called (connection_id=%s bytes=%d)", session.connection_id, len(audio_data))
         if len(audio_data) > 0:
+            # Collect audio for optional recording upload
+            if config.settings.recordings_bucket:
+                session.audio_chunks.append(audio_data)
             # Always encode as base64 for the callback (JSON-compatible)
             # The callback will decode and handle appropriately
             audio_base64 = base64.b64encode(audio_data).decode('utf-8')
@@ -788,6 +803,21 @@ class DeepgramManager:
         logger.debug("DeepgramManager.get_session called (connection_id=%s)", connection_id)
         return self.sessions.get(connection_id)
     
+    def get_session_recording_data(self, connection_id: str) -> dict:
+        """Return collected transcript turns and audio chunks for a session.
+
+        Must be called BEFORE close_session, which removes the session object.
+        Returns a dict with keys 'transcript_turns' and 'audio_chunks'.
+        Returns empty lists if the session does not exist.
+        """
+        session = self.sessions.get(connection_id)
+        if session is None:
+            return {"transcript_turns": [], "audio_chunks": []}
+        return {
+            "transcript_turns": list(session.transcript_turns),
+            "audio_chunks": list(session.audio_chunks),
+        }
+
     async def close_session(self, connection_id: str):
         """Close and clean up a session"""
         logger.debug("DeepgramManager.close_session called (connection_id=%s)", connection_id)

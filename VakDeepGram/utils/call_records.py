@@ -42,11 +42,16 @@ async def write_call_record(
     hour_of_day: Optional[int] = None,
     sms_sent_count: int = 0,
     whatsapp_sent_count: int = 0,
-) -> None:
+    transcript_s3_key: Optional[str] = None,
+    recording_s3_key: Optional[str] = None,
+) -> Optional[str]:
     """Write a call record to DynamoDB for analytics.
 
     Called from the WebSocket handler finally-block so it never raises —
     failures are logged but do not affect the call outcome.
+
+    Returns the call_id that was written (useful for correlating the S3 key
+    prefix with the DynamoDB record), or None on failure.
     """
     call_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
@@ -84,6 +89,10 @@ async def write_call_record(
         item["smsSentCount"] = sms_sent_count
     if whatsapp_sent_count:
         item["whatsappSentCount"] = whatsapp_sent_count
+    if transcript_s3_key:
+        item["transcriptS3Key"] = transcript_s3_key
+    if recording_s3_key:
+        item["recordingS3Key"] = recording_s3_key
     # Amplify DataStore compatibility fields
     item["__typename"] = "CallRecord"
     item["_version"] = 1
@@ -111,7 +120,8 @@ async def write_call_record(
             await table.put_item(Item=item)
         logger.info(
             "Call record written: callId=%s connectionId=%s businessNumber=%s "
-            "durationMs=%d outcome=%s bookingCreated=%s forwardedCall=%s",
+            "durationMs=%d outcome=%s bookingCreated=%s forwardedCall=%s "
+            "transcriptS3Key=%s recordingS3Key=%s",
             call_id,
             connection_id,
             business_number,
@@ -119,7 +129,10 @@ async def write_call_record(
             outcome,
             booking_created,
             forwarded_call,
+            transcript_s3_key,
+            recording_s3_key,
         )
+        return call_id
     except Exception as exc:
         logger.error(
             "Failed to write call record for %s: %s",
@@ -127,3 +140,4 @@ async def write_call_record(
             exc,
             exc_info=True,
         )
+        return None

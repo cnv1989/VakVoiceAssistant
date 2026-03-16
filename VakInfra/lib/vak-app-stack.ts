@@ -145,6 +145,9 @@ export class VakAppStack extends cdk.Stack {
     // Sessions table (owned by this stack)
     sessionsTable.grantReadWriteData(taskRole);
 
+    // S3 artifacts bucket — used for call transcripts and recordings
+    artifactsBucket.grantReadWrite(taskRole);
+
     // Amplify-owned DynamoDB tables — grant access by ARN
     const amplifyTableArn = (model: string) =>
       `arn:aws:dynamodb:${this.region}:${this.account}:table/${model}-${amplifyEnvId}-NONE`;
@@ -222,7 +225,7 @@ export class VakAppStack extends cdk.Stack {
         DEEPGRAM_LISTENING_MODEL: 'flux-general-en',
         DEEPGRAM_LISTENING_VERSION: 'v2',
         DEEPGRAM_THINKING_PROVIDER: 'google',
-        DEEPGRAM_THINKING_MODEL: 'gemini-2.5-flash-preview-04-17',
+        DEEPGRAM_THINKING_MODEL: 'gemini-2.5-flash',
         DEEPGRAM_SPEAKING_PROVIDER: 'eleven_labs',
         DEEPGRAM_SPEAKING_MODEL_ID: 'eleven_flash_v2_5',
         DEEPGRAM_SPEAKING_VOICE_ID: 'cgSgspJ2msm6clMCkdW9',
@@ -231,6 +234,10 @@ export class VakAppStack extends cdk.Stack {
 
         // Twilio configuration (non-sensitive)
         TWILIO_ACCOUNT_SID: 'ACd00787e66384ec2d2ed3e262748525af',
+
+        // S3 bucket for call transcripts and recordings
+        RECORDINGS_BUCKET: artifactsBucket.bucketName,
+        RECORDINGS_KEY_PREFIX: 'call-sessions',
 
         // DynamoDB table names (stage-specific via amplifyEnvId)
         BUSINESS_NUMBER_TABLE: tableEnv('BusinessNumber'),
