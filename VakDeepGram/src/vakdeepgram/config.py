@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     # Call Analytics - DynamoDB table for per-call records written by VakDeepGram
     call_record_table: str = "CallRecord-pxy5meaaojbaxjwedt6v6oidw4-NONE"
 
+    # Voice Customer tracking - DynamoDB table for caller profiles (upserted per call)
+    voice_customer_table: str = "VoiceCustomer-pxy5meaaojbaxjwedt6v6oidw4-NONE"
+
     # Session storage - S3 bucket for transcripts and recordings
     # When set, transcripts are uploaded to S3 at the end of every call.
     recordings_bucket: Optional[str] = None  # S3 bucket name (e.g. vak-artifacts-{account}-{region}-prod)
@@ -351,7 +354,7 @@ def _setmore_voice_prompt_patch(prompt: str) -> str:
     # Append Setmore-specific notes
     prompt += """
 #Setmore Notes
--You cannot directly create appointments on Setmore. create_appointment only generates a prefilled booking link. The link is sent via WhatsApp to the customer's phone; tell them to check WhatsApp.
+-You cannot directly create appointments on Setmore. create_appointment only generates a prefilled booking link. The link is sent via text message to the customer's phone; tell them to check their texts.
 -Appointment rescheduling is not supported. If a customer asks to reschedule, let them know they need to cancel and rebook, or contact the store directly.
 -Customer lookup requires a first name. Always ask for the customer's first name before looking them up.
 """

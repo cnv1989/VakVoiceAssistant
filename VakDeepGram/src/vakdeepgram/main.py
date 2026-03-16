@@ -40,6 +40,7 @@ from utils.metrics import (
 )
 from utils.call_records import write_call_record
 from utils.session_storage import upload_transcript, upload_recording
+from utils.customers import upsert_voice_customer
 
 
 def _make_json_serializable(obj):
@@ -1406,13 +1407,32 @@ async def websocket_endpoint(websocket: WebSocket):
                             "businessNumber": ctx.get("business_number") or ctx.get("businessNumber") or "",
                         },
                     )
+            # Upsert VoiceCustomer record if a customer was identified during the call
+            customer_id = None
+            customer_obj = ctx.get("customer")
+            business_number = ctx.get("business_number") or ctx.get("businessNumber")
+            booking_created = bool(ctx.get("bookingCreated") or ctx.get("booking_created"))
+            if customer_obj and config.settings.voice_customer_table:
+                from utils.customers import _extract_customer_fields
+                fields = _extract_customer_fields(customer_obj)
+                customer_id = await upsert_voice_customer(
+                    customer=customer_obj,
+                    provider=ctx.get("provider") or "unknown",
+                    business_number=business_number or "",
+                    caller_number=ctx.get("caller"),
+                    booking_created=booking_created,
+                    table_name=config.settings.voice_customer_table,
+                    aws_region=config.settings.aws_region,
+                )
+            else:
+                fields = {}
             await write_call_record(
                 connection_id=connection_id,
                 endpoint="ws",
                 duration_ms=duration_ms,
                 table_name=config.settings.call_record_table,
                 aws_region=config.settings.aws_region,
-                business_number=ctx.get("business_number") or ctx.get("businessNumber"),
+                business_number=business_number,
                 caller_number=ctx.get("caller"),
                 call_sid=ctx.get("callSid"),
                 provider=ctx.get("provider"),
@@ -1423,7 +1443,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 user_message_count=int(ctx.get("userMessageCount") or ctx.get("user_message_count") or 0),
                 tool_call_count=int(ctx.get("toolCallCount") or ctx.get("tool_call_count") or 0),
                 tool_call_error_count=int(ctx.get("toolCallErrorCount") or ctx.get("tool_call_error_count") or 0),
-                booking_created=bool(ctx.get("bookingCreated") or ctx.get("booking_created")),
+                booking_created=booking_created,
                 customer_found=bool(ctx.get("customerFound") or ctx.get("customer_found")),
                 sms_booking_link_sent=bool(ctx.get("smsBookingLinkSent") or ctx.get("sms_booking_link_sent")),
                 max_tokens_reached=bool(ctx.get("maxTokensReached") or ctx.get("max_tokens_reached")),
@@ -1432,6 +1452,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 whatsapp_sent_count=int(ctx.get("whatsappSentCount") or ctx.get("whatsapp_sent_count") or 0),
                 transcript_s3_key=transcript_s3_key,
                 recording_s3_key=recording_s3_key,
+                customer_id=customer_id,
+                customer_first_name=fields.get("first_name"),
+                customer_last_name=fields.get("last_name"),
             )
         clear_connection_context_by_id(connection_id)
         _decrement_websocket_count(client_ip, "ws")
@@ -1863,13 +1886,31 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                             "businessNumber": ctx.get("business_number") or ctx.get("businessNumber") or "",
                         },
                     )
+            customer_id = None
+            customer_obj = ctx.get("customer")
+            business_number = ctx.get("business_number") or ctx.get("businessNumber")
+            booking_created = bool(ctx.get("bookingCreated") or ctx.get("booking_created"))
+            if customer_obj and config.settings.voice_customer_table:
+                from utils.customers import _extract_customer_fields
+                fields = _extract_customer_fields(customer_obj)
+                customer_id = await upsert_voice_customer(
+                    customer=customer_obj,
+                    provider=ctx.get("provider") or "unknown",
+                    business_number=business_number or "",
+                    caller_number=ctx.get("caller"),
+                    booking_created=booking_created,
+                    table_name=config.settings.voice_customer_table,
+                    aws_region=config.settings.aws_region,
+                )
+            else:
+                fields = {}
             await write_call_record(
                 connection_id=connection_id,
                 endpoint="twilio_ws",
                 duration_ms=duration_ms,
                 table_name=config.settings.call_record_table,
                 aws_region=config.settings.aws_region,
-                business_number=ctx.get("business_number") or ctx.get("businessNumber"),
+                business_number=business_number,
                 caller_number=ctx.get("caller"),
                 call_sid=ctx.get("callSid"),
                 provider=ctx.get("provider"),
@@ -1880,7 +1921,7 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                 user_message_count=int(ctx.get("userMessageCount") or ctx.get("user_message_count") or 0),
                 tool_call_count=int(ctx.get("toolCallCount") or ctx.get("tool_call_count") or 0),
                 tool_call_error_count=int(ctx.get("toolCallErrorCount") or ctx.get("tool_call_error_count") or 0),
-                booking_created=bool(ctx.get("bookingCreated") or ctx.get("booking_created")),
+                booking_created=booking_created,
                 customer_found=bool(ctx.get("customerFound") or ctx.get("customer_found")),
                 sms_booking_link_sent=bool(ctx.get("smsBookingLinkSent") or ctx.get("sms_booking_link_sent")),
                 max_tokens_reached=bool(ctx.get("maxTokensReached") or ctx.get("max_tokens_reached")),
@@ -1889,6 +1930,9 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                 whatsapp_sent_count=int(ctx.get("whatsappSentCount") or ctx.get("whatsapp_sent_count") or 0),
                 transcript_s3_key=transcript_s3_key,
                 recording_s3_key=recording_s3_key,
+                customer_id=customer_id,
+                customer_first_name=fields.get("first_name"),
+                customer_last_name=fields.get("last_name"),
             )
         clear_connection_context_by_id(connection_id)
         _decrement_websocket_count(client_ip, "twilio_ws")

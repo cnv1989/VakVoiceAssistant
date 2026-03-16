@@ -24,7 +24,7 @@ except ImportError:  # pragma: no cover
 from vakdeepgram import config
 from utils import booking_helpers
 from utils.phone import normalize_phone_number
-from vakdeepgram.business_logic import send_booking_link_sms, send_booking_link_whatsapp
+from vakdeepgram.business_logic import send_booking_link_sms
 from providers.clients import SetmoreApiClient
 from vakdeepgram.services import resolve_auth_for_business_context
 
@@ -542,60 +542,34 @@ async def create_appointment(
         return {"success": False, "error": link_result.get("error") or "Failed to generate booking link."}
     prefilled_url = link_result.get("booking_url")
 
-    # Try WhatsApp first, then fall back to SMS
+    # Send booking link via SMS using the service number
     to_number = normalize_phone_number(phone) if phone else None
-    from_number = business_context.get("business_number")
-    whatsapp_number = (business_context.get("location") or {}).get("whatsapp_number")
     msg_sent = False
     msg_channel = None
-    if to_number and (whatsapp_number or from_number):
-        # Prefer WhatsApp if the business has a WhatsApp number
-        if whatsapp_number:
-            try:
-                wa_result = send_booking_link_whatsapp(
-                    whatsapp_from=whatsapp_number,
-                    to_number=to_number,
-                    booking_page_url=booking_page_url,
-                    service_name=service_name,
-                    staff_name=staff_name_str,
-                    start_dt=start_dt,
-                    customer_first_name=first_name,
-                    service_key=service_key,
-                    staff_key=resolved_staff,
-                    customer_key=resolved_customer_id,
-                    connection_id=business_context.get("connection_id"),
-                )
-                msg_sent = wa_result.get("success", False)
-                if msg_sent:
-                    msg_channel = "whatsapp"
-                else:
-                    logger.warning("setmore.create_appointment: WhatsApp failed: %s", wa_result.get("error"))
-            except Exception as exc:
-                logger.warning("setmore.create_appointment: WhatsApp exception: %s", exc)
-
-        # Fall back to SMS if WhatsApp was not available or failed
-        if not msg_sent and from_number:
-            try:
-                sms_result = send_booking_link_sms(
-                    from_number=from_number,
-                    to_number=to_number,
-                    booking_page_url=booking_page_url,
-                    service_name=service_name,
-                    staff_name=staff_name_str,
-                    start_dt=start_dt,
-                    customer_first_name=first_name,
-                    service_key=service_key,
-                    staff_key=resolved_staff,
-                    customer_key=resolved_customer_id,
-                    connection_id=business_context.get("connection_id"),
-                )
-                msg_sent = sms_result.get("success", False)
-                if msg_sent:
-                    msg_channel = "sms"
-                else:
-                    logger.warning("setmore.create_appointment: SMS failed: %s", sms_result.get("error"))
-            except Exception as exc:
-                logger.warning("setmore.create_appointment: SMS exception: %s", exc)
+    if to_number:
+        try:
+            from vakdeepgram import config as _config
+            sms_from = _config.settings.twilio_from_number or "+18664766609"
+            sms_result = send_booking_link_sms(
+                from_number=sms_from,
+                to_number=to_number,
+                booking_page_url=booking_page_url,
+                service_name=service_name,
+                staff_name=staff_name_str,
+                start_dt=start_dt,
+                customer_first_name=first_name,
+                service_key=service_key,
+                staff_key=resolved_staff,
+                customer_key=resolved_customer_id,
+                connection_id=business_context.get("connection_id"),
+            )
+            msg_sent = sms_result.get("success", False)
+            if msg_sent:
+                msg_channel = "sms"
+            else:
+                logger.warning("setmore.create_appointment: SMS failed: %s", sms_result.get("error"))
+        except Exception as exc:
+            logger.warning("setmore.create_appointment: SMS exception: %s", exc)
 
     return {
         "success": True,

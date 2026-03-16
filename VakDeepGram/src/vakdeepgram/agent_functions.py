@@ -517,7 +517,7 @@ FUNCTION_DEFINITIONS = [
         4. Collect first and last name and confirm spelling before booking
         5. If the customer exists, pass their customer_id; if not, create the customer first.
         Use the caller's phone number from context unless the customer provides a different number.
-        For Setmore: Cannot create appointments directly. Generates a prefilled booking link. Chat: include the booking_url in your reply. Call: link is sent via WhatsApp; tell the customer to check WhatsApp.
+        For Setmore: Cannot create appointments directly. Generates a prefilled booking link. Chat: include the booking_url in your reply. Call: link is sent via text message; tell the customer to check their texts.
         For Square: staff_id is required. For Setmore: staff_id is optional (system can pick available staff).""",
         "parameters": {
             "type": "object",

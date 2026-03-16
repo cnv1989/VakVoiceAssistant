@@ -158,6 +158,7 @@ export class VakAppStack extends cdk.Stack {
       'SetmoreAccount',
       'BusinessAutomations',
       'CallRecord',
+      'VoiceCustomer',
     ].map(model => dynamodb.Table.fromTableArn(this, `${model}Table`, amplifyTableArn(model)));
 
     amplifyTables.forEach(t => t.grantReadWriteData(taskRole));
@@ -173,6 +174,7 @@ export class VakAppStack extends cdk.Stack {
         `${amplifyTableArn('CallRecord')}/index/*`,
         `${amplifyTableArn('BusinessNumber')}/index/*`,
         `${amplifyTableArn('SetmoreAccount')}/index/*`,
+        `${amplifyTableArn('VoiceCustomer')}/index/*`,
       ],
     }));
 
@@ -234,6 +236,7 @@ export class VakAppStack extends cdk.Stack {
 
         // Twilio configuration (non-sensitive)
         TWILIO_ACCOUNT_SID: 'ACd00787e66384ec2d2ed3e262748525af',
+        TWILIO_FROM_NUMBER: '+18664766609',
 
         // S3 bucket for call transcripts and recordings
         RECORDINGS_BUCKET: artifactsBucket.bucketName,
@@ -245,6 +248,7 @@ export class VakAppStack extends cdk.Stack {
         SETMORE_ACCOUNT_TABLE: tableEnv('SetmoreAccount'),
         BUSINESS_AUTOMATIONS_TABLE: tableEnv('BusinessAutomations'),
         CALL_RECORD_TABLE: tableEnv('CallRecord'),
+        VOICE_CUSTOMER_TABLE: tableEnv('VoiceCustomer'),
 
         // Service URL for this stage
         ALB_DNS: apiDomain,

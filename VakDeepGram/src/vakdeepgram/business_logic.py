@@ -1292,55 +1292,27 @@ async def schedule_appointment_with_contact(
         prefilled_url = link_result.get("booking_url")
 
         to_number = normalize_phone_number(caller_phone) if caller_phone else None
-        from_number = context.get("businessNumber")
-        whatsapp_number = (context.get("location") or {}).get("whatsapp_number")
         msg_sent = False
-        msg_channel = None  # "whatsapp" or "sms"
-        if to_number and (whatsapp_number or from_number):
-            if whatsapp_number:
-                try:
-                    wa_result = send_booking_link_whatsapp(
-                        whatsapp_from=whatsapp_number,
-                        to_number=to_number,
-                        booking_page_url=booking_page_url or "",
-                        service_name=service_name,
-                        staff_name=staff_name,
-                        start_dt=start_dt,
-                        customer_first_name=first_name,
-                        service_key=service_key,
-                        staff_key=resolved_staff_id,
-                        customer_key=resolved_customer_id,
-                        connection_id=connection_id,
-                    )
-                    if wa_result.get("success"):
-                        msg_sent = True
-                        msg_channel = "whatsapp"
-                    else:
-                        logger.warning("schedule_appointment_with_contact (setmore): WhatsApp failed: %s", wa_result.get("error"))
-                except Exception as exc:
-                    logger.warning("schedule_appointment_with_contact (setmore): WhatsApp exception: %s", exc)
-            if not msg_sent and from_number:
-                sms_result = send_booking_link_sms(
-                    from_number=config.settings.twilio_from_number or from_number,
-                    to_number=to_number,
-                    booking_page_url=booking_page_url or "",
-                    service_name=service_name,
-                    staff_name=staff_name,
-                    start_dt=start_dt,
-                    customer_first_name=first_name,
-                    service_key=service_key,
-                    staff_key=resolved_staff_id,
-                    customer_key=resolved_customer_id,
-                    connection_id=connection_id,
-                )
-                msg_sent = sms_result.get("success", False)
-                if msg_sent:
-                    msg_channel = "sms"
+        msg_channel = None  # "sms"
+        if to_number:
+            sms_result = send_booking_link_sms(
+                from_number=config.settings.twilio_from_number or "+18664766609",
+                to_number=to_number,
+                booking_page_url=booking_page_url or "",
+                service_name=service_name,
+                staff_name=staff_name,
+                start_dt=start_dt,
+                customer_first_name=first_name,
+                service_key=service_key,
+                staff_key=resolved_staff_id,
+                customer_key=resolved_customer_id,
+                connection_id=connection_id,
+            )
+            msg_sent = sms_result.get("success", False)
+            if msg_sent:
+                msg_channel = "sms"
 
-        sent_text = (
-            f" Sent to {to_number} via WhatsApp." if msg_channel == "whatsapp"
-            else (f" Sent to {to_number} via text." if msg_sent else "")
-        )
+        sent_text = f" Sent to {to_number} via text." if msg_sent else ""
         return {
             "success": True,
             "appointment": None,

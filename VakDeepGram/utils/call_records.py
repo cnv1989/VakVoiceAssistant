@@ -44,6 +44,9 @@ async def write_call_record(
     whatsapp_sent_count: int = 0,
     transcript_s3_key: Optional[str] = None,
     recording_s3_key: Optional[str] = None,
+    customer_id: Optional[str] = None,
+    customer_first_name: Optional[str] = None,
+    customer_last_name: Optional[str] = None,
 ) -> Optional[str]:
     """Write a call record to DynamoDB for analytics.
 
@@ -93,6 +96,12 @@ async def write_call_record(
         item["transcriptS3Key"] = transcript_s3_key
     if recording_s3_key:
         item["recordingS3Key"] = recording_s3_key
+    if customer_id:
+        item["customerId"] = customer_id
+    if customer_first_name:
+        item["customerFirstName"] = customer_first_name
+    if customer_last_name:
+        item["customerLastName"] = customer_last_name
     # Amplify DataStore compatibility fields
     item["__typename"] = "CallRecord"
     item["_version"] = 1
