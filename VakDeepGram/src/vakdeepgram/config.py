@@ -61,23 +61,23 @@ class Settings(BaseSettings):
 
     # Square Configuration
     square_environment: SquareEnv = SquareEnv.PRODUCTION
-    square_account_table: str = "SquareAccount-pxy5meaaojbaxjwedt6v6oidw4-NONE"
-    business_number_table: str = "BusinessNumber-pxy5meaaojbaxjwedt6v6oidw4-NONE"
+    square_account_table: str = "SquareAccount-qwgs45frzjcxxapb2olf7uebca-NONE"
+    business_number_table: str = "BusinessNumber-qwgs45frzjcxxapb2olf7uebca-NONE"
     aws_region: str = "us-west-2"
 
     # Setmore Configuration
-    setmore_account_table: str = "SetmoreAccount-pxy5meaaojbaxjwedt6v6oidw4-NONE"
+    setmore_account_table: str = "SetmoreAccount-qwgs45frzjcxxapb2olf7uebca-NONE"
     setmore_api_base_url: str = "https://developer.setmore.com/api/v1"
     setmore_request_timeout_seconds: int = 30
 
     # Business Automations Configuration (for voice settings)
-    business_automations_table: str = "BusinessAutomations-pxy5meaaojbaxjwedt6v6oidw4-NONE"
+    business_automations_table: str = "BusinessAutomations-qwgs45frzjcxxapb2olf7uebca-NONE"
 
     # Call Analytics - DynamoDB table for per-call records written by VakDeepGram
-    call_record_table: str = "CallRecord-pxy5meaaojbaxjwedt6v6oidw4-NONE"
+    call_record_table: str = "CallRecord-qwgs45frzjcxxapb2olf7uebca-NONE"
 
     # Voice Customer tracking - DynamoDB table for caller profiles (upserted per call)
-    voice_customer_table: str = "VoiceCustomer-pxy5meaaojbaxjwedt6v6oidw4-NONE"
+    voice_customer_table: str = "VoiceCustomer-qwgs45frzjcxxapb2olf7uebca-NONE"
 
     # Session storage - S3 bucket for transcripts and recordings
     # When set, transcripts are uploaded to S3 at the end of every call.

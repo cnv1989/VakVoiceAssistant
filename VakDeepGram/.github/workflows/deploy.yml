@@ -1,0 +1,85 @@
+name: Build, Push & Deploy
+
+# Builds Docker image, pushes to ECR, forces new ECS deployment.
+# Auto-promotes: alpha → beta → prod (all in one job).
+#
+# Required secrets: AWS_ROLE_ARN (already set)
+
+on:
+  push:
+    branches:
+      - alpha
+      - beta
+      - prod
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-west-2
+
+      - name: Login to ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set stage from branch
+        id: stage
+        run: |
+          case "${{ github.ref_name }}" in
+            alpha) echo "stage=alpha" >> $GITHUB_OUTPUT ;;
+            beta)  echo "stage=beta"  >> $GITHUB_OUTPUT ;;
+            prod)  echo "stage=prod"  >> $GITHUB_OUTPUT ;;
+          esac
+
+      - name: Build and push Docker image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          STAGE: ${{ steps.stage.outputs.stage }}
+        run: |
+          IMAGE=$ECR_REGISTRY/vak-deepgram:$STAGE
+          docker build -t $IMAGE .
+          docker push $IMAGE
+          echo "Pushed $IMAGE"
+
+      - name: Force new ECS deployment
+        env:
+          STAGE: ${{ steps.stage.outputs.stage }}
+        run: |
+          CLUSTER="vak-cluster-$STAGE"
+          SERVICE=$(aws ecs list-services --cluster $CLUSTER --region us-west-2 \
+            --query 'serviceArns[0]' --output text | xargs basename)
+          aws ecs update-service \
+            --cluster $CLUSTER \
+            --service $SERVICE \
+            --force-new-deployment \
+            --region us-west-2
+          echo "Triggered new deployment on $CLUSTER/$SERVICE"
+
+      - name: Configure git
+        if: github.ref_name == 'alpha'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Promote alpha → beta → prod
+        if: github.ref_name == 'alpha'
+        run: |
+          git checkout beta
+          git merge --ff-only origin/alpha
+          git push origin beta
+          git checkout prod
+          git merge --ff-only origin/alpha
+          git push origin prod
