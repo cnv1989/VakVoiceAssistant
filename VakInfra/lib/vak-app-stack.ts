@@ -65,6 +65,7 @@ export interface VakAppStackProps extends cdk.StackProps {
    * e.g. 'groommate-auth-prod' | 'groommate-auth-beta' | 'groommate-auth-alpha'
    */
   cognitoDomainPrefix?: string;
+
 }
 
 export class VakAppStack extends cdk.Stack {
@@ -252,6 +253,9 @@ export class VakAppStack extends cdk.Stack {
 
         // Service URL for this stage
         ALB_DNS: apiDomain,
+
+        // API key for /chat endpoint (used by Slack bot and other internal callers)
+        CHAT_API_KEY: 'HZB8Yk-odYjZrEmyFEKZx-UMNCfKoRiBv0Oi2eeKiSg',
       },
       secrets: Object.keys(containerSecrets).length > 0 ? containerSecrets : undefined,
       healthCheck: {
