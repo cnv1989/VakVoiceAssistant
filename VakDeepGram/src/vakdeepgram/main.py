@@ -361,13 +361,20 @@ async def verify_oauth_auth(
     request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> dict:
-    """Verify OAuth bearer token using configured JWKS settings."""
+    """Verify OAuth bearer token using configured JWKS settings.
+    Also accepts a shared API key (chat_api_key) for service-to-service callers.
+    """
     host = request.headers.get("host") or request.url.hostname
     if _localhost_oauth_bypass_allowed(host):
         logger.info("Bypassing OAuth auth for localhost request (host=%s)", host)
         return {"claims": {}, "token": None, "bypassed": True}
     if not credentials:
         raise HTTPException(status_code=401, detail="Bearer token required")
+    # API key path — used by Slack bot and other internal callers
+    api_key = config.settings.chat_api_key
+    if api_key and credentials.credentials == api_key:
+        return {"claims": {}, "token": credentials.credentials, "api_key": True}
+    # OAuth JWT path
     result = validate_oauth_token(credentials.credentials)
     if not result.get("success"):
         raise HTTPException(status_code=401, detail=result.get("error") or "Invalid OAuth token")
