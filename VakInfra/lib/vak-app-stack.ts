@@ -188,10 +188,15 @@ export class VakAppStack extends cdk.Stack {
     }));
 
     // Bedrock for Strands Agent / chat endpoint
+    // foundation-model/* covers direct model calls; inference-profile/* covers
+    // cross-region inference profiles (e.g. us.anthropic.claude-opus-4-6-v1)
     taskRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
-      resources: [`arn:aws:bedrock:${this.region}::foundation-model/*`],
+      resources: [
+        `arn:aws:bedrock:${this.region}::foundation-model/*`,
+        `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/*`,
+      ],
     }));
 
     // ─── ECS Task Definition ─────────────────────────────────────────────────
