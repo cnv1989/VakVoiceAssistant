@@ -1275,7 +1275,16 @@ async def websocket_endpoint(websocket: WebSocket):
         """Helper function to send data to client"""
         try:
             if data.get("type") == "disconnect":
-                await websocket.close(code=1000, reason=data.get("reason") or "end_call")
+                # Send disconnect JSON first so the client can finish playing farewell TTS.
+                # Schedule a forced close as a fallback in case the client doesn't close itself.
+                await websocket.send_json(data)
+                async def _force_close_after_grace():
+                    await asyncio.sleep(8)
+                    try:
+                        await websocket.close(code=1000, reason=data.get("reason") or "end_call")
+                    except Exception:
+                        pass
+                asyncio.create_task(_force_close_after_grace())
                 return
             await websocket.send_json(data)
         except Exception as e:
