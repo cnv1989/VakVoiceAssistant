@@ -393,7 +393,7 @@ export class VakAppStack extends cdk.Stack {
           userPool,
           userPoolClient,
           userPoolDomain,
-          onUnauthenticatedRequest: elbv2Actions.UnauthenticatedAction.ALLOW,
+          onUnauthenticatedRequest: elbv2.UnauthenticatedAction.ALLOW,
           next: elbv2.ListenerAction.forward([targetGroup]),
         }),
       });
@@ -407,7 +407,7 @@ export class VakAppStack extends cdk.Stack {
           userPool,
           userPoolClient,
           userPoolDomain,
-          onUnauthenticatedRequest: elbv2Actions.UnauthenticatedAction.ALLOW,
+          onUnauthenticatedRequest: elbv2.UnauthenticatedAction.ALLOW,
           next: elbv2.ListenerAction.forward([targetGroup]),
         }),
       });
