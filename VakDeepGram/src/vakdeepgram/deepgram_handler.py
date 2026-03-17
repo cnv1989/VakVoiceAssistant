@@ -52,6 +52,7 @@ class DeepgramSession:
         self.use_mulaw = use_mulaw  # Track if using mulaw encoding (for Twilio)
         self.pending_disconnect: bool = False
         self.pending_disconnect_reason: str = ""
+        self.pending_disconnect_after_speech: bool = False  # Wait for AgentStartedSpeaking before arming disconnect
         self.consecutive_failures: int = 0  # Track consecutive function failures for auto-transfer
         # Transcript and recording collection
         self.transcript_turns: list = []  # ConversationText turns [{role, content, ts}]
@@ -475,6 +476,10 @@ class DeepgramManager:
                 "type": "agent-started-speaking",
                 "connectionId": session.connection_id
             })
+            # Farewell has started — arm the disconnect so AgentAudioDone triggers it
+            if session.pending_disconnect_after_speech:
+                session.pending_disconnect_after_speech = False
+                session.pending_disconnect = True
         
         elif msg_type == "AgentAudioDone":
             logger.info(f"✅ Agent audio done for {session.connection_id}")
@@ -730,7 +735,10 @@ class DeepgramManager:
             logger.info(f"✅ Sent function result to Deepgram for call_id: {call_id}")
 
             if function_name == "end_call":
-                session.pending_disconnect = True
+                # Wait for the farewell speech to start before arming the disconnect.
+                # This prevents a prior AgentAudioDone from dropping the call before
+                # the agent speaks its goodbye.
+                session.pending_disconnect_after_speech = True
                 session.pending_disconnect_reason = "end_call"
             elif function_name in ("transfer_to_staff", "talk_to_owner"):
                 if result.get("success"):
