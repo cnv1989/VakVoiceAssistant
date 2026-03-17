@@ -372,6 +372,9 @@ export class VakAppStack extends cdk.Stack {
         cognitoDomain: { domainPrefix: props.cognitoDomainPrefix },
       });
 
+      // onUnauthenticatedRequest=ALLOW: browser sessions with a valid Cognito cookie
+      // get the full auth flow; API callers (Bearer token, WebSocket access_token)
+      // pass through directly to FastAPI which handles auth itself.
       httpsListener.addAction('AuthenticateWs', {
         priority: 5,
         conditions: [
@@ -382,6 +385,7 @@ export class VakAppStack extends cdk.Stack {
           userPool,
           userPoolClient,
           userPoolDomain,
+          onUnauthenticatedRequest: elbv2Actions.UnauthenticatedAction.ALLOW,
           next: elbv2.ListenerAction.forward([targetGroup]),
         }),
       });
@@ -395,6 +399,7 @@ export class VakAppStack extends cdk.Stack {
           userPool,
           userPoolClient,
           userPoolDomain,
+          onUnauthenticatedRequest: elbv2Actions.UnauthenticatedAction.ALLOW,
           next: elbv2.ListenerAction.forward([targetGroup]),
         }),
       });
