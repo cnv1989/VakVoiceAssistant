@@ -104,6 +104,14 @@ export class VakAppStack extends cdk.Stack {
       bucketName: `vak-artifacts-${this.account}-${this.region}-${stage}`,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
+      lifecycleRules: [
+        {
+          id: 'expire-call-sessions-30d',
+          prefix: 'call-sessions/',
+          expiration: cdk.Duration.days(30),
+          enabled: true,
+        },
+      ],
     });
     this.artifactsBucket = artifactsBucket;
 

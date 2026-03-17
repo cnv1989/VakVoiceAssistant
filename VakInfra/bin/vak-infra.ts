@@ -58,16 +58,12 @@ const stageConfigs: Array<{
   },
   {
     stage: 'beta',
-    // TODO: Replace PLACEHOLDER after Amplify beta branch deploys:
-    //   aws dynamodb list-tables --region us-west-2 | grep BusinessNumber
     amplifyEnvId: app.node.tryGetContext('betaAmplifyEnvId') || 'PLACEHOLDER_BETA_ENV_ID',
     apiDomain: 'beta-api.groommate.ai',
     cognitoDomainPrefix: 'groommate-auth-beta',
   },
   {
     stage: 'alpha',
-    // TODO: Replace PLACEHOLDER after Amplify alpha branch deploys:
-    //   aws dynamodb list-tables --region us-west-2 | grep BusinessNumber
     amplifyEnvId: app.node.tryGetContext('alphaAmplifyEnvId') || 'PLACEHOLDER_ALPHA_ENV_ID',
     apiDomain: 'alpha-api.groommate.ai',
     cognitoDomainPrefix: 'groommate-auth-alpha',

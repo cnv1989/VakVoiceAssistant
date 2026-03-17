@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     twilio_auth_token: Optional[str] = None  # Required for signature verification and sending SMS
     twilio_signature_verification_enabled: bool = True  # Set to False to skip verification
     twilio_from_number: Optional[str] = None  # Override from-number for outbound SMS (defaults to business number)
+    twilio_business_number: Optional[str] = None  # Inbound business phone number (Twilio)
 
     # Application Environment
     environment: Environment = Environment.DEVELOPMENT
