@@ -859,13 +859,14 @@ async def twilio_twiml(request: Request):
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="{stream_url}" track="inbound_track">
+    <Stream url="{stream_url}" track="both_tracks">
       <Parameter name="Called" value="{to_number}"/>
       <Parameter name="Caller" value="{from_number}"/>
       <Parameter name="CallSid" value="{call_sid}"/>
       <Parameter name="CallType" value="{call_type}"/>
       <Parameter name="Stage" value="CustomerQuery"/>
       <Parameter name="Service" value="Groomers"/>
+      <Parameter name="speakerEvents" value="true"/>
     </Stream>
   </Connect>
 </Response>"""
@@ -2065,6 +2066,17 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                         except Exception as e:
                             logger.error(f"Error processing media event: {e}", exc_info=True)
                 
+                elif event == "speaker":
+                    speaker_name = (data.get("speaker") or {}).get("name", "")
+                    logger.debug("Twilio speaker event: %s for %s", speaker_name, connection_id)
+                    if speaker_name == "clientSpeaking" and stream_sid_ref["value"]:
+                        # Client started speaking — clear agent TTS audio from Twilio's buffer (barge-in)
+                        logger.info("clientSpeaking: sending clear to Twilio for %s", connection_id)
+                        await send_to_twilio({
+                            "event": "clear",
+                            "streamSid": stream_sid_ref["value"],
+                        })
+
                 elif event == "stop":
                     logger.info(f"Twilio stream stopped: {connection_id}")
                     break
