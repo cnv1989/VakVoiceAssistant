@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     twilio_signature_verification_enabled: bool = True  # Set to False to skip verification
     twilio_from_number: Optional[str] = None  # Override from-number for outbound SMS (defaults to business number)
     twilio_business_number: Optional[str] = None  # Inbound business phone number (Twilio)
+    twilio_whatsapp_number: Optional[str] = "+14155238886"  # WhatsApp-enabled number (Twilio sandbox for testing)
 
     # Application Environment
     environment: Environment = Environment.DEVELOPMENT

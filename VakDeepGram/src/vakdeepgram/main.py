@@ -1165,6 +1165,218 @@ async def twilio_chat(request: Request):
     return Response(content=twiml_response, media_type="application/xml")
 
 
+async def _run_chat_agent(
+    message: str,
+    business_context: dict,
+    provider: str,
+    system_prompt: str,
+    model_id: str,
+    max_tokens: int,
+    temperature: float,
+    session_id: str,
+    endpoint_label: str,
+) -> str:
+    """Shared Strands agent invocation for chat endpoints. Returns reply text."""
+    bedrock_model = BedrockModel(
+        model_id=model_id,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        region_name=config.settings.aws_region,
+    )
+    provider_tools = get_tools_for_provider(provider)
+    business_context["current_local_time"] = get_localized_datetime_from_context(business_context)
+    serializable_context = _make_json_serializable(business_context)
+    serializable_context = to_snake_case(serializable_context)
+    initial_state = {"business_context": serializable_context, **serializable_context}
+
+    _chat_message_counts[session_id] = _chat_message_counts.get(session_id, 0) + 1
+    emit_user_message_count(endpoint_label, session_id, _chat_message_counts[session_id])
+    session_manager = _get_chat_session_manager(session_id)
+
+    agent = Agent(
+        model=bedrock_model,
+        system_prompt=system_prompt or None,
+        tools=provider_tools,
+        state=initial_state,
+        session_manager=session_manager,
+    )
+    _seed_agent_state(agent, serializable_context)
+
+    agent_start = time.monotonic()
+    reply = "Sorry, something went wrong. Please try again later."
+    agent_success = False
+    agent_error_type = None
+
+    for attempt in range(2):
+        try:
+            response = await asyncio.to_thread(lambda: agent(message))
+            agent_success = True
+            if isinstance(response, str):
+                reply = response
+            elif hasattr(response, "content"):
+                reply = response.content
+            elif isinstance(response, dict):
+                reply = response.get("content") or response.get("reply") or str(response)
+            else:
+                reply = str(response)
+            break
+        except Exception as exc:
+            error_msg = str(exc).lower()
+            agent_error_type = type(exc).__name__
+            is_tool_result_exceeds = (
+                ("validationexception" in error_msg or "conversestream" in error_msg)
+                and "toolresult" in error_msg and "tooluse" in error_msg and "exceeds" in error_msg
+            )
+            if is_tool_result_exceeds and attempt == 0:
+                logger.warning("Strands session history mismatch; clearing and retrying: session_id=%s", session_id)
+                try:
+                    session_manager.delete_session(session_id)
+                except Exception:
+                    pass
+                retry_sid = f"{session_id}:retry-{uuid.uuid4().hex[:8]}"
+                session_manager = _get_chat_session_manager(retry_sid)
+                agent = Agent(
+                    model=bedrock_model,
+                    system_prompt=system_prompt or None,
+                    tools=provider_tools,
+                    state={"business_context": serializable_context, **serializable_context},
+                    session_manager=session_manager,
+                )
+                _seed_agent_state(agent, serializable_context)
+                continue
+            is_max_tokens = (
+                MaxTokensReachedException and isinstance(exc, MaxTokensReachedException)
+            ) or "max_tokens" in error_msg or "unrecoverable state due to max_tokens" in error_msg
+            if is_max_tokens:
+                logger.warning("Strands Agent hit max_tokens (endpoint=%s)", endpoint_label)
+                emit_max_tokens_reached(endpoint_label, provider)
+                reply = "Sorry, I couldn't complete my response. Please try a simpler question."
+                break
+            raise
+
+    emit_agent_metrics(
+        endpoint=endpoint_label,
+        provider=provider,
+        duration_ms=(time.monotonic() - agent_start) * 1000,
+        success=agent_success,
+        error_type=agent_error_type if not agent_success else None,
+    )
+    return reply
+
+
+@app.post("/whatsapp-chat")
+@limiter.limit(lambda: f"{config.settings.rate_limit_per_minute}/minute")
+async def whatsapp_chat(request: Request):
+    """Chat endpoint for inbound WhatsApp messages via Twilio.
+
+    Twilio sends the same form-encoded payload as SMS but with ``whatsapp:``
+    prefixes on ``From`` / ``To``.  We strip the prefix for business-context
+    lookup, invoke the Strands agent, then reply back over WhatsApp.
+    """
+    logger.info("whatsapp_chat endpoint called")
+
+    body = await request.body()
+
+    if not verify_twilio_http_signature(request, body):
+        is_production = config.settings.environment.value == "production"
+        if is_production and config.settings.twilio_signature_verification_enabled:
+            logger.error("Rejecting /whatsapp-chat request: invalid Twilio signature")
+            raise HTTPException(status_code=403, detail="Invalid Twilio signature")
+        logger.warning("Allowing /whatsapp-chat despite failed signature verification (non-production)")
+
+    # Parse body
+    try:
+        content_type = request.headers.get("Content-Type", "")
+        if "application/json" in content_type:
+            payload = json.loads(body.decode("utf-8"))
+        else:
+            parsed = parse_qs(body.decode("utf-8"), keep_blank_values=True)
+            payload = {k: v[0] if len(v) == 1 else v for k, v in parsed.items()}
+    except Exception as e:
+        logger.error("Failed to parse /whatsapp-chat body: %s", e)
+        raise HTTPException(status_code=400, detail="Invalid request body")
+
+    message = (
+        payload.get("message") or payload.get("text") or
+        payload.get("Body") or payload.get("body")
+    )
+    if not message or not isinstance(message, str):
+        raise HTTPException(status_code=400, detail="message is required")
+
+    # Raw To/From values from Twilio (may include whatsapp: prefix)
+    raw_to = payload.get("To") or payload.get("to") or payload.get("business_number") or ""
+    raw_from = payload.get("From") or payload.get("from") or payload.get("customer_number") or ""
+
+    # Strip whatsapp: prefix for business-context lookup
+    business_number = raw_to[len("whatsapp:"):] if raw_to.startswith("whatsapp:") else raw_to
+    customer_phone = raw_from[len("whatsapp:"):] if raw_from.startswith("whatsapp:") else raw_from
+
+    if not business_number:
+        raise HTTPException(status_code=400, detail="business_number is required")
+
+    session_id = (
+        payload.get("session_id") or payload.get("sessionId") or
+        f"whatsapp:{business_number}:{normalize_phone_number(customer_phone) or customer_phone}"
+    )
+
+    logger.info("WhatsApp chat: business=%s customer=%s", business_number, customer_phone)
+
+    # Resolve business context
+    business_context: dict = {}
+    try:
+        business_context = await resolve_context_for_request(
+            business_number, caller_number=customer_phone
+        )
+        if not business_context.get("success"):
+            logger.warning("Failed to resolve business context: %s", business_context.get("error"))
+    except Exception as exc:
+        logger.error("Error resolving business context: %s", exc, exc_info=True)
+        business_context = {"success": False, "error": str(exc)}
+
+    provider = (business_context.get("provider") or "square").lower()
+    system_prompt = payload.get("system_prompt") or get_chat_prompt_for_provider(provider) or ""
+    model_id = payload.get("model_id") or config.settings.bedrock_model_id
+    max_tokens = int(payload.get("max_tokens") or config.settings.bedrock_max_tokens)
+    temperature = float(payload.get("temperature") or config.settings.bedrock_temperature)
+
+    reply = await _run_chat_agent(
+        message=message,
+        business_context=business_context,
+        provider=provider,
+        system_prompt=system_prompt,
+        model_id=model_id,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        session_id=session_id,
+        endpoint_label="whatsapp_chat",
+    )
+
+    # Send WhatsApp reply via Twilio
+    twilio_account_sid = config.settings.twilio_account_sid
+    twilio_auth_token = config.settings.twilio_auth_token
+    if not twilio_account_sid or not twilio_auth_token:
+        raise HTTPException(status_code=500, detail="Twilio credentials not configured")
+
+    # Use the configured WhatsApp number as the sender
+    whatsapp_from_number = config.settings.twilio_whatsapp_number or business_number
+    wa_from = f"whatsapp:{whatsapp_from_number}" if not whatsapp_from_number.startswith("whatsapp:") else whatsapp_from_number
+    wa_to = f"whatsapp:{customer_phone}" if not customer_phone.startswith("whatsapp:") else customer_phone
+
+    try:
+        client = TwilioClient(twilio_account_sid, twilio_auth_token)
+        wa_message = client.messages.create(body=reply, from_=wa_from, to=wa_to)
+        logger.info("Sent WhatsApp reply: sid=%s from=%s to=%s", wa_message.sid, wa_from, wa_to)
+        emit_message_delivery("whatsapp", True)
+    except Exception as exc:
+        logger.error("Failed to send WhatsApp reply: %s", exc, exc_info=True)
+        emit_message_delivery("whatsapp", False)
+        raise HTTPException(status_code=502, detail=f"Failed to send WhatsApp message: {exc}")
+
+    twiml_response = '''<?xml version="1.0" encoding="UTF-8"?>
+<Response></Response>'''
+    return Response(content=twiml_response, media_type="application/xml")
+
+
 def _get_client_ip(websocket: WebSocket) -> str:
     """Extract client IP from WebSocket connection."""
     if websocket.client:

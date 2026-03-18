@@ -261,6 +261,7 @@ export class VakAppStack extends cdk.Stack {
         // Twilio configuration (non-sensitive)
         TWILIO_ACCOUNT_SID: 'ACd00787e66384ec2d2ed3e262748525af',
         TWILIO_FROM_NUMBER: '+18664766609',
+        TWILIO_WHATSAPP_NUMBER: '+14155238886',  // Twilio sandbox number (testing only)
 
         // S3 bucket for call transcripts and recordings
         RECORDINGS_BUCKET: artifactsBucket.bucketName,
