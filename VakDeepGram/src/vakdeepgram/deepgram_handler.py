@@ -519,13 +519,35 @@ class DeepgramManager:
                     _endpoint_from_connection_id(session.connection_id),
                     error_code or "DeepgramError",
                 )
-                await session.send_to_client_safe({
-                    "type": "error",
-                    "message": error_msg,
-                })
                 if session.on_fatal_error:
                     logger.info("Triggering fatal error fallback for %s (code=%s)", session.connection_id, error_code)
+                    await session.send_to_client_safe({
+                        "type": "error",
+                        "message": error_msg,
+                    })
                     await session.on_fatal_error(error_msg)
+                else:
+                    # Auto-reconnect: restart the Deepgram session without closing the browser WS
+                    logger.info("🔄 Auto-reconnecting Deepgram session for %s (code=%s)", session.connection_id, error_code)
+                    connection_id = session.connection_id
+                    send_callback = session.send_callback
+                    use_mulaw = session.use_mulaw
+                    try:
+                        new_session = await self.create_session(connection_id, use_mulaw=use_mulaw)
+                        if send_callback:
+                            new_session.set_send_callback(send_callback)
+                        await new_session.send_to_client_safe({"type": "deepgram-ready"})
+                        logger.info("✅ Deepgram session reconnected for %s", connection_id)
+                    except Exception as reconnect_exc:
+                        logger.error("❌ Deepgram reconnect failed for %s: %s", connection_id, reconnect_exc)
+                        if send_callback:
+                            try:
+                                await send_callback({
+                                    "type": "error",
+                                    "message": f"Deepgram reconnect failed: {reconnect_exc}",
+                                })
+                            except Exception:
+                                pass
         
         elif msg_type in ("FunctionCall", "FunctionCallRequest"):
             # Handle function call request from Deepgram
