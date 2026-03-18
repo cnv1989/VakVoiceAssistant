@@ -1,16 +1,16 @@
 """
 Async utility for upserting VoiceCustomer records in DynamoDB.
 
-A VoiceCustomer is a unique caller identified by their provider customer ID
-(Square customer_id or Setmore key). One row per customer per business number.
+A VoiceCustomer is a unique caller deduplicated by their phone number.
 
-Primary key: customerId = "{provider}:{providerCustomerId}:{businessNumber}"
+Primary key: customerId = "caller:{callerNumber}:{businessNumber}"
+Fallback (no caller number): "{provider}:{providerCustomerId}:{businessNumber}"
 
 On each call:
   - firstSeenAt is set only if not already present (if_not_exists)
   - lastSeenAt is always updated
   - callCount / bookingCount are incremented atomically (ADD)
-  - name / phone are refreshed
+  - name / phone / providerCustomerId are refreshed
 
 The record is also linked to the CallRecord via the customerId field.
 """
@@ -76,10 +76,18 @@ async def upsert_voice_customer(
     """
     fields = _extract_customer_fields(customer)
     provider_customer_id = fields["provider_id"]
-    if not provider_customer_id or not business_number:
+
+    # Deduplicate by caller number (phone) when available; fall back to provider ID.
+    if caller_number:
+        customer_id = f"caller:{caller_number}:{business_number}"
+    elif provider_customer_id and business_number:
+        customer_id = f"{provider}:{provider_customer_id}:{business_number}"
+    else:
         return None
 
-    customer_id = f"{provider}:{provider_customer_id}:{business_number}"
+    if not business_number:
+        return None
+
     now = datetime.now(timezone.utc).isoformat()
 
     try:
@@ -92,9 +100,9 @@ async def upsert_voice_customer(
                     "SET firstName = :fn, lastName = :ln, #ph = :phone, "
                     "provider = :prov, businessNumber = :bn, "
                     "providerCustomerId = :pcid, "
+                    "callerNumber = :caller, "
                     "lastSeenAt = :now, "
                     "firstSeenAt = if_not_exists(firstSeenAt, :now), "
-                    "callerNumber = if_not_exists(callerNumber, :caller), "
                     "#typename = :tn "
                     "ADD callCount :one, bookingCount :bc"
                 ),
