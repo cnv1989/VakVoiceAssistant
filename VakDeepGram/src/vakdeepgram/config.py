@@ -97,7 +97,7 @@ class Settings(BaseSettings):
     # Server Configuration
     host: str = "0.0.0.0"
     port: int = 8080
-    log_level: str = logging.DEBUG
+    log_level: str = logging.INFO
     workers: int = 2
     reload: bool = False
     
@@ -314,6 +314,21 @@ When greeting a customer, use the business name from the context. For example: "
 
 
 settings = Settings()
+
+
+# ---------------------------------------------------------------------------
+# Channel-specific prompt suffixes
+# ---------------------------------------------------------------------------
+
+SMS_PROMPT_SUFFIX = """
+#SMS Format
+This response will be sent as an SMS text message. Follow these rules:
+-Use plain text only. Do NOT use markdown symbols like **, *, #, or _.
+-Keep responses short and conversational — ideally under 300 characters.
+-When listing services or options, use a simple numbered list (1. Item) with no bold or headers.
+-If there are many items (e.g., full service menu), summarize the categories and offer to share details on request instead of listing everything.
+-Never send a wall of text.
+"""
 
 
 # ---------------------------------------------------------------------------

@@ -1003,7 +1003,8 @@ async def twilio_chat(request: Request):
     provider_tools = get_tools_for_provider(provider)
     provider_prompt = get_chat_prompt_for_provider(provider)
 
-    system_prompt = payload.get("system_prompt") or provider_prompt or ""
+    base_prompt = payload.get("system_prompt") or provider_prompt or ""
+    system_prompt = base_prompt + config.SMS_PROMPT_SUFFIX if base_prompt else config.SMS_PROMPT_SUFFIX
     model_id = payload.get("model_id") or config.settings.bedrock_model_id
     max_tokens = payload.get("max_tokens") or config.settings.bedrock_max_tokens
     temperature = payload.get("temperature") or config.settings.bedrock_temperature
