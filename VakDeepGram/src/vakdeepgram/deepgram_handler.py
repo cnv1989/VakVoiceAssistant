@@ -152,16 +152,15 @@ class DeepgramManager:
         # Keys are snake_case: voice_provider, voice_id, voice_model_id
         voice_provider = voice_config.get("voice_provider") or config.settings.deepgram_speaking_provider
 
-        if voice_provider == "eleven_labs":
+        if voice_provider == "eleven_labs" and not use_mulaw:
+            # ElevenLabs for browser calls (linear16) only.
+            # Twilio calls use mulaw — Deepgram cannot transcode ElevenLabs output to mulaw,
+            # causing FAILED_TO_SPEAK. Use Deepgram TTS for Twilio (native mulaw support).
             speak_provider = {
                 "type": "eleven_labs",
                 "model_id": voice_config.get("voice_model_id") or config.settings.deepgram_speaking_model_id or "eleven_flash_v2_5",
                 "voice_id": voice_config.get("voice_id") or config.settings.deepgram_speaking_voice_id or "0mevMNFMwHxBOUTpeMGN",
             }
-            if use_mulaw:
-                # ElevenLabs natively supports ulaw_8000 — request it directly so Deepgram
-                # doesn't need to transcode. Without this, Deepgram fails with FAILED_TO_SPEAK.
-                speak_provider["output_format"] = "ulaw_8000"
         else:
             speak_provider = {
                 "type": "deepgram",
