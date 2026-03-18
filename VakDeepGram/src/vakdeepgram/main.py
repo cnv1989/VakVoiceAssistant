@@ -1647,7 +1647,9 @@ async def websocket_endpoint(websocket: WebSocket):
             # Handle binary messages (audio data) - send directly to Deepgram
             elif "bytes" in message:
                 audio_data = message["bytes"]
-                if session and session.is_active:
+                # Always look up the current session — auto-reconnect may have replaced it
+                current_session = deepgram_manager.get_session(connection_id)
+                if current_session and current_session.is_active:
                     await deepgram_manager.send_audio(connection_id, audio_data)
                 else:
                     logger.warning(f"No active session for {connection_id}, ignoring audio")
