@@ -430,6 +430,176 @@ async def _prefetch_availability_for_services(
     }
 
 
+async def resolve_context_by_account(
+    account_type: str,
+    account_id: str,
+    *,
+    location_id: Optional[str] = None,
+    user_id: str,
+    caller_number: Optional[str] = None,
+    optimize: Optional[bool] = None,
+    prefetch_availability_days: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Resolve business context directly from an account ID, bypassing BusinessNumber lookup.
+
+    account_type: 'square' or 'setmore'
+    account_id:   Square merchantId  /  Setmore setmoreAccountId
+    location_id:  Square locationId (required for square)
+    user_id:      Cognito sub (from JWT claims)
+    """
+    if optimize is None:
+        optimize = config.settings.optimize_business_context
+    if prefetch_availability_days is None:
+        prefetch_availability_days = config.settings.prefetch_availability_days
+
+    provider = account_type.lower()
+
+    if provider == "square":
+        if not location_id:
+            return {"success": False, "error": "location_id is required for square accounts"}
+
+        account = await _fetch_square_account_record(user_id, account_id)
+        if not account:
+            return {"success": False, "error": "Square account not found"}
+
+        access_token = account.get("accessToken") or account.get("access_token")
+        if not access_token:
+            return {"success": False, "error": "Square access token not found"}
+
+        location_result = await _fetch_square_location(access_token, location_id)
+        location = location_result.get("location") if location_result.get("success") else None
+
+        services_result = await _fetch_square_services(access_token, location_id)
+        services = services_result.get("items") if services_result.get("success") else []
+
+        staff_result = await _fetch_square_staff(access_token, location_id)
+        staff = staff_result.get("team_members") if staff_result.get("success") else []
+
+        voice_config = await _fetch_voice_config_from_automations(account_id, location_id)
+
+        customer = None
+        if caller_number:
+            normalized_caller = normalize_phone_number(caller_number) or caller_number
+            customer_result = await fetch_square_customer_by_phone(access_token, normalized_caller)
+            customer = customer_result.get("customer") if customer_result.get("success") else None
+
+        if optimize:
+            location = optimize_location(location)
+            services = optimize_services(services)
+            staff = optimize_staff(staff)
+            customer = optimize_customer(customer)
+
+        result = {
+            "success": True,
+            "provider": "square",
+            "businessNumber": None,
+            "locationId": location_id,
+            "merchantId": account_id,
+            "userId": user_id,
+            "accessToken": access_token,
+            "location": location,
+            "services": services,
+            "staff": staff,
+            "customer": customer,
+            "voiceConfig": voice_config,
+        }
+        return to_snake_case(result)
+
+    elif provider == "setmore":
+        account = await _fetch_setmore_account_record(account_id, user_id)
+        if not account:
+            return {"success": False, "error": "Setmore account not found"}
+
+        refresh_token = account.get("refreshToken") or account.get("refresh_token")
+        access_token = account.get("accessToken") or account.get("access_token")
+
+        if refresh_token:
+            token_result = await setmore_api.get_access_token(refresh_token)
+            if token_result.get("success") and token_result.get("access_token"):
+                access_token = token_result.get("access_token")
+
+        if not access_token:
+            return {"success": False, "error": "Setmore access token not found"}
+
+        acct = account
+        timezone_name = acct.get("timezone")
+        business_name = acct.get("businessName") or acct.get("accountLabel")
+        business_phone = acct.get("businessPhone")
+        business_address = acct.get("businessAddress")
+        business_city = acct.get("businessCity")
+        business_state = acct.get("businessState")
+        business_zip = acct.get("businessZip")
+        business_hours = acct.get("businessHours")
+        business_hours_structured = _parse_setmore_business_hours(business_hours)
+        business_hours_text = _format_setmore_hours_summary(business_hours_structured)
+        booking_page_url = acct.get("bookingUrl") or acct.get("bookingPageUrl")
+
+        if not business_address and (business_city or business_state):
+            business_address = ", ".join(p for p in [business_city, business_state, business_zip] if p)
+
+        location = {
+            "timezone": timezone_name,
+            "business_name": business_name,
+            "phone_number": business_phone,
+            "address": business_address,
+            "business_hours": business_hours_structured,
+            "business_hours_raw": business_hours,
+            "business_hours_text": business_hours_text,
+        }
+
+        now = datetime.now(timezone.utc)
+        caller_lookup_history_days = 180 if caller_number else 0
+        appt_start = (now - timedelta(days=caller_lookup_history_days)).strftime("%d-%m-%Y")
+        appt_end = (now + timedelta(days=prefetch_availability_days)).strftime("%d-%m-%Y")
+
+        services_result, categories_result, staff_result, appointments_result = await asyncio.gather(
+            setmore_api.fetch_services(access_token, refresh_token=refresh_token),
+            setmore_api.fetch_service_categories(access_token, refresh_token=refresh_token),
+            setmore_api.fetch_staff(access_token, refresh_token=refresh_token),
+            setmore_api.fetch_appointments(access_token, start_date=appt_start, end_date=appt_end, customer_details=True, refresh_token=refresh_token),
+            return_exceptions=True,
+        )
+
+        services_raw = services_result.get("services") if not isinstance(services_result, Exception) and services_result.get("success") else []
+        categories_raw = categories_result.get("service_categories") if not isinstance(categories_result, Exception) and categories_result.get("success") else []
+        staff_raw = staff_result.get("staffs") if not isinstance(staff_result, Exception) and staff_result.get("success") else []
+        appointments_raw = appointments_result.get("appointments") if not isinstance(appointments_result, Exception) and appointments_result.get("success") else []
+
+        services = _normalize_setmore_services(services_raw, categories_raw)
+        staff = _normalize_setmore_staff(staff_raw)
+
+        customer = None
+        if caller_number:
+            normalized_caller = normalize_phone_number(caller_number) or caller_number
+            customer = _find_setmore_customer_by_caller(appointments_raw, normalized_caller)
+
+        result = {
+            "success": True,
+            "provider": "setmore",
+            "business_number": None,
+            "forwarding_number": None,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "account_id": account_id,
+            "user_id": user_id,
+            "location": location,
+            "timezone": timezone_name,
+            "services": services,
+            "staff": staff,
+            "appointments": appointments_raw,
+            "customer": customer,
+            "setmore_services": services,
+            "setmore_staff": staff,
+            "setmore_appointments": appointments_raw,
+            "booking_page_url": booking_page_url,
+            "setmore_api_ready": True,
+            "voiceConfig": None,
+        }
+        return to_snake_case(result)
+
+    return {"success": False, "error": f"Unknown account_type: {account_type}"}
+
+
 async def _fetch_first_business_number_by_user(user_id: str) -> Optional[Dict[str, Any]]:
     """Scan BusinessNumber table for the first record owned by user_id (Cognito sub)."""
     logger.info("Fetching first BusinessNumber record for userId=%s", user_id)

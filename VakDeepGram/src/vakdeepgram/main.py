@@ -75,7 +75,7 @@ def _seed_agent_state(agent: Agent, context: dict) -> None:
 from vakdeepgram.connection_store import (
     normalize_phone_number,
     get_localized_datetime_from_context,
-    _fetch_first_business_number_by_user,
+    resolve_context_by_account,
 )
 from vakdeepgram.repositories import (
     get_connection_context_by_id,
@@ -693,54 +693,49 @@ async def voice_oauth_connect(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body.")
 
-    business_number = payload.get("business_number") or payload.get("businessNumber")
+    account_type = payload.get("account_type") or payload.get("accountType")  # 'square' | 'setmore'
+    account_id = payload.get("account_id") or payload.get("accountId")         # merchantId or setmoreAccountId
+    location_id = payload.get("location_id") or payload.get("locationId")      # Square locationId
     customer_phone = payload.get("customer_number") or payload.get("customerNumber") or payload.get("customerPhone")
 
-    # Optional voice config override — allows callers to pass test config without
-    # requiring a saved "Done" configuration in the dashboard.
+    # Optional voice config override
     voice_config_override = payload.get("voice_config") or payload.get("voiceConfig")
 
     claims = oauth_auth.get("claims") or {}
     token = oauth_auth.get("token")
+    user_id = claims.get("sub")
 
-    # If no business_number provided, look up the owner's first registered number
-    if not business_number:
-        sub = claims.get("sub")
-        if sub:
-            record = await _fetch_first_business_number_by_user(sub)
-            if record:
-                business_number = record.get("phoneNumber")
-                logger.info("voice_oauth_connect: resolved business_number=%s from userId=%s", business_number, sub)
+    if not account_type or not account_id:
+        raise HTTPException(status_code=400, detail="account_type and account_id are required")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unable to determine user identity from token")
 
-    if business_number:
-        _validate_token_business_match(claims, business_number)
+    logger.info(
+        "voice_oauth_connect: account_type=%s account_id=%s location_id=%s user_id=%s",
+        account_type, account_id, location_id, user_id,
+    )
 
-    if business_number:
-        try:
-            business_context = await resolve_context_for_request(
-                business_number,
-                caller_number=customer_phone,
-            )
-        except Exception as exc:
-            logger.error("Failed to resolve business context for OAuth voice connect: %s", exc, exc_info=True)
-            business_context = {"success": False, "error": str(exc)}
-    else:
-        logger.info("voice_oauth_connect: no business_number found, proceeding with empty context")
-        business_context = {"success": False, "error": "No business number configured"}
+    try:
+        business_context = await resolve_context_by_account(
+            account_type,
+            account_id,
+            location_id=location_id,
+            user_id=user_id,
+            caller_number=customer_phone,
+        )
+    except Exception as exc:
+        logger.error("Failed to resolve business context for OAuth voice connect: %s", exc, exc_info=True)
+        business_context = {"success": False, "error": str(exc)}
 
     forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
     forwarded_host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
     ws_scheme = "wss" if forwarded_proto == "https" else "ws"
-    query_params = {}
-    if business_number:
-        query_params["businessNumber"] = business_number
+    query_params: dict = {}
     if customer_phone:
         query_params["customerPhone"] = customer_phone
     if token:
         query_params["access_token"] = token
     import json as _json
-    # Store pre-resolved context server-side; pass a short token in the URL.
-    # This lets /ws skip re-resolution without bloating the WS URL.
     ctx_token = _store_pre_resolved(_make_json_serializable(business_context))
     query_params["ctxToken"] = ctx_token
     if voice_config_override and isinstance(voice_config_override, dict):
@@ -752,9 +747,8 @@ async def voice_oauth_connect(
     return {
         "success": True,
         "websocket_url": websocket_url,
-        "business_number": business_number,
         "customer_number": customer_phone,
-        "oauth_subject": claims.get("sub"),
+        "oauth_subject": user_id,
         "business_context": _make_json_serializable(business_context),
     }
 
@@ -771,17 +765,11 @@ async def chat_oauth(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body.")
 
-    business_number = payload.get("business_number") or payload.get("businessNumber")
     claims = oauth_auth.get("claims") or {}
-    if not business_number:
-        sub = claims.get("sub")
-        if sub:
-            record = await _fetch_first_business_number_by_user(sub)
-            if record:
-                business_number = record.get("phoneNumber")
-    if not business_number:
-        raise HTTPException(status_code=400, detail="No business number found. Please configure a business number.")
-    _validate_token_business_match(claims, business_number)
+    account_type = payload.get("account_type") or payload.get("accountType")
+    account_id = payload.get("account_id") or payload.get("accountId")
+    if not account_type or not account_id:
+        raise HTTPException(status_code=400, detail="account_type and account_id are required")
     return await chat(request, oauth_auth=oauth_auth)
 
 
