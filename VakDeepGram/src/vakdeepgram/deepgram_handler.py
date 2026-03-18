@@ -150,18 +150,20 @@ class DeepgramManager:
 
         # Build speak provider - use voice config from business context or fall back to defaults
         # Keys are snake_case: voice_provider, voice_id, voice_model_id
-        # ElevenLabs supports ulaw_8000 output natively (Pro tier) — use it for Twilio mulaw calls.
+        #
+        # ElevenLabs does NOT work with mulaw output encoding via Deepgram's Voice Agent API.
+        # For Twilio calls (mulaw/8kHz), always use Deepgram TTS which natively supports mulaw.
+        # For browser calls (linear16/48kHz), use ElevenLabs if configured.
         voice_provider = voice_config.get("voice_provider") or config.settings.deepgram_speaking_provider
 
-        if voice_provider == "eleven_labs":
+        if voice_provider == "eleven_labs" and not use_mulaw:
             speak_provider = {
                 "type": "eleven_labs",
-                "model_id": voice_config.get("voice_model_id") or config.settings.deepgram_speaking_model_id or "eleven_multilingual_v2",
+                "model_id": voice_config.get("voice_model_id") or config.settings.deepgram_speaking_model_id or "eleven_flash_v2_5",
                 "voice_id": voice_config.get("voice_id") or config.settings.deepgram_speaking_voice_id or "0mevMNFMwHxBOUTpeMGN",
             }
-            # Note: audio output encoding (mulaw vs linear16) is controlled by the top-level
-            # audio.output.encoding field, not the speak provider. Deepgram handles conversion.
         else:
+            # Deepgram TTS for Twilio (mulaw) or when ElevenLabs not configured
             speak_provider = {
                 "type": "deepgram",
                 "model": voice_config.get("voice_id") or config.settings.deepgram_speaking_model or "aura-2-thalia-en",
