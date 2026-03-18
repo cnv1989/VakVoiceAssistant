@@ -74,40 +74,26 @@ jobs:
           docker tag "${ECR_REPO_NAME}:${STAGE}" "${ECR_REGISTRY}/${ECR_REPO_NAME}:${STAGE}"
           docker push "${ECR_REGISTRY}/${ECR_REPO_NAME}:${STAGE}"
 
-      - name: Resolve ECS cluster and service
-        id: ecs
+      - name: Force ECS deployment
         env:
           STAGE: ${{ steps.stage.outputs.stage }}
         run: |
           CLUSTER="vak-cluster-${STAGE}"
-          # Retry up to 3 times to handle transient AWS API errors
-          for attempt in 1 2 3; do
-            SERVICE_ARN=$(aws ecs list-services \
-              --cluster "$CLUSTER" \
-              --region "${AWS_REGION}" \
-              --query 'serviceArns[0]' \
-              --output text 2>/dev/null || echo "")
-            [ -n "$SERVICE_ARN" ] && [ "$SERVICE_ARN" != "None" ] && break
-            echo "Attempt $attempt: no service found, retrying in 5s..."
-            sleep 5
-          done
-          if [ -z "$SERVICE_ARN" ] || [ "$SERVICE_ARN" = "None" ]; then
-            echo "No ECS service found in cluster $CLUSTER — skipping force-deploy (stack may not be deployed yet)."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "cluster=$CLUSTER" >> "$GITHUB_OUTPUT"
-            echo "service=$(basename $SERVICE_ARN)" >> "$GITHUB_OUTPUT"
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Force ECS deployment
-        if: steps.ecs.outputs.skip != 'true'
-        env:
-          CLUSTER: ${{ steps.ecs.outputs.cluster }}
-          SERVICE: ${{ steps.ecs.outputs.service }}
-        run: |
-          aws ecs update-service \
-            --cluster "${CLUSTER}" \
-            --service "${SERVICE}" \
+          # list-services returns full ARNs; extract the service name from the last path segment
+          SERVICE_ARN=$(aws ecs list-services \
+            --cluster "$CLUSTER" \
             --region "${AWS_REGION}" \
-            --force-new-deployment
+            --output text \
+            --query 'serviceArns[0]')
+          if [ -z "$SERVICE_ARN" ] || [ "$SERVICE_ARN" = "None" ]; then
+            echo "No ECS service found in cluster $CLUSTER — skipping."
+            exit 0
+          fi
+          SERVICE="${SERVICE_ARN##*/}"
+          echo "Force-deploying service: $SERVICE in cluster: $CLUSTER"
+          aws ecs update-service \
+            --cluster "$CLUSTER" \
+            --service "$SERVICE" \
+            --region "${AWS_REGION}" \
+            --force-new-deployment \
+            --query 'service.{status:status,running:runningCount,pending:pendingCount}'
