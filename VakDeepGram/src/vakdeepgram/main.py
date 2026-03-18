@@ -75,6 +75,7 @@ def _seed_agent_state(agent: Agent, context: dict) -> None:
 from vakdeepgram.connection_store import (
     normalize_phone_number,
     get_localized_datetime_from_context,
+    _fetch_first_business_number_by_user,
 )
 from vakdeepgram.repositories import (
     get_connection_context_by_id,
@@ -694,31 +695,45 @@ async def voice_oauth_connect(
 
     business_number = payload.get("business_number") or payload.get("businessNumber")
     customer_phone = payload.get("customer_number") or payload.get("customerNumber") or payload.get("customerPhone")
-    if not business_number:
-        raise HTTPException(status_code=400, detail="business_number is required")
 
     # Optional voice config override — allows callers to pass test config without
     # requiring a saved "Done" configuration in the dashboard.
     voice_config_override = payload.get("voice_config") or payload.get("voiceConfig")
 
-
     claims = oauth_auth.get("claims") or {}
     token = oauth_auth.get("token")
-    _validate_token_business_match(claims, business_number)
 
-    try:
-        business_context = await resolve_context_for_request(
-            business_number,
-            caller_number=customer_phone,
-        )
-    except Exception as exc:
-        logger.error("Failed to resolve business context for OAuth voice connect: %s", exc, exc_info=True)
-        business_context = {"success": False, "error": str(exc)}
+    # If no business_number provided, look up the owner's first registered number
+    if not business_number:
+        sub = claims.get("sub")
+        if sub:
+            record = await _fetch_first_business_number_by_user(sub)
+            if record:
+                business_number = record.get("phoneNumber")
+                logger.info("voice_oauth_connect: resolved business_number=%s from userId=%s", business_number, sub)
+
+    if business_number:
+        _validate_token_business_match(claims, business_number)
+
+    if business_number:
+        try:
+            business_context = await resolve_context_for_request(
+                business_number,
+                caller_number=customer_phone,
+            )
+        except Exception as exc:
+            logger.error("Failed to resolve business context for OAuth voice connect: %s", exc, exc_info=True)
+            business_context = {"success": False, "error": str(exc)}
+    else:
+        logger.info("voice_oauth_connect: no business_number found, proceeding with empty context")
+        business_context = {"success": False, "error": "No business number configured"}
 
     forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
     forwarded_host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
     ws_scheme = "wss" if forwarded_proto == "https" else "ws"
-    query_params = {"businessNumber": business_number}
+    query_params = {}
+    if business_number:
+        query_params["businessNumber"] = business_number
     if customer_phone:
         query_params["customerPhone"] = customer_phone
     if token:
@@ -757,9 +772,15 @@ async def chat_oauth(
         raise HTTPException(status_code=400, detail="Invalid JSON body.")
 
     business_number = payload.get("business_number") or payload.get("businessNumber")
-    if not business_number:
-        raise HTTPException(status_code=400, detail="business_number is required")
     claims = oauth_auth.get("claims") or {}
+    if not business_number:
+        sub = claims.get("sub")
+        if sub:
+            record = await _fetch_first_business_number_by_user(sub)
+            if record:
+                business_number = record.get("phoneNumber")
+    if not business_number:
+        raise HTTPException(status_code=400, detail="No business number found. Please configure a business number.")
     _validate_token_business_match(claims, business_number)
     return await chat(request, oauth_auth=oauth_auth)
 
@@ -1685,42 +1706,8 @@ async def websocket_endpoint(websocket: WebSocket):
                             "businessNumber": ctx.get("business_number") or ctx.get("businessNumber") or "",
                         },
                     )
-            # VoiceCustomer records are only created for real phone calls (Twilio path)
-            customer_id = None
-            customer_obj = ctx.get("customer")
-            business_number = ctx.get("business_number") or ctx.get("businessNumber")
-            booking_created = bool(ctx.get("bookingCreated") or ctx.get("booking_created"))
-            fields = {}
-            await write_call_record(
-                connection_id=connection_id,
-                endpoint="ws",
-                duration_ms=duration_ms,
-                table_name=config.settings.call_record_table,
-                aws_region=config.settings.aws_region,
-                business_number=business_number,
-                caller_number=ctx.get("caller"),
-                call_sid=ctx.get("callSid"),
-                provider=ctx.get("provider"),
-                merchant_id=ctx.get("merchant_id"),
-                location_id=ctx.get("location_id"),
-                setmore_account_id=ctx.get("setmore_account_id"),
-                outcome=outcome,
-                user_message_count=int(ctx.get("userMessageCount") or ctx.get("user_message_count") or 0),
-                tool_call_count=int(ctx.get("toolCallCount") or ctx.get("tool_call_count") or 0),
-                tool_call_error_count=int(ctx.get("toolCallErrorCount") or ctx.get("tool_call_error_count") or 0),
-                booking_created=booking_created,
-                customer_found=bool(ctx.get("customerFound") or ctx.get("customer_found")),
-                sms_booking_link_sent=bool(ctx.get("smsBookingLinkSent") or ctx.get("sms_booking_link_sent")),
-                max_tokens_reached=bool(ctx.get("maxTokensReached") or ctx.get("max_tokens_reached")),
-                forwarded_call=bool(ctx.get("callForwarded") or ctx.get("call_forwarded")),
-                sms_sent_count=int(ctx.get("smsSentCount") or ctx.get("sms_sent_count") or 0),
-                whatsapp_sent_count=int(ctx.get("whatsappSentCount") or ctx.get("whatsapp_sent_count") or 0),
-                transcript_s3_key=transcript_s3_key,
-                recording_s3_key=recording_s3_key,
-                customer_id=customer_id,
-                customer_first_name=fields.get("first_name"),
-                customer_last_name=fields.get("last_name"),
-            )
+            # Browser (OAuth WebSocket) calls do not write analytics or VoiceCustomer records.
+            # Analytics and customer tracking are for real phone calls (Twilio path) only.
         clear_connection_context_by_id(connection_id)
         _decrement_websocket_count(client_ip, "ws")
         logger.info("Cleaned up connection: %s", connection_id)

@@ -430,6 +430,23 @@ async def _prefetch_availability_for_services(
     }
 
 
+async def _fetch_first_business_number_by_user(user_id: str) -> Optional[Dict[str, Any]]:
+    """Scan BusinessNumber table for the first record owned by user_id (Cognito sub)."""
+    logger.info("Fetching first BusinessNumber record for userId=%s", user_id)
+    session = aioboto3.Session()
+    async with session.resource("dynamodb", region_name=config.settings.aws_region) as dynamodb:
+        table = dynamodb.Table(config.settings.business_number_table)
+        if asyncio.iscoroutine(table):
+            table = await table
+        from boto3.dynamodb.conditions import Attr
+        response = await table.scan(
+            FilterExpression=Attr("userId").eq(user_id),
+            Limit=1,
+        )
+        items = response.get("Items") or []
+        return items[0] if items else None
+
+
 async def _fetch_business_number_record(phone_number: str) -> Optional[Dict[str, Any]]:
     logger.info("connection_store._fetch_business_number_record called (phone=%s)", phone_number)
     logger.info("Fetching BusinessNumber record for %s", phone_number)
