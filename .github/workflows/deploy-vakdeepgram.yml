@@ -84,6 +84,7 @@ jobs:
           for attempt in 1 2 3; do
             SERVICE_ARN=$(aws ecs list-services \
               --cluster "$CLUSTER" \
+              --region "${AWS_REGION}" \
               --query 'serviceArns[0]' \
               --output text 2>/dev/null || echo "")
             [ -n "$SERVICE_ARN" ] && [ "$SERVICE_ARN" != "None" ] && break
@@ -108,4 +109,5 @@ jobs:
           aws ecs update-service \
             --cluster "${CLUSTER}" \
             --service "${SERVICE}" \
+            --region "${AWS_REGION}" \
             --force-new-deployment
