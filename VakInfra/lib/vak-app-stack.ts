@@ -66,6 +66,12 @@ export interface VakAppStackProps extends cdk.StackProps {
    */
   cognitoDomainPrefix?: string;
 
+  /** Integrin Cognito user pool ID for this stage (used for OAuth JWT validation). */
+  cognitoUserPoolId: string;
+
+  /** Integrin Cognito app client ID for this stage (used as oauth_audience). */
+  cognitoAppClientId: string;
+
 }
 
 export class VakAppStack extends cdk.Stack {
@@ -188,13 +194,17 @@ export class VakAppStack extends cdk.Stack {
     }));
 
     // Bedrock for Strands Agent / chat endpoint
-    // foundation-model/* covers direct model calls; inference-profile/* covers
-    // cross-region inference profiles (e.g. us.anthropic.claude-opus-4-6-v1)
+    // foundation-model/* must cover all US regions because cross-region inference
+    // profiles (e.g. us.anthropic.claude-opus-4-6-v1) route requests to the best
+    // available US region (us-east-1, us-west-2, etc.) at runtime.
+    // inference-profile/* covers the profile ARN itself (always in this.region).
     taskRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
       resources: [
-        `arn:aws:bedrock:${this.region}::foundation-model/*`,
+        'arn:aws:bedrock:us-east-1::foundation-model/*',
+        'arn:aws:bedrock:us-west-2::foundation-model/*',
+        'arn:aws:bedrock:us-east-2::foundation-model/*',
         `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/*`,
       ],
     }));
@@ -270,10 +280,10 @@ export class VakAppStack extends cdk.Stack {
         // API key for /chat endpoint (used by Slack bot and other internal callers)
         CHAT_API_KEY: 'HZB8Yk-odYjZrEmyFEKZx-UMNCfKoRiBv0Oi2eeKiSg',
 
-        // OAuth — Integrin Cognito user pool (single pool shared across all stages)
-        OAUTH_JWKS_URL: 'https://cognito-idp.us-west-2.amazonaws.com/us-west-2_9T0qoUbEe/.well-known/jwks.json',
-        OAUTH_ISSUER: 'https://cognito-idp.us-west-2.amazonaws.com/us-west-2_9T0qoUbEe',
-        OAUTH_AUDIENCE: '5ur84i37eq9u4h9v46tb40s5cc',
+        // OAuth — Integrin Cognito user pool (stage-specific)
+        OAUTH_JWKS_URL: `https://cognito-idp.us-west-2.amazonaws.com/${props.cognitoUserPoolId}/.well-known/jwks.json`,
+        OAUTH_ISSUER: `https://cognito-idp.us-west-2.amazonaws.com/${props.cognitoUserPoolId}`,
+        OAUTH_AUDIENCE: props.cognitoAppClientId,
       },
       secrets: Object.keys(containerSecrets).length > 0 ? containerSecrets : undefined,
       healthCheck: {

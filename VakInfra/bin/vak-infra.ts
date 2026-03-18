@@ -49,24 +49,32 @@ const stageConfigs: Array<{
   amplifyEnvId: string;
   apiDomain: string;
   cognitoDomainPrefix: string;
+  cognitoUserPoolId: string;
+  cognitoAppClientId: string;
 }> = [
   {
     stage: 'prod',
     amplifyEnvId: 'pxy5meaaojbaxjwedt6v6oidw4',
     apiDomain: 'api.groommate.ai',
     cognitoDomainPrefix: 'groommate-auth-prod',
+    cognitoUserPoolId: 'us-west-2_3yVGKZ2z0',
+    cognitoAppClientId: '5fq3taa9n3n5h2fhbmfbq3pcp4',
   },
   {
     stage: 'beta',
     amplifyEnvId: app.node.tryGetContext('betaAmplifyEnvId') || 'PLACEHOLDER_BETA_ENV_ID',
     apiDomain: 'beta-api.groommate.ai',
     cognitoDomainPrefix: 'groommate-auth-beta',
+    cognitoUserPoolId: 'us-west-2_XUe8abnY6',
+    cognitoAppClientId: '2a7h870f41vo85h46am9o6pu86',
   },
   {
     stage: 'alpha',
     amplifyEnvId: app.node.tryGetContext('alphaAmplifyEnvId') || 'PLACEHOLDER_ALPHA_ENV_ID',
     apiDomain: 'alpha-api.groommate.ai',
     cognitoDomainPrefix: 'groommate-auth-alpha',
+    cognitoUserPoolId: 'us-west-2_wNKLafztj',
+    cognitoAppClientId: '6vn5anbqmdk1cp4abh1t1rn6d8',
   },
 ];
 
@@ -85,6 +93,8 @@ for (const cfg of stageConfigs) {
     twilioAuthTokenSecretArn,
     enableTwilioOnlyAccess,
     cognitoDomainPrefix: cfg.cognitoDomainPrefix,
+    cognitoUserPoolId: cfg.cognitoUserPoolId,
+    cognitoAppClientId: cfg.cognitoAppClientId,
   });
   appStack.addDependency(networkStack);
   appStack.addDependency(dnsStack);
