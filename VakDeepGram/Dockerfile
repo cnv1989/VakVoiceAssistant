@@ -7,8 +7,6 @@ RUN apt-get update && apt-get install -y \
     gcc \
     portaudio19-dev \
     curl \
-    swig \
-    libspeexdsp-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements

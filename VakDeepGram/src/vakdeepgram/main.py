@@ -41,7 +41,6 @@ from utils.metrics import (
 from utils.call_records import write_call_record
 from utils.session_storage import upload_transcript, upload_recording
 from utils.customers import upsert_voice_customer
-from utils.noise_suppressor import NoiseSuppressor
 
 
 def _make_json_serializable(obj):
@@ -1841,7 +1840,6 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
     session_ref = {"value": None}
     audio_queue = asyncio.Queue()
     streamsid_queue = asyncio.Queue()
-    noise_suppressor = NoiseSuppressor()
     
     # Buffer for Twilio audio (160 bytes = 20ms of mulaw at 8kHz)
     # Buffer 20 twilio messages (0.4 seconds) to improve throughput (matches sts-twilio)
@@ -2058,14 +2056,10 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                             chunk = base64.b64decode(media["payload"])
                             inbuffer.extend(chunk)
 
-                            # Buffer mulaw audio and send to Deepgram when buffer is full
+                            # Buffer mulaw audio and send raw mulaw to Deepgram when buffer is ready
                             while len(inbuffer) >= BUFFER_SIZE:
                                 mulaw_chunk = bytes(inbuffer[:BUFFER_SIZE])
                                 inbuffer = inbuffer[BUFFER_SIZE:]
-
-                                # Apply AI noise suppression before sending to Deepgram
-                                mulaw_chunk = noise_suppressor.process(mulaw_chunk)
-
                                 audio_queue.put_nowait(mulaw_chunk)
                                 logger.debug(f"Queued {len(mulaw_chunk)} bytes of mulaw audio from Twilio for {connection_id}")
                         except Exception as e:
