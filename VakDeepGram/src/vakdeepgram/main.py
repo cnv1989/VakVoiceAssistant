@@ -1841,8 +1841,7 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
     session_ref = {"value": None}
     audio_queue = asyncio.Queue()
     streamsid_queue = asyncio.Queue()
-    agent_speaking_ref = {"value": False}  # True while agent TTS is playing; suppress inbound audio
-
+    
     # Buffer for Twilio audio (160 bytes = 20ms of mulaw at 8kHz)
     # Buffer 20 twilio messages (0.4 seconds) to improve throughput (matches sts-twilio)
     BUFFER_SIZE = 20 * 160  # 0.4 seconds of audio
@@ -1884,13 +1883,6 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                 }
                 await send_to_twilio(media_message)
         
-        elif msg_type == "agent-started-speaking":
-            agent_speaking_ref["value"] = True
-
-        elif msg_type == "ready-to-listen":
-            # AgentAudioDone — agent finished speaking, re-enable inbound audio
-            agent_speaking_ref["value"] = False
-
         elif msg_type == "user-started-speaking":
             # Handle barge-in - send clear message to Twilio (matches sts-twilio)
             if stream_sid_ref["value"]:
@@ -2060,9 +2052,6 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                 elif event == "media":
                     media = data.get("media", {})
                     if media.get("track") == "inbound":
-                        if agent_speaking_ref["value"]:
-                            # Suppress inbound audio while agent is speaking to prevent echo
-                            continue
                         try:
                             # Decode base64 mulaw audio from Twilio
                             chunk = base64.b64decode(media["payload"])
@@ -2080,17 +2069,13 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                 elif event == "speaker":
                     speaker_name = (data.get("speaker") or {}).get("name", "")
                     logger.debug("Twilio speaker event: %s for %s", speaker_name, connection_id)
-                    if speaker_name == "agentSpeaking":
-                        agent_speaking_ref["value"] = True
-                    elif speaker_name == "clientSpeaking":
-                        agent_speaking_ref["value"] = False
-                        if stream_sid_ref["value"]:
-                            # Client started speaking — clear agent TTS audio from Twilio's buffer (barge-in)
-                            logger.info("clientSpeaking: sending clear to Twilio for %s", connection_id)
-                            await send_to_twilio({
-                                "event": "clear",
-                                "streamSid": stream_sid_ref["value"],
-                            })
+                    if speaker_name == "clientSpeaking" and stream_sid_ref["value"]:
+                        # Client started speaking — clear agent TTS audio from Twilio's buffer (barge-in)
+                        logger.info("clientSpeaking: sending clear to Twilio for %s", connection_id)
+                        await send_to_twilio({
+                            "event": "clear",
+                            "streamSid": stream_sid_ref["value"],
+                        })
 
                 elif event == "stop":
                     logger.info(f"Twilio stream stopped: {connection_id}")
