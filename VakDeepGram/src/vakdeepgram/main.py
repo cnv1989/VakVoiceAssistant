@@ -1377,6 +1377,56 @@ async def whatsapp_chat(request: Request):
     return Response(content=twiml_response, media_type="application/xml")
 
 
+@app.post("/whatsapp-status")
+@limiter.limit(lambda: f"{config.settings.rate_limit_per_minute}/minute")
+async def whatsapp_status(request: Request):
+    """Delivery status callback for outbound WhatsApp messages.
+
+    Twilio POSTs here when a message transitions to delivered, read, failed, etc.
+    We log the event and emit a CloudWatch metric so delivery issues are visible.
+    """
+    body = await request.body()
+
+    if not verify_twilio_http_signature(request, body):
+        is_production = config.settings.environment.value == "production"
+        if is_production and config.settings.twilio_signature_verification_enabled:
+            logger.error("Rejecting /whatsapp-status request: invalid Twilio signature")
+            raise HTTPException(status_code=403, detail="Invalid Twilio signature")
+        logger.warning("Allowing /whatsapp-status despite failed signature verification (non-production)")
+
+    try:
+        content_type = request.headers.get("Content-Type", "")
+        if "application/json" in content_type:
+            payload = json.loads(body.decode("utf-8"))
+        else:
+            parsed = parse_qs(body.decode("utf-8"), keep_blank_values=True)
+            payload = {k: v[0] if len(v) == 1 else v for k, v in parsed.items()}
+    except Exception as e:
+        logger.error("Failed to parse /whatsapp-status body: %s", e)
+        raise HTTPException(status_code=400, detail="Invalid request body")
+
+    message_sid = payload.get("MessageSid") or payload.get("SmsSid") or "unknown"
+    status = (payload.get("MessageStatus") or payload.get("SmsStatus") or "unknown").lower()
+    to_number = payload.get("To") or ""
+    error_code = payload.get("ErrorCode")
+    error_message = payload.get("ErrorMessage")
+
+    if status in ("delivered", "read"):
+        logger.info("WhatsApp delivery confirmed: sid=%s status=%s to=%s", message_sid, status, to_number)
+        emit_message_delivery("whatsapp_delivery", True)
+    elif status in ("failed", "undelivered"):
+        logger.error(
+            "WhatsApp delivery failed: sid=%s status=%s to=%s error_code=%s error_message=%s",
+            message_sid, status, to_number, error_code, error_message,
+        )
+        emit_message_delivery("whatsapp_delivery", False)
+    else:
+        # intermediate states: queued, sending, sent — log at debug level
+        logger.debug("WhatsApp status update: sid=%s status=%s to=%s", message_sid, status, to_number)
+
+    return Response(status_code=204)
+
+
 def _get_client_ip(websocket: WebSocket) -> str:
     """Extract client IP from WebSocket connection."""
     if websocket.client:
