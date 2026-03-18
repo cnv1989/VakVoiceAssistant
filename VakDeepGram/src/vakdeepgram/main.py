@@ -75,7 +75,7 @@ def _seed_agent_state(agent: Agent, context: dict) -> None:
 from vakdeepgram.connection_store import (
     normalize_phone_number,
     get_localized_datetime_from_context,
-    resolve_context_by_account,
+    _fetch_first_business_number_by_user,
 )
 from vakdeepgram.repositories import (
     get_connection_context_by_id,
@@ -472,28 +472,60 @@ def _get_chat_session_manager(session_id: str):
     return FileSessionManager(session_id=session_id)
 
 
-async def _run_chat(
-    *,
-    message: str,
-    business_context: dict,
-    customer_phone: Optional[str] = None,
-    session_id: Optional[str] = None,
-    session_id_prefix: str = "chat",
-    system_prompt_override: Optional[str] = None,
-    model_id_override: Optional[str] = None,
-    max_tokens_override=None,
-    temperature_override=None,
-) -> dict:
-    """Shared chat agent invocation logic used by /chat and /chat/oauth."""
+@app.post("/chat")
+@limiter.limit(lambda: f"{config.settings.rate_limit_per_minute}/minute")
+async def chat(
+    request: Request,
+    oauth_auth: dict = Depends(verify_oauth_auth),
+):
+    """Simple chat endpoint for browser testing.
+
+    Accepts business_number to fetch business context (similar to voice assistant).
+    Requires API key authentication when chat_api_key is configured.
+    """
+    logger.info("chat endpoint called")
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body.")
+    message = payload.get("message") or payload.get("text")
+    if not message or not isinstance(message, str):
+        raise HTTPException(status_code=400, detail="message is required.")
+
+    # Get business number and customer number
+    business_number = payload.get("business_number") or payload.get("businessNumber")
+    customer_phone = payload.get("customer_number") or payload.get("customerPhone") or payload.get("customer_phone")
+    session_id = payload.get("session_id") or payload.get("sessionId")
+
+    if not business_number:
+        raise HTTPException(status_code=400, detail="business_number is required")
+    claims = oauth_auth.get("claims") or {}
+    _validate_token_business_match(claims, business_number)
+    
+    logger.info("Chat request: businessNumber=%s customerPhone=%s", business_number, customer_phone)
+    
+    # Resolve business context directly (without connection store)
+    business_context = {}
+    if business_number:
+        try:
+            business_context = await resolve_context_for_request(
+                business_number,
+                caller_number=customer_phone,
+            )
+        except Exception as exc:
+            logger.error("Failed to resolve business context: %s", exc, exc_info=True)
+            business_context = {"success": False, "error": str(exc)}
+
+    # Resolve provider from business context for provider-specific tools and prompts
     provider = (business_context.get("provider") or "square").lower()
     logger.info("Chat provider resolved: %s", provider)
     provider_tools = get_tools_for_provider(provider)
     provider_prompt = get_chat_prompt_for_provider(provider)
 
-    system_prompt = system_prompt_override or provider_prompt or ""
-    model_id = model_id_override or config.settings.bedrock_model_id
-    max_tokens = max_tokens_override or config.settings.bedrock_max_tokens
-    temperature = temperature_override or config.settings.bedrock_temperature
+    system_prompt = payload.get("system_prompt") or provider_prompt or ""
+    model_id = payload.get("model_id") or config.settings.bedrock_model_id
+    max_tokens = payload.get("max_tokens") or config.settings.bedrock_max_tokens
+    temperature = payload.get("temperature") or config.settings.bedrock_temperature
     try:
         max_tokens = int(max_tokens)
         temperature = float(temperature)
@@ -504,6 +536,7 @@ async def _run_chat(
                 model_id, provider, len(provider_tools), len(message), max_tokens)
     agent_start = time.monotonic()
     try:
+        # Create Bedrock model with Strands
         bedrock_model = BedrockModel(
             model_id=model_id,
             temperature=temperature,
@@ -511,10 +544,14 @@ async def _run_chat(
             region_name=config.settings.aws_region,
         )
 
+        # Create agent with provider-specific system prompt and tools
+        # Pass business context via state so tools receive it deterministically
+        # Add current local time to context for relative date inference
         business_context["current_local_time"] = get_localized_datetime_from_context(business_context)
+        # Convert to JSON-serializable format (Square SDK objects aren't serializable)
         serializable_context = _make_json_serializable(business_context)
         normalized_phone = normalize_phone_number(customer_phone) if customer_phone else None
-        resolved_session_id = session_id or f"{session_id_prefix}:{normalized_phone or uuid.uuid4().hex}"
+        resolved_session_id = session_id or f"chat:{business_number}:{normalized_phone or uuid.uuid4().hex}"
         _chat_message_counts[resolved_session_id] = _chat_message_counts.get(resolved_session_id, 0) + 1
         emit_user_message_count("chat", resolved_session_id, _chat_message_counts[resolved_session_id])
         session_manager = _get_chat_session_manager(resolved_session_id)
@@ -641,109 +678,6 @@ async def _run_chat(
     return {"reply": reply, "model_id": model_id}
 
 
-@app.post("/chat")
-@limiter.limit(lambda: f"{config.settings.rate_limit_per_minute}/minute")
-async def chat(
-    request: Request,
-    oauth_auth: dict = Depends(verify_oauth_auth),
-):
-    """Chat endpoint. Resolves business context from business_number."""
-    logger.info("chat endpoint called")
-    try:
-        payload = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body.")
-    message = payload.get("message") or payload.get("text")
-    if not message or not isinstance(message, str):
-        raise HTTPException(status_code=400, detail="message is required.")
-
-    business_number = payload.get("business_number") or payload.get("businessNumber")
-    customer_phone = payload.get("customer_number") or payload.get("customerPhone") or payload.get("customer_phone")
-    session_id = payload.get("session_id") or payload.get("sessionId")
-
-    if not business_number:
-        raise HTTPException(status_code=400, detail="business_number is required")
-    claims = oauth_auth.get("claims") or {}
-    _validate_token_business_match(claims, business_number)
-
-    logger.info("Chat request: businessNumber=%s customerPhone=%s", business_number, customer_phone)
-    try:
-        business_context = await resolve_context_for_request(business_number, caller_number=customer_phone)
-    except Exception as exc:
-        logger.error("Failed to resolve business context: %s", exc, exc_info=True)
-        business_context = {"success": False, "error": str(exc)}
-
-    return await _run_chat(
-        message=message,
-        business_context=business_context,
-        customer_phone=customer_phone,
-        session_id=session_id,
-        session_id_prefix=f"chat:{business_number}",
-        system_prompt_override=payload.get("system_prompt"),
-        model_id_override=payload.get("model_id"),
-        max_tokens_override=payload.get("max_tokens"),
-        temperature_override=payload.get("temperature"),
-    )
-
-
-@app.post("/chat/oauth")
-@limiter.limit(lambda: f"{config.settings.rate_limit_per_minute}/minute")
-async def chat_oauth(
-    request: Request,
-    oauth_auth: dict = Depends(verify_oauth_auth),
-):
-    """OAuth chat endpoint. Resolves business context from account_type + account_id (no business number needed)."""
-    try:
-        payload = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body.")
-    message = payload.get("message") or payload.get("text")
-    if not message or not isinstance(message, str):
-        raise HTTPException(status_code=400, detail="message is required.")
-
-    claims = oauth_auth.get("claims") or {}
-    bypassed = oauth_auth.get("bypassed", False)
-    user_id = claims.get("sub") or (payload.get("user_id") if bypassed else None)
-    account_type = payload.get("account_type") or payload.get("accountType")
-    account_id = payload.get("account_id") or payload.get("accountId")
-    location_id = payload.get("location_id") or payload.get("locationId")
-    customer_phone = payload.get("customer_number") or payload.get("customerPhone") or payload.get("customer_phone")
-    session_id = payload.get("session_id") or payload.get("sessionId")
-
-    if not account_type or not account_id:
-        raise HTTPException(status_code=400, detail="account_type and account_id are required")
-    if not user_id and not bypassed:
-        raise HTTPException(status_code=401, detail="Unable to determine user identity from token")
-
-    logger.info(
-        "chat_oauth: account_type=%s account_id=%s location_id=%s user_id=%s bypassed=%s",
-        account_type, account_id, location_id, user_id, bypassed,
-    )
-    try:
-        business_context = await resolve_context_by_account(
-            account_type,
-            account_id,
-            location_id=location_id,
-            user_id=user_id,
-            caller_number=customer_phone,
-        )
-    except Exception as exc:
-        logger.error("Failed to resolve business context for OAuth chat: %s", exc, exc_info=True)
-        business_context = {"success": False, "error": str(exc)}
-
-    return await _run_chat(
-        message=message,
-        business_context=business_context,
-        customer_phone=customer_phone,
-        session_id=session_id,
-        session_id_prefix=f"chat:oauth:{account_id}",
-        system_prompt_override=payload.get("system_prompt"),
-        model_id_override=payload.get("model_id"),
-        max_tokens_override=payload.get("max_tokens"),
-        temperature_override=payload.get("temperature"),
-    )
-
-
 @app.post("/voice/oauth/connect")
 @limiter.limit(lambda: f"{config.settings.rate_limit_per_minute}/minute")
 async def voice_oauth_connect(
@@ -759,50 +693,54 @@ async def voice_oauth_connect(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body.")
 
-    account_type = payload.get("account_type") or payload.get("accountType")  # 'square' | 'setmore'
-    account_id = payload.get("account_id") or payload.get("accountId")         # merchantId or setmoreAccountId
-    location_id = payload.get("location_id") or payload.get("locationId")      # Square locationId
+    business_number = payload.get("business_number") or payload.get("businessNumber")
     customer_phone = payload.get("customer_number") or payload.get("customerNumber") or payload.get("customerPhone")
 
-    # Optional voice config override
+    # Optional voice config override — allows callers to pass test config without
+    # requiring a saved "Done" configuration in the dashboard.
     voice_config_override = payload.get("voice_config") or payload.get("voiceConfig")
 
     claims = oauth_auth.get("claims") or {}
     token = oauth_auth.get("token")
-    bypassed = oauth_auth.get("bypassed", False)
-    user_id = claims.get("sub") or (payload.get("user_id") if bypassed else None)
 
-    if not account_type or not account_id:
-        raise HTTPException(status_code=400, detail="account_type and account_id are required")
-    if not user_id and not bypassed:
-        raise HTTPException(status_code=401, detail="Unable to determine user identity from token")
+    # If no business_number provided, look up the owner's first registered number
+    if not business_number:
+        sub = claims.get("sub")
+        if sub:
+            record = await _fetch_first_business_number_by_user(sub)
+            if record:
+                business_number = record.get("phoneNumber")
+                logger.info("voice_oauth_connect: resolved business_number=%s from userId=%s", business_number, sub)
 
-    logger.info(
-        "voice_oauth_connect: account_type=%s account_id=%s location_id=%s user_id=%s",
-        account_type, account_id, location_id, user_id,
-    )
+    if business_number:
+        _validate_token_business_match(claims, business_number)
 
-    try:
-        business_context = await resolve_context_by_account(
-            account_type,
-            account_id,
-            location_id=location_id,
-            user_id=user_id,
-            caller_number=customer_phone,
-        )
-    except Exception as exc:
-        logger.error("Failed to resolve business context for OAuth voice connect: %s", exc, exc_info=True)
-        business_context = {"success": False, "error": str(exc)}
+    if business_number:
+        try:
+            business_context = await resolve_context_for_request(
+                business_number,
+                caller_number=customer_phone,
+            )
+        except Exception as exc:
+            logger.error("Failed to resolve business context for OAuth voice connect: %s", exc, exc_info=True)
+            business_context = {"success": False, "error": str(exc)}
+    else:
+        logger.info("voice_oauth_connect: no business_number found, proceeding with empty context")
+        business_context = {"success": False, "error": "No business number configured"}
 
     forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
     forwarded_host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
     ws_scheme = "wss" if forwarded_proto == "https" else "ws"
-    query_params: dict = {}
+    query_params = {}
+    if business_number:
+        query_params["businessNumber"] = business_number
     if customer_phone:
         query_params["customerPhone"] = customer_phone
     if token:
         query_params["access_token"] = token
     import json as _json
+    # Store pre-resolved context server-side; pass a short token in the URL.
+    # This lets /ws skip re-resolution without bloating the WS URL.
     ctx_token = _store_pre_resolved(_make_json_serializable(business_context))
     query_params["ctxToken"] = ctx_token
     if voice_config_override and isinstance(voice_config_override, dict):
@@ -814,11 +752,37 @@ async def voice_oauth_connect(
     return {
         "success": True,
         "websocket_url": websocket_url,
+        "business_number": business_number,
         "customer_number": customer_phone,
-        "oauth_subject": user_id,
+        "oauth_subject": claims.get("sub"),
         "business_context": _make_json_serializable(business_context),
     }
 
+
+@app.post("/chat/oauth")
+@limiter.limit(lambda: f"{config.settings.rate_limit_per_minute}/minute")
+async def chat_oauth(
+    request: Request,
+    oauth_auth: dict = Depends(verify_oauth_auth),
+):
+    """OAuth-protected chat endpoint for Integrin clients."""
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body.")
+
+    business_number = payload.get("business_number") or payload.get("businessNumber")
+    claims = oauth_auth.get("claims") or {}
+    if not business_number:
+        sub = claims.get("sub")
+        if sub:
+            record = await _fetch_first_business_number_by_user(sub)
+            if record:
+                business_number = record.get("phoneNumber")
+    if not business_number:
+        raise HTTPException(status_code=400, detail="No business number found. Please configure a business number.")
+    _validate_token_business_match(claims, business_number)
+    return await chat(request, oauth_auth=oauth_auth)
 
 
 def verify_twilio_http_signature(request: Request, body: bytes) -> bool:
@@ -1540,57 +1504,60 @@ async def websocket_endpoint(websocket: WebSocket):
     logger.info(f"WebSocket connection established: {connection_id}")
     connection_start = time.monotonic()
 
-    ctx_token = websocket.query_params.get("ctxToken")
     business_number = websocket.query_params.get("businessNumber")
     customer_phone = websocket.query_params.get("customerPhone")
-
-    # Pre-resolved context from /voice/oauth/connect takes priority (no businessNumber needed)
-    pre_resolved = _pop_pre_resolved(ctx_token) if ctx_token else None
-    if pre_resolved:
-        pre_resolved_snake = to_snake_case(pre_resolved)
-        if customer_phone:
-            pre_resolved_snake["caller"] = customer_phone
-        set_connection_context_by_id(connection_id, pre_resolved_snake)
-        logger.info("Using pre-resolved context for %s via ctxToken (skipping re-resolution)", connection_id)
-    elif business_number:
+    if business_number:
         logger.info("Browser client provided businessNumber=%s for %s", business_number, connection_id)
-        set_connection_context_by_id(
-            connection_id,
-            {"success": False, "pending": True, "businessNumber": business_number, "caller": customer_phone},
-        )
-        await _resolve_and_set_context(
-            connection_id,
-            business_number,
-            extra_context={"caller": customer_phone} if customer_phone else None,
-        )
-    else:
-        logger.info("No businessNumber or ctxToken provided for %s", connection_id)
 
-    # Apply inline voice config override (for testing without saved config)
-    voice_config_override_b64 = websocket.query_params.get("voiceConfigOverride")
-    if voice_config_override_b64:
-        try:
-            import json as _json
-            _b64_clean = voice_config_override_b64.rstrip("=")
-            _b64_padding = (-len(_b64_clean)) % 4
-            override_raw = _json.loads(
-                base64.urlsafe_b64decode(_b64_clean + "=" * _b64_padding)
-            )
-            override_snake = to_snake_case(override_raw)
-            existing_ctx = get_connection_context_by_id(connection_id)
-            existing_voice = existing_ctx.get("voice_config") or {}
-            # Override wins for voice keys; saved config fills missing keys (e.g. forwarding_number)
-            merged_voice = {**existing_voice, **override_snake}
-            update_connection_context_by_id(connection_id, {"voice_config": merged_voice})
-            logger.info(
-                "Applied voice config override for %s: override_keys=%s -> provider=%s voice_id=%s",
+        # If /voice/oauth/connect already resolved the context, use it directly via token
+        ctx_token = websocket.query_params.get("ctxToken")
+        pre_resolved = _pop_pre_resolved(ctx_token) if ctx_token else None
+        if pre_resolved:
+            pre_resolved_snake = to_snake_case(pre_resolved)
+            if customer_phone:
+                pre_resolved_snake["caller"] = customer_phone
+            set_connection_context_by_id(connection_id, pre_resolved_snake)
+            logger.info("Using pre-resolved business context for %s via ctxToken (skipping re-resolution)", connection_id)
+
+        if not pre_resolved:
+            set_connection_context_by_id(
                 connection_id,
-                list(override_snake.keys()),
-                merged_voice.get("voice_provider"),
-                merged_voice.get("voice_id"),
+                {"success": False, "pending": True, "businessNumber": business_number, "caller": customer_phone},
             )
-        except Exception as exc:
-            logger.warning("Failed to apply voiceConfigOverride for %s: %s", connection_id, exc)
+            await _resolve_and_set_context(
+                connection_id,
+                business_number,
+                extra_context={"caller": customer_phone} if customer_phone else None,
+            )
+
+        # Apply inline voice config override (for testing without saved config)
+        voice_config_override_b64 = websocket.query_params.get("voiceConfigOverride")
+        if voice_config_override_b64:
+            try:
+                import json as _json
+                _b64_clean = voice_config_override_b64.rstrip("=")
+                _b64_padding = (-len(_b64_clean)) % 4
+                override_raw = _json.loads(
+                    base64.urlsafe_b64decode(_b64_clean + "=" * _b64_padding)
+                )
+                override_snake = to_snake_case(override_raw)
+                existing_ctx = get_connection_context_by_id(connection_id)
+                existing_voice = existing_ctx.get("voice_config") or {}
+                # Override wins for voice keys; saved config fills missing keys (e.g. forwarding_number)
+                merged_voice = {**existing_voice, **override_snake}
+                update_connection_context_by_id(connection_id, {"voice_config": merged_voice})
+                logger.info(
+                    "Applied voice config override for %s: override_keys=%s -> provider=%s voice_id=%s",
+                    connection_id,
+                    list(override_snake.keys()),
+                    merged_voice.get("voice_provider"),
+                    merged_voice.get("voice_id"),
+                )
+            except Exception as exc:
+                logger.warning("Failed to apply voiceConfigOverride for %s: %s", connection_id, exc)
+
+    else:
+        logger.info("No businessNumber provided for %s", connection_id)
     
     session = None
     
