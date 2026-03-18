@@ -859,7 +859,7 @@ async def twilio_twiml(request: Request):
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="{stream_url}">
+    <Stream url="{stream_url}" track="inbound_track">
       <Parameter name="Called" value="{to_number}"/>
       <Parameter name="Caller" value="{from_number}"/>
       <Parameter name="CallSid" value="{call_sid}"/>
