@@ -1685,25 +1685,12 @@ async def websocket_endpoint(websocket: WebSocket):
                             "businessNumber": ctx.get("business_number") or ctx.get("businessNumber") or "",
                         },
                     )
-            # Upsert VoiceCustomer record if a customer was identified during the call
+            # VoiceCustomer records are only created for real phone calls (Twilio path)
             customer_id = None
             customer_obj = ctx.get("customer")
             business_number = ctx.get("business_number") or ctx.get("businessNumber")
             booking_created = bool(ctx.get("bookingCreated") or ctx.get("booking_created"))
-            if customer_obj and config.settings.voice_customer_table:
-                from utils.customers import _extract_customer_fields
-                fields = _extract_customer_fields(customer_obj)
-                customer_id = await upsert_voice_customer(
-                    customer=customer_obj,
-                    provider=ctx.get("provider") or "unknown",
-                    business_number=business_number or "",
-                    caller_number=ctx.get("caller"),
-                    booking_created=booking_created,
-                    table_name=config.settings.voice_customer_table,
-                    aws_region=config.settings.aws_region,
-                )
-            else:
-                fields = {}
+            fields = {}
             await write_call_record(
                 connection_id=connection_id,
                 endpoint="ws",
