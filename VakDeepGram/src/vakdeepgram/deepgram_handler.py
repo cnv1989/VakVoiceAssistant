@@ -113,10 +113,6 @@ class DeepgramManager:
         }
         if config.settings.deepgram_listening_version:
             listen_provider["version"] = config.settings.deepgram_listening_version
-        if use_mulaw:
-            # For phone calls: increase endpointing to reduce false barge-in from acoustic echo.
-            # Requires ~500ms of sustained speech before triggering UserStartedSpeaking.
-            listen_provider["endpointing"] = 500
 
         # Build think provider
         if config.settings.deepgram_thinking_provider == "open_ai":
