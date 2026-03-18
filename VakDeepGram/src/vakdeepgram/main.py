@@ -1895,8 +1895,8 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
             context = get_connection_context_by_id(connection_id)
             await _end_twilio_call(
                 connection_id,
-                context.get("accountSid"),
-                context.get("callSid"),
+                context.get("account_sid"),
+                context.get("call_sid"),
             )
             await send_to_twilio({
                 "type": "disconnect",
