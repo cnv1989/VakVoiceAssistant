@@ -113,6 +113,10 @@ class DeepgramManager:
         }
         if config.settings.deepgram_listening_version:
             listen_provider["version"] = config.settings.deepgram_listening_version
+        if use_mulaw:
+            # For phone calls: increase endpointing to reduce false barge-in from acoustic echo.
+            # Requires ~500ms of sustained speech before triggering UserStartedSpeaking.
+            listen_provider["endpointing"] = 500
 
         # Build think provider
         if config.settings.deepgram_thinking_provider == "open_ai":
@@ -480,7 +484,7 @@ class DeepgramManager:
             if session.pending_disconnect_after_speech:
                 session.pending_disconnect_after_speech = False
                 session.pending_disconnect = True
-        
+
         elif msg_type == "AgentAudioDone":
             logger.info(f"✅ Agent audio done for {session.connection_id}")
             await session.send_to_client_safe({
