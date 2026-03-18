@@ -530,19 +530,19 @@ class DeepgramManager:
                     # Auto-reconnect: restart the Deepgram session without closing the browser WS
                     logger.info("🔄 Auto-reconnecting Deepgram session for %s (code=%s)", session.connection_id, error_code)
                     connection_id = session.connection_id
-                    send_callback = session.send_callback
+                    send_to_client = session.send_to_client
                     use_mulaw = session.use_mulaw
                     try:
                         new_session = await self.create_session(connection_id, use_mulaw=use_mulaw)
-                        if send_callback:
-                            new_session.set_send_callback(send_callback)
+                        if send_to_client:
+                            new_session.set_send_callback(send_to_client)
                         await new_session.send_to_client_safe({"type": "deepgram-ready"})
                         logger.info("✅ Deepgram session reconnected for %s", connection_id)
                     except Exception as reconnect_exc:
                         logger.error("❌ Deepgram reconnect failed for %s: %s", connection_id, reconnect_exc)
-                        if send_callback:
+                        if send_to_client:
                             try:
-                                await send_callback({
+                                await send_to_client({
                                     "type": "error",
                                     "message": f"Deepgram reconnect failed: {reconnect_exc}",
                                 })
