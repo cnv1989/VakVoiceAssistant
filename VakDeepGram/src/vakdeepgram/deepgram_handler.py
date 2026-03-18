@@ -159,9 +159,8 @@ class DeepgramManager:
                 "model_id": voice_config.get("voice_model_id") or config.settings.deepgram_speaking_model_id or "eleven_multilingual_v2",
                 "voice_id": voice_config.get("voice_id") or config.settings.deepgram_speaking_voice_id or "0mevMNFMwHxBOUTpeMGN",
             }
-            if use_mulaw:
-                # Request ulaw_8000 directly from ElevenLabs for Twilio telephony
-                speak_provider["output_format"] = "ulaw_8000"
+            # Note: audio output encoding (mulaw vs linear16) is controlled by the top-level
+            # audio.output.encoding field, not the speak provider. Deepgram handles conversion.
         else:
             speak_provider = {
                 "type": "deepgram",
