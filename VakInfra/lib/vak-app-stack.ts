@@ -269,6 +269,11 @@ export class VakAppStack extends cdk.Stack {
 
         // API key for /chat endpoint (used by Slack bot and other internal callers)
         CHAT_API_KEY: 'HZB8Yk-odYjZrEmyFEKZx-UMNCfKoRiBv0Oi2eeKiSg',
+
+        // OAuth — Integrin Cognito user pool (shared across all stages)
+        OAUTH_JWKS_URL: 'https://cognito-idp.us-west-2.amazonaws.com/us-west-2_wNKLafztj/.well-known/jwks.json',
+        OAUTH_ISSUER: 'https://cognito-idp.us-west-2.amazonaws.com/us-west-2_wNKLafztj',
+        OAUTH_AUDIENCE: '6vn5anbqmdk1cp4abh1t1rn6d8',
       },
       secrets: Object.keys(containerSecrets).length > 0 ? containerSecrets : undefined,
       healthCheck: {
