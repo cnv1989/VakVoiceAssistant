@@ -1947,15 +1947,15 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                             "called": to_number,
                             "caller": from_number,
                             "service": service_name,
-                            "callSid": call_sid,
-                            "accountSid": account_sid,
+                            "call_sid": call_sid,
+                            "account_sid": account_sid,
                         }
                         set_connection_context_by_id(
                             connection_id,
                             {
                                 "success": False,
                                 "pending": True,
-                                "businessNumber": normalized_number,
+                                "business_number": normalized_number,
                                 **extra_context,
                             },
                         )
@@ -1979,7 +1979,8 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                                 "called": to_number,
                                 "caller": from_number,
                                 "service": service_name,
-                                "callSid": call_sid,
+                                "call_sid": call_sid,
+                                "account_sid": account_sid,
                             },
                         )
                     if sid:
@@ -2148,7 +2149,7 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                 aws_region=config.settings.aws_region,
                 business_number=business_number,
                 caller_number=ctx.get("caller"),
-                call_sid=ctx.get("callSid"),
+                call_sid=ctx.get("call_sid"),
                 provider=ctx.get("provider"),
                 merchant_id=ctx.get("merchant_id"),
                 location_id=ctx.get("location_id"),
