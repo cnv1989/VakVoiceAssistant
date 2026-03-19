@@ -1224,6 +1224,159 @@ async def resolve_business_context(
 
     if not record:
         logger.warning("No BusinessNumber record found for %s", candidates)
+        # Local dev fallback: allow the voice tester to work without seeding DynamoDB.
+        if config.settings.oauth_allow_localhost_noauth and getattr(config.settings.environment, "value", str(config.settings.environment)) == "development":
+            logger.warning(
+                "Using LOCAL fallback business context (oauth_allow_localhost_noauth=true) for business_number=%s",
+                business_number,
+            )
+            fallback = {
+                "success": True,
+                "provider": "setmore",
+                "business_number": matched_number or candidates[0],
+                "forwarding_number": None,
+                "booking_page_url": "http://localhost:3000",
+                "location": {
+                    "timezone": "America/Los_Angeles",
+                    "business_name": "Local Test Shop",
+                    "phone_number": "+1-555-0100",
+                    "address": "123 Local St, Test City, ST",
+                    "email": "local@test.example",
+                    "business_hours": {
+                        "periods": [
+                            {
+                                "day_of_week": "MON",
+                                "start_local_time": "09:00:00",
+                                "end_local_time": "17:00:00",
+                            },
+                            {
+                                "day_of_week": "TUE",
+                                "start_local_time": "09:00:00",
+                                "end_local_time": "17:00:00",
+                            },
+                            {
+                                "day_of_week": "WED",
+                                "start_local_time": "09:00:00",
+                                "end_local_time": "17:00:00",
+                            },
+                            {
+                                "day_of_week": "THU",
+                                "start_local_time": "09:00:00",
+                                "end_local_time": "17:00:00",
+                            },
+                            {
+                                "day_of_week": "FRI",
+                                "start_local_time": "09:00:00",
+                                "end_local_time": "17:00:00",
+                            },
+                            {
+                                "day_of_week": "SAT",
+                                "start_local_time": "10:00:00",
+                                "end_local_time": "14:00:00",
+                            },
+                        ]
+                    },
+                },
+                # Optimized/flat format consumed by store_tools.get_services_from_context()
+                "services": [
+                    {
+                        "name": "Men's Haircuts",
+                        "description": "Classic haircut.",
+                        "variations": [{"name": "Men's Haircut", "price": {"amount": 45, "currency": "USD"}}],
+                    },
+                    {
+                        "name": "Regular Haircut",
+                        "description": "Full haircut.",
+                        "variations": [{"name": "Regular Haircut", "price": {"amount": 45, "currency": "USD"}}],
+                    },
+                    {
+                        "name": "Beard & Shave",
+                        "description": "Beard trim / shave options.",
+                        "variations": [{"name": "Beard Trim", "price": {"amount": 25, "currency": "USD"}}],
+                    },
+                    {
+                        "name": "Extras & Facials",
+                        "description": "Additional services.",
+                        "variations": [{"name": "Facial", "price": {"amount": 35, "currency": "USD"}}],
+                    },
+                ],
+                "staff": [
+                    {
+                        "id": "staff-alex",
+                        "display_name": "Alex",
+                        "status": "active",
+                        "given_name": "Alex",
+                        "family_name": None,
+                    },
+                ],
+                "appointments": [],
+                "customer": None,
+                # Mirror the naming used in the real Setmore resolver so the agent
+                # treats this as "ready" context.
+                "setmore_services": [
+                    {
+                        "name": s.get("name"),
+                        "description": s.get("description"),
+                        "variations": s.get("variations") or [],
+                    }
+                    for s in [
+                        {
+                            "name": "Men's Haircuts",
+                            "description": "Classic haircut.",
+                            "variations": [
+                                {
+                                    "name": "Men's Haircut",
+                                    "price": {"amount": 45, "currency": "USD"},
+                                }
+                            ],
+                        },
+                        {
+                            "name": "Regular Haircut",
+                            "description": "Full haircut.",
+                            "variations": [
+                                {
+                                    "name": "Regular Haircut",
+                                    "price": {"amount": 45, "currency": "USD"},
+                                }
+                            ],
+                        },
+                        {
+                            "name": "Beard & Shave",
+                            "description": "Beard trim / shave options.",
+                            "variations": [
+                                {"name": "Beard Trim", "price": {"amount": 25, "currency": "USD"}}
+                            ],
+                        },
+                        {
+                            "name": "Extras & Facials",
+                            "description": "Additional services.",
+                            "variations": [
+                                {"name": "Facial", "price": {"amount": 35, "currency": "USD"}}
+                            ],
+                        },
+                    ]
+                ],
+                "setmore_staff": [
+                    {
+                        "id": "staff-alex",
+                        "display_name": "Alex",
+                        "status": "active",
+                        "given_name": "Alex",
+                        "family_name": None,
+                    }
+                ],
+                "setmore_appointments": [],
+                "setmore_api_ready": True,
+                # For local dev we prefer Deepgram TTS (lower latency) over ElevenLabs.
+                "voiceConfig": {
+                    "forwardingNumber": "+1-555-0100",
+                    "voiceProvider": "deepgram",
+                    "voiceId": "aura-2-thalia-en",
+                },
+            }
+            _emit("setmore_local_fallback", True)
+            return to_snake_case(fallback)
+
         _emit("unknown", False)
         return {"success": False, "error": "Business number not found."}
 
