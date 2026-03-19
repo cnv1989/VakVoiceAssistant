@@ -1622,6 +1622,17 @@ async def websocket_endpoint(websocket: WebSocket):
             if "text" in message:
                 try:
                     data = json.loads(message["text"])
+                    # Client-initiated disconnect: stop listening immediately.
+                    # This is sent by Integrin when the user clicks "End Call".
+                    if data.get("type") == "disconnect":
+                        reason = data.get("reason") or "user_ended_call"
+                        logger.info(f"Client disconnect received for {connection_id} (reason={reason})")
+                        stop_recording_received = True
+                        if session:
+                            recording_data_for_upload = deepgram_manager.get_session_recording_data(connection_id)
+                            await deepgram_manager.close_session(connection_id)
+                            session = None
+                        break
                     action = data.get("action")
                     
                     if action == "stop-deepgram" or action == "stop-recording":
