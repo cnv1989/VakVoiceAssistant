@@ -1561,6 +1561,10 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.info("No businessNumber provided for %s", connection_id)
     
     session = None
+    # When the browser client stops recording, it currently closes the Deepgram
+    # session inside the message loop. In that case we must snapshot buffered
+    # transcript/audio BEFORE closing, otherwise we upload nothing.
+    recording_data_for_upload = None
     
     async def send_to_client(data: dict):
         """Helper function to send data to client"""
@@ -1622,6 +1626,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     if action == "stop-deepgram" or action == "stop-recording":
                         logger.info(f"Stopping Deepgram session for {connection_id}")
                         if session:
+                            recording_data_for_upload = deepgram_manager.get_session_recording_data(connection_id)
                             await deepgram_manager.close_session(connection_id)
                             session = None
                         await send_to_client({"type": "recording-stopped"})
@@ -1665,7 +1670,7 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.error(f"Error in WebSocket handler for {connection_id}: {e}", exc_info=True)
     finally:
         # Collect session recording data BEFORE closing the session (session is removed on close)
-        recording_data = deepgram_manager.get_session_recording_data(connection_id) if session else {}
+        recording_data = recording_data_for_upload or deepgram_manager.get_session_recording_data(connection_id)
         # Clean up session
         if session:
             await deepgram_manager.close_session(connection_id)
