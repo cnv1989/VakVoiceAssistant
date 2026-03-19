@@ -1565,6 +1565,7 @@ async def websocket_endpoint(websocket: WebSocket):
     # session inside the message loop. In that case we must snapshot buffered
     # transcript/audio BEFORE closing, otherwise we upload nothing.
     recording_data_for_upload = None
+    stop_recording_received = False
     
     async def send_to_client(data: dict):
         """Helper function to send data to client"""
@@ -1624,12 +1625,21 @@ async def websocket_endpoint(websocket: WebSocket):
                     action = data.get("action")
                     
                     if action == "stop-deepgram" or action == "stop-recording":
-                        logger.info(f"Stopping Deepgram session for {connection_id}")
-                        if session:
-                            recording_data_for_upload = deepgram_manager.get_session_recording_data(connection_id)
-                            await deepgram_manager.close_session(connection_id)
-                            session = None
-                        await send_to_client({"type": "recording-stopped"})
+                        if action == "stop-deepgram":
+                            logger.info(f"Stopping Deepgram session for {connection_id}")
+                            if session:
+                                # Snapshot before closing so we don't lose any buffered transcript/audio.
+                                recording_data_for_upload = deepgram_manager.get_session_recording_data(connection_id)
+                                await deepgram_manager.close_session(connection_id)
+                                session = None
+                            await send_to_client({"type": "recording-stopped"})
+                        else:
+                            # stop-recording: stop accepting more mic audio, but DO NOT close
+                            # the Deepgram session immediately (it needs time to emit the final
+                            # ConversationText + tts audio after the user finishes speaking).
+                            logger.info(f"Client requested stop-recording for {connection_id} (keeping Deepgram session alive briefly)")
+                            stop_recording_received = True
+                            await send_to_client({"type": "recording-stopped"})
                     
                     elif action == "set-tts-engine":
                         # Ignore TTS engine selection - Deepgram Voice Agent handles TTS automatically
@@ -1655,6 +1665,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 audio_data = message["bytes"]
                 # Always look up the current session — auto-reconnect may have replaced it
                 current_session = deepgram_manager.get_session(connection_id)
+                if stop_recording_received:
+                    # Client stopped mic; ignore further audio chunks.
+                    continue
                 if current_session and current_session.is_active:
                     await deepgram_manager.send_audio(connection_id, audio_data)
                 else:
@@ -1671,6 +1684,17 @@ async def websocket_endpoint(websocket: WebSocket):
     finally:
         # Collect session recording data BEFORE closing the session (session is removed on close)
         recording_data = recording_data_for_upload or deepgram_manager.get_session_recording_data(connection_id)
+        # If we didn't capture anything yet, allow a short grace period for Deepgram
+        # to emit final ConversationText + tts audio after stop-recording.
+        if (
+            not recording_data_for_upload
+            and config.settings.recordings_bucket
+            and session
+            and recording_data
+            and not (recording_data.get("transcript_turns") or recording_data.get("audio_chunks"))
+        ):
+            await asyncio.sleep(2.0)
+            recording_data = deepgram_manager.get_session_recording_data(connection_id)
         # Clean up session
         if session:
             await deepgram_manager.close_session(connection_id)
