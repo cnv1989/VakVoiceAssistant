@@ -715,18 +715,9 @@ async def voice_oauth_connect(
     if business_number:
         _validate_token_business_match(claims, business_number)
 
-    if business_number:
-        try:
-            business_context = await resolve_context_for_request(
-                business_number,
-                caller_number=customer_phone,
-            )
-        except Exception as exc:
-            logger.error("Failed to resolve business context for OAuth voice connect: %s", exc, exc_info=True)
-            business_context = {"success": False, "error": str(exc)}
-    else:
-        logger.info("voice_oauth_connect: no business_number found, proceeding with empty context")
-        business_context = {"success": False, "error": "No business number configured"}
+    # Don't pre-resolve context here — let /ws resolve it using businessNumber
+    # (same path as VakClient). This keeps a single resolution path and avoids
+    # stale cached context.
 
     forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
     forwarded_host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
@@ -739,10 +730,6 @@ async def voice_oauth_connect(
     if token:
         query_params["access_token"] = token
     import json as _json
-    # Store pre-resolved context server-side; pass a short token in the URL.
-    # This lets /ws skip re-resolution without bloating the WS URL.
-    ctx_token = _store_pre_resolved(_make_json_serializable(business_context))
-    query_params["ctxToken"] = ctx_token
     if voice_config_override and isinstance(voice_config_override, dict):
         query_params["voiceConfigOverride"] = base64.urlsafe_b64encode(
             _json.dumps(voice_config_override).encode()
@@ -755,7 +742,6 @@ async def voice_oauth_connect(
         "business_number": business_number,
         "customer_number": customer_phone,
         "oauth_subject": claims.get("sub"),
-        "business_context": _make_json_serializable(business_context),
     }
 
 

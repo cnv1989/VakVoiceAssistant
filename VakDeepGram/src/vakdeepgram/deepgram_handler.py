@@ -389,6 +389,7 @@ class DeepgramManager:
             return
         
         msg_type = data.get("type", "Unknown")
+        logger.info(f"📩 Deepgram event for {session.connection_id}: type={msg_type} keys={list(data.keys())}")
         
         if msg_type == "Welcome":
             welcome_text = data.get("message") or data.get("content")
@@ -403,6 +404,13 @@ class DeepgramManager:
         elif msg_type == "SettingsApplied":
             logger.info(f"Settings applied for {session.connection_id}")
             session.is_ready = True
+            if not session.message_id:
+                session.message_id = f"msg-{uuid.uuid4().hex[:12]}"
+                await session.send_to_client_safe({
+                    "type": "message-id",
+                    "messageId": session.message_id,
+                    "connectionId": session.connection_id,
+                })
             await self._on_settings_applied(session)
         
         elif msg_type == "ConversationText":
@@ -474,6 +482,7 @@ class DeepgramManager:
             logger.info(f"🎤 Agent started speaking for {session.connection_id}")
             await session.send_to_client_safe({
                 "type": "agent-started-speaking",
+                "messageId": session.message_id,
                 "connectionId": session.connection_id
             })
             # Farewell has started — arm the disconnect so AgentAudioDone triggers it
@@ -485,6 +494,7 @@ class DeepgramManager:
             logger.info(f"✅ Agent audio done for {session.connection_id}")
             await session.send_to_client_safe({
                 "type": "ready-to-listen",
+                "messageId": session.message_id,
                 "connectionId": session.connection_id
             })
             if session.pending_disconnect:
