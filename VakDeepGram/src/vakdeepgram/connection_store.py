@@ -430,6 +430,99 @@ async def _prefetch_availability_for_services(
     }
 
 
+async def resolve_business_context_by_account_id(
+    account_id: str,
+    provider: Optional[str] = None,
+    location_id: Optional[str] = None,
+    caller_number: Optional[str] = None,
+    optimize: Optional[bool] = None,
+    prefetch_availability_days: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Resolve full business context from an account ID (DynamoDB PK or merchantId).
+
+    *provider* should be ``"setmore"`` or ``"square"``.  When omitted the
+    function tries Setmore first, then Square.
+    """
+    if not account_id:
+        return {"success": False, "error": "account_id is required"}
+
+    logger.info(
+        "resolve_business_context_by_account_id: account_id=%s provider=%s location_id=%s",
+        account_id, provider, location_id,
+    )
+
+    if provider == "setmore" or not provider:
+        bn_record = await _fetch_business_number_by_setmore_account(account_id)
+        if bn_record:
+            logger.info("Resolved BusinessNumber from setmoreAccountId=%s -> phoneNumber=%s",
+                        account_id, bn_record.get("phoneNumber"))
+            return await resolve_business_context(
+                bn_record.get("phoneNumber") or "",
+                caller_number=caller_number,
+                optimize=optimize,
+                prefetch_availability_days=prefetch_availability_days,
+                pre_fetched_record=bn_record,
+            )
+        acct = await _fetch_setmore_account_record(account_id=account_id)
+        if acct:
+            record = {
+                "provider": "setmore",
+                "setmoreAccountId": account_id,
+                "userId": acct.get("owner") or acct.get("userId"),
+                "refreshToken": acct.get("refreshToken"),
+                "accessToken": acct.get("accessToken"),
+                "phoneNumber": acct.get("businessPhone") or "",
+            }
+            return await resolve_business_context(
+                record.get("phoneNumber") or "",
+                caller_number=caller_number,
+                optimize=optimize,
+                prefetch_availability_days=prefetch_availability_days,
+                pre_fetched_record=record,
+            )
+        if provider == "setmore":
+            return {"success": False, "error": f"No SetmoreAccount found for id={account_id}"}
+
+    if provider == "square" or not provider:
+        acct = await _fetch_square_account_by_merchant(account_id)
+        if acct:
+            record = {
+                "provider": "square",
+                "merchantId": account_id,
+                "locationId": location_id or "",
+                "userId": acct.get("userId") or acct.get("owner"),
+                "phoneNumber": "",
+            }
+            return await resolve_business_context(
+                record.get("phoneNumber") or "",
+                caller_number=caller_number,
+                optimize=optimize,
+                prefetch_availability_days=prefetch_availability_days,
+                pre_fetched_record=record,
+            )
+        if provider == "square":
+            return {"success": False, "error": f"No SquareAccount found for merchantId={account_id}"}
+
+    return {"success": False, "error": f"No account found for id={account_id}"}
+
+
+async def _fetch_square_account_by_merchant(merchant_id: str) -> Optional[Dict[str, Any]]:
+    """Scan SquareAccount table to find a record by merchantId."""
+    logger.info("Fetching SquareAccount by merchantId=%s", merchant_id)
+    session = aioboto3.Session()
+    async with session.resource("dynamodb", region_name=config.settings.aws_region) as dynamodb:
+        table = dynamodb.Table(config.settings.square_account_table)
+        if asyncio.iscoroutine(table):
+            table = await table
+        from boto3.dynamodb.conditions import Attr
+        response = await table.scan(
+            FilterExpression=Attr("merchantId").eq(merchant_id),
+            Limit=1,
+        )
+        items = response.get("Items") or []
+        return items[0] if items else None
+
+
 async def _fetch_first_business_number_by_user(user_id: str) -> Optional[Dict[str, Any]]:
     """Scan BusinessNumber table for the first record owned by user_id (Cognito sub)."""
     logger.info("Fetching first BusinessNumber record for userId=%s", user_id)
@@ -441,6 +534,23 @@ async def _fetch_first_business_number_by_user(user_id: str) -> Optional[Dict[st
         from boto3.dynamodb.conditions import Attr
         response = await table.scan(
             FilterExpression=Attr("userId").eq(user_id),
+            Limit=1,
+        )
+        items = response.get("Items") or []
+        return items[0] if items else None
+
+
+async def _fetch_business_number_by_setmore_account(setmore_account_id: str) -> Optional[Dict[str, Any]]:
+    """Look up a BusinessNumber record by its setmoreAccountId field."""
+    logger.info("Fetching BusinessNumber by setmoreAccountId=%s", setmore_account_id)
+    session = aioboto3.Session()
+    async with session.resource("dynamodb", region_name=config.settings.aws_region) as dynamodb:
+        table = dynamodb.Table(config.settings.business_number_table)
+        if asyncio.iscoroutine(table):
+            table = await table
+        from boto3.dynamodb.conditions import Attr
+        response = await table.scan(
+            FilterExpression=Attr("setmoreAccountId").eq(setmore_account_id),
             Limit=1,
         )
         items = response.get("Items") or []
@@ -1178,6 +1288,8 @@ async def resolve_business_context(
     caller_number: Optional[str] = None,
     optimize: Optional[bool] = None,
     prefetch_availability_days: Optional[int] = None,
+    *,
+    pre_fetched_record: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     start = time.monotonic()
     def _emit(provider_value: Optional[str], success: bool) -> None:
@@ -1186,41 +1298,49 @@ async def resolve_business_context(
             (time.monotonic() - start) * 1000,
             success,
         )
-    # Use config defaults if not specified
     if optimize is None:
         optimize = config.settings.optimize_business_context
     if prefetch_availability_days is None:
         prefetch_availability_days = config.settings.prefetch_availability_days
 
     logger.info(
-        "connection_store.resolve_business_context called (business_number=%s caller_number=%s optimize=%s prefetch_days=%d)",
+        "connection_store.resolve_business_context called (business_number=%s caller_number=%s optimize=%s prefetch_days=%d pre_fetched=%s)",
         business_number,
         caller_number,
         optimize,
         prefetch_availability_days,
+        bool(pre_fetched_record),
     )
-    candidates = _candidate_numbers(business_number)
-    if not candidates:
-        logger.warning("Business number normalization failed: %s", business_number)
-        _emit("unknown", False)
-        return {"success": False, "error": "Invalid business number."}
 
-    cache_keys = [(candidate, bool(optimize), int(prefetch_availability_days)) for candidate in candidates]
-    cached = _get_cached_business_context(cache_keys)
-    if cached:
-        logger.info("Returning cached business context for %s", business_number)
-        _emit(cached.get("provider") if isinstance(cached, dict) else "unknown", True)
-        return to_snake_case(cached)
-
-    logger.info("Resolving business context for %s (candidates=%s)", business_number, candidates)
-    record = None
+    record = pre_fetched_record
     matched_number = None
-    for candidate in candidates:
-        record = await _fetch_business_number_record(candidate)
-        if record:
-            matched_number = candidate
-            break
-        logger.warning("No BusinessNumber record found for %s", candidate)
+    candidates: list = []
+
+    if record:
+        matched_number = record.get("phoneNumber") or business_number
+        candidates = [matched_number] if matched_number else []
+        logger.info("Using pre-fetched BusinessNumber record (phoneNumber=%s)", matched_number)
+    else:
+        candidates = _candidate_numbers(business_number)
+        if not candidates:
+            logger.warning("Business number normalization failed: %s", business_number)
+            _emit("unknown", False)
+            return {"success": False, "error": "Invalid business number."}
+
+        cache_keys = [(candidate, bool(optimize), int(prefetch_availability_days)) for candidate in candidates]
+        cached = _get_cached_business_context(cache_keys)
+        if cached:
+            logger.info("Returning cached business context for %s", business_number)
+            _emit(cached.get("provider") if isinstance(cached, dict) else "unknown", True)
+            return to_snake_case(cached)
+
+        logger.info("Resolving business context for %s (candidates=%s)", business_number, candidates)
+        for candidate in candidates:
+            record = await _fetch_business_number_record(candidate)
+            if record:
+                matched_number = candidate
+                break
+            logger.warning("No BusinessNumber record found for %s", candidate)
 
     if not record:
         logger.warning("No BusinessNumber record found for %s", candidates)

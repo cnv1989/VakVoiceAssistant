@@ -7,7 +7,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
-from vakdeepgram.connection_store import resolve_business_context
+from vakdeepgram.connection_store import (
+    resolve_business_context,
+    resolve_business_context_by_account_id,
+)
 from vakdeepgram.repositories import (
     get_connection_context_by_id,
     set_connection_context_by_id,
@@ -20,10 +23,25 @@ async def resolve_context_for_request(
     business_number: str,
     *,
     caller_number: Optional[str] = None,
+    account_id: Optional[str] = None,
+    provider: Optional[str] = None,
+    location_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Resolve business context for stateless request flows (/chat, /twilio-chat)."""
+    """Resolve business context for stateless request flows (/chat, /twilio-chat).
+
+    When *account_id* is provided and *business_number* is empty, context is
+    resolved directly from the account record (skipping the phone lookup).
+    """
     try:
-        context = await resolve_business_context(business_number, caller_number=caller_number)
+        if not business_number and account_id:
+            context = await resolve_business_context_by_account_id(
+                account_id, provider=provider, location_id=location_id,
+                caller_number=caller_number,
+            )
+        else:
+            context = await resolve_business_context(
+                business_number, caller_number=caller_number,
+            )
     except Exception as exc:  # pragma: no cover - defensive
         logger.error("Failed to resolve business context: %s", exc, exc_info=True)
         return {"success": False, "error": str(exc)}
@@ -37,10 +55,19 @@ async def resolve_and_store_connection_context(
     business_number: str,
     *,
     extra_context: Optional[Dict[str, Any]] = None,
+    account_id: Optional[str] = None,
+    provider: Optional[str] = None,
+    location_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Resolve business context and merge it into connection state."""
     caller_number = (extra_context or {}).get("caller")
-    context = await resolve_context_for_request(business_number, caller_number=caller_number)
+    context = await resolve_context_for_request(
+        business_number,
+        caller_number=caller_number,
+        account_id=account_id,
+        provider=provider,
+        location_id=location_id,
+    )
     existing_context = get_connection_context_by_id(connection_id)
     merged_context = {**existing_context, **context}
     if extra_context:

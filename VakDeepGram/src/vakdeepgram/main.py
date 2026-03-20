@@ -183,16 +183,25 @@ async def _resolve_and_set_context(
     connection_id: str,
     business_number: str,
     extra_context: Optional[dict] = None,
+    *,
+    account_id: Optional[str] = None,
+    provider: Optional[str] = None,
+    location_id: Optional[str] = None,
 ) -> None:
     logger.debug(
-        "_resolve_and_set_context called (connection_id=%s business_number=%s)",
+        "_resolve_and_set_context called (connection_id=%s business_number=%s account_id=%s provider=%s)",
         connection_id,
         business_number,
+        account_id,
+        provider,
     )
     merged_context = await resolve_and_store_connection_context(
         connection_id,
         business_number,
         extra_context=extra_context,
+        account_id=account_id,
+        provider=provider,
+        location_id=location_id,
     )
     if merged_context.get("success"):
         logger.info(
@@ -492,29 +501,33 @@ async def chat(
     if not message or not isinstance(message, str):
         raise HTTPException(status_code=400, detail="message is required.")
 
-    # Get business number and customer number
     business_number = payload.get("business_number") or payload.get("businessNumber")
     customer_phone = payload.get("customer_number") or payload.get("customerPhone") or payload.get("customer_phone")
+    account_id = payload.get("account_id") or payload.get("accountId")
+    account_provider = payload.get("provider")
+    square_location_id = payload.get("location_id") or payload.get("locationId")
     session_id = payload.get("session_id") or payload.get("sessionId")
 
-    if not business_number:
-        raise HTTPException(status_code=400, detail="business_number is required")
+    if not business_number and not account_id:
+        raise HTTPException(status_code=400, detail="business_number or account_id is required")
     claims = oauth_auth.get("claims") or {}
-    _validate_token_business_match(claims, business_number)
-    
-    logger.info("Chat request: businessNumber=%s customerPhone=%s", business_number, customer_phone)
-    
-    # Resolve business context directly (without connection store)
-    business_context = {}
     if business_number:
-        try:
-            business_context = await resolve_context_for_request(
-                business_number,
-                caller_number=customer_phone,
-            )
-        except Exception as exc:
-            logger.error("Failed to resolve business context: %s", exc, exc_info=True)
-            business_context = {"success": False, "error": str(exc)}
+        _validate_token_business_match(claims, business_number)
+    
+    logger.info("Chat request: businessNumber=%s customerPhone=%s accountId=%s provider=%s", business_number, customer_phone, account_id, account_provider)
+    
+    business_context = {}
+    try:
+        business_context = await resolve_context_for_request(
+            business_number or "",
+            caller_number=customer_phone,
+            account_id=account_id,
+            provider=account_provider,
+            location_id=square_location_id,
+        )
+    except Exception as exc:
+        logger.error("Failed to resolve business context: %s", exc, exc_info=True)
+        business_context = {"success": False, "error": str(exc)}
 
     # Resolve provider from business context for provider-specific tools and prompts
     provider = (business_context.get("provider") or "square").lower()
@@ -695,15 +708,16 @@ async def voice_oauth_connect(
 
     business_number = payload.get("business_number") or payload.get("businessNumber")
     customer_phone = payload.get("customer_number") or payload.get("customerNumber") or payload.get("customerPhone")
+    account_id = payload.get("account_id") or payload.get("accountId")
+    account_provider = payload.get("provider")
+    square_location_id = payload.get("location_id") or payload.get("locationId")
 
-    # Optional voice config override — allows callers to pass test config without
-    # requiring a saved "Done" configuration in the dashboard.
     voice_config_override = payload.get("voice_config") or payload.get("voiceConfig")
 
     claims = oauth_auth.get("claims") or {}
     token = oauth_auth.get("token")
 
-    # If no business_number provided, look up the owner's first registered number
+    # If no business_number provided, fall back to user's first registered number
     if not business_number:
         sub = claims.get("sub")
         if sub:
@@ -727,6 +741,12 @@ async def voice_oauth_connect(
         query_params["businessNumber"] = business_number
     if customer_phone:
         query_params["customerPhone"] = customer_phone
+    if account_id:
+        query_params["accountId"] = account_id
+    if account_provider:
+        query_params["provider"] = account_provider
+    if square_location_id:
+        query_params["locationId"] = square_location_id
     if token:
         query_params["access_token"] = token
     import json as _json
@@ -758,16 +778,18 @@ async def chat_oauth(
         raise HTTPException(status_code=400, detail="Invalid JSON body.")
 
     business_number = payload.get("business_number") or payload.get("businessNumber")
+    account_id = payload.get("account_id") or payload.get("accountId")
     claims = oauth_auth.get("claims") or {}
-    if not business_number:
+    if not business_number and not account_id:
         sub = claims.get("sub")
         if sub:
             record = await _fetch_first_business_number_by_user(sub)
             if record:
                 business_number = record.get("phoneNumber")
-    if not business_number:
-        raise HTTPException(status_code=400, detail="No business number found. Please configure a business number.")
-    _validate_token_business_match(claims, business_number)
+    if not business_number and not account_id:
+        raise HTTPException(status_code=400, detail="No business number or account ID found. Please configure a business number.")
+    if business_number:
+        _validate_token_business_match(claims, business_number)
     return await chat(request, oauth_auth=oauth_auth)
 
 
@@ -1493,6 +1515,10 @@ async def websocket_endpoint(websocket: WebSocket):
 
     business_number = websocket.query_params.get("businessNumber")
     customer_phone = websocket.query_params.get("customerPhone")
+    account_id = websocket.query_params.get("accountId")
+    account_provider = websocket.query_params.get("provider")
+    square_location_id = websocket.query_params.get("locationId")
+
     if business_number:
         logger.info("Browser client provided businessNumber=%s for %s", business_number, connection_id)
 
@@ -1517,7 +1543,25 @@ async def websocket_endpoint(websocket: WebSocket):
                 extra_context={"caller": customer_phone} if customer_phone else None,
             )
 
-        # Apply inline voice config override (for testing without saved config)
+    elif account_id:
+        logger.info("Browser client provided accountId=%s provider=%s for %s (no businessNumber)", account_id, account_provider, connection_id)
+        set_connection_context_by_id(
+            connection_id,
+            {"success": False, "pending": True, "accountId": account_id, "caller": customer_phone},
+        )
+        await _resolve_and_set_context(
+            connection_id,
+            "",
+            extra_context={"caller": customer_phone} if customer_phone else None,
+            account_id=account_id,
+            provider=account_provider,
+            location_id=square_location_id,
+        )
+
+    else:
+        logger.info("No businessNumber or accountId provided for %s", connection_id)
+
+    if business_number or account_id:
         voice_config_override_b64 = websocket.query_params.get("voiceConfigOverride")
         if voice_config_override_b64:
             try:
@@ -1530,7 +1574,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 override_snake = to_snake_case(override_raw)
                 existing_ctx = get_connection_context_by_id(connection_id)
                 existing_voice = existing_ctx.get("voice_config") or {}
-                # Override wins for voice keys; saved config fills missing keys (e.g. forwarding_number)
                 merged_voice = {**existing_voice, **override_snake}
                 update_connection_context_by_id(connection_id, {"voice_config": merged_voice})
                 logger.info(
@@ -1542,9 +1585,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
             except Exception as exc:
                 logger.warning("Failed to apply voiceConfigOverride for %s: %s", connection_id, exc)
-
-    else:
-        logger.info("No businessNumber provided for %s", connection_id)
     
     session = None
     # When the browser client stops recording, it currently closes the Deepgram
