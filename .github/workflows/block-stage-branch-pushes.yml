@@ -1,0 +1,25 @@
+# Fail fast when someone pushes directly to a stage branch. Pushes from the
+# promote workflow use GITHUB_TOKEN (pusher: github-actions[bot]).
+
+name: Block direct pushes to stage branches
+
+on:
+  push:
+    branches: [alpha, beta, prod]
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check pusher
+        env:
+          PUSHER: ${{ github.event.pusher.name }}
+        run: |
+          set -euo pipefail
+          echo "Pusher: ${PUSHER:-<empty>}"
+          if [[ "${PUSHER:-}" == "github-actions[bot]" || "${PUSHER:-}" == "web-flow" ]]; then
+            echo "Allowed automated push."
+            exit 0
+          fi
+          echo "::error::Direct pushes to ${GITHUB_REF_NAME} are not allowed. Push to main and let the promote workflow update stage branches."
+          exit 1
