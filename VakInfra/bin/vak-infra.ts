@@ -51,6 +51,7 @@ const stageConfigs: Array<{
   cognitoDomainPrefix: string;
   cognitoUserPoolId: string;
   cognitoAppClientId: string;
+  agentcoreMemoryId: string;
 }> = [
   {
     stage: 'prod',
@@ -59,6 +60,7 @@ const stageConfigs: Array<{
     cognitoDomainPrefix: 'groommate-auth-prod',
     cognitoUserPoolId: 'us-west-2_3yVGKZ2z0',
     cognitoAppClientId: '5fq3taa9n3n5h2fhbmfbq3pcp4',
+    agentcoreMemoryId: 'groommate_844341423871_us_west_2_prod-ELoLBVHnZm',
   },
   {
     stage: 'beta',
@@ -67,6 +69,7 @@ const stageConfigs: Array<{
     cognitoDomainPrefix: 'groommate-auth-beta',
     cognitoUserPoolId: 'us-west-2_XUe8abnY6',
     cognitoAppClientId: '2a7h870f41vo85h46am9o6pu86',
+    agentcoreMemoryId: 'groommate_844341423871_us_west_2_beta-sad8dkCXMm',
   },
   {
     stage: 'alpha',
@@ -75,6 +78,7 @@ const stageConfigs: Array<{
     cognitoDomainPrefix: 'groommate-auth-alpha',
     cognitoUserPoolId: 'us-west-2_wNKLafztj',
     cognitoAppClientId: '6vn5anbqmdk1cp4abh1t1rn6d8',
+    agentcoreMemoryId: 'groommate_844341423871_us_west_2_alpha-KuP9gY21Rq',
   },
 ];
 
@@ -95,6 +99,7 @@ for (const cfg of stageConfigs) {
     cognitoDomainPrefix: cfg.cognitoDomainPrefix,
     cognitoUserPoolId: cfg.cognitoUserPoolId,
     cognitoAppClientId: cfg.cognitoAppClientId,
+    agentcoreMemoryId: cfg.agentcoreMemoryId,
   });
   appStack.addDependency(networkStack);
   appStack.addDependency(dnsStack);

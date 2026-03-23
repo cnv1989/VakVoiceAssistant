@@ -80,6 +80,7 @@ class Settings(BaseSettings):
 
     # Voice Customer tracking - DynamoDB table for caller profiles (upserted per call)
     voice_customer_table: str = "VoiceCustomer-qwgs45frzjcxxapb2olf7uebca-NONE"
+    user_booking_link_table: str = "UserBookingLink-Alpha"
 
     # Session storage - S3 bucket for transcripts and recordings
     # When set, transcripts are uploaded to S3 at the end of every call.
@@ -328,6 +329,16 @@ This response will be sent as an SMS text message. Follow these rules:
 -When listing services or options, use a simple numbered list (1. Item) with no bold or headers.
 -If there are many items (e.g., full service menu), summarize the categories and offer to share details on request instead of listing everything.
 -Never send a wall of text.
+"""
+
+WHATSAPP_PROMPT_SUFFIX = """
+#WhatsApp Format
+This response will be sent as a WhatsApp message. Follow these rules:
+-You may use WhatsApp formatting: *bold*, _italic_, and numbered lists.
+-Keep responses concise but informative — aim for under 500 characters.
+-When listing services or options, use a clean numbered list.
+-If there are many items, summarize categories and offer to share details.
+-Be conversational and friendly.
 """
 
 

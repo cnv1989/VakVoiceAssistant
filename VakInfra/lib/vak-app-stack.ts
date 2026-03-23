@@ -72,6 +72,9 @@ export interface VakAppStackProps extends cdk.StackProps {
   /** Integrin Cognito app client ID for this stage (used as oauth_audience). */
   cognitoAppClientId: string;
 
+  /** Bedrock AgentCore Memory ID for this stage (optional). */
+  agentcoreMemoryId?: string;
+
 }
 
 export class VakAppStack extends cdk.Stack {
@@ -104,6 +107,19 @@ export class VakAppStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
     this.sessionsTable = sessionsTable;
+
+    // ─── DynamoDB — UserBookingLink table (owned by VakDeepGram) ──────────────
+    // Tracks booking links sent to customers so the WhatsApp endpoint can
+    // resolve which business a customer was last interacting with.
+    // PK = customerPhone (E.164), SK = createdAt (ISO timestamp, latest first)
+    const userBookingLinkTable = new dynamodb.Table(this, 'UserBookingLinkTable', {
+      tableName: `UserBookingLink-${cap(stage)}`,
+      partitionKey: { name: 'customerPhone', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
+      timeToLiveAttribute: 'ttl',
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
 
     // ─── S3 Artifacts bucket ─────────────────────────────────────────────────
     const artifactsBucket = new s3.Bucket(this, 'ArtifactsBucket', {
@@ -160,6 +176,9 @@ export class VakAppStack extends cdk.Stack {
     // Sessions table (owned by this stack)
     sessionsTable.grantReadWriteData(taskRole);
 
+    // UserBookingLink table (owned by this stack)
+    userBookingLinkTable.grantReadWriteData(taskRole);
+
     // S3 artifacts bucket — used for call transcripts and recordings
     artifactsBucket.grantReadWrite(taskRole);
 
@@ -191,6 +210,25 @@ export class VakAppStack extends cdk.Stack {
         `${amplifyTableArn('SetmoreAccount')}/index/*`,
         `${amplifyTableArn('VoiceCustomer')}/index/*`,
       ],
+    }));
+
+    // Bedrock AgentCore Memory (session persistence for chat/WhatsApp)
+    taskRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'bedrock:InvokeAgent',
+        'bedrock:CreateMemory',
+        'bedrock:GetMemory',
+        'bedrock:ListMemories',
+        'bedrock:DeleteMemory',
+        'bedrock:CreateSession',
+        'bedrock:GetSession',
+        'bedrock:ListSessions',
+        'bedrock:DeleteSession',
+        'bedrock:PutEvents',
+        'bedrock:GetEvents',
+      ],
+      resources: ['*'],
     }));
 
     // Bedrock for Strands Agent / chat endpoint
@@ -274,12 +312,16 @@ export class VakAppStack extends cdk.Stack {
         BUSINESS_AUTOMATIONS_TABLE: tableEnv('BusinessAutomations'),
         CALL_RECORD_TABLE: tableEnv('CallRecord'),
         VOICE_CUSTOMER_TABLE: tableEnv('VoiceCustomer'),
+        USER_BOOKING_LINK_TABLE: userBookingLinkTable.tableName,
 
         // Service URL for this stage
         ALB_DNS: apiDomain,
 
         // API key for /chat endpoint (used by Slack bot and other internal callers)
         CHAT_API_KEY: 'HZB8Yk-odYjZrEmyFEKZx-UMNCfKoRiBv0Oi2eeKiSg',
+
+        // Bedrock AgentCore Memory (per-stage, provisioned via scripts/provision_agentcore_memory.py)
+        ...(props.agentcoreMemoryId ? { AGENTCORE_MEMORY_ID: props.agentcoreMemoryId } : {}),
 
         // OAuth — Integrin Cognito user pool (stage-specific)
         OAUTH_JWKS_URL: `https://cognito-idp.us-west-2.amazonaws.com/${props.cognitoUserPoolId}/.well-known/jwks.json`,

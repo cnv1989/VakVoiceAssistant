@@ -15,6 +15,7 @@ from vakdeepgram.repositories import get_connection_context_by_id, update_connec
 from vakdeepgram.services import resolve_auth_for_connection
 from utils.phone import normalize_phone_number
 from utils import booking_helpers
+from utils.booking_links import write_booking_link
 from providers.clients import (
     SetmoreApiClient,
     SquareApiClient,
@@ -1311,6 +1312,41 @@ async def schedule_appointment_with_contact(
             msg_sent = sms_result.get("success", False)
             if msg_sent:
                 msg_channel = "sms"
+
+            # Also send via WhatsApp
+            whatsapp_from = config.settings.twilio_whatsapp_number
+            if whatsapp_from:
+                wa_result = send_booking_link_whatsapp(
+                    whatsapp_from=whatsapp_from,
+                    to_number=to_number,
+                    booking_page_url=booking_page_url or "",
+                    service_name=service_name,
+                    staff_name=staff_name,
+                    start_dt=start_dt,
+                    customer_first_name=first_name,
+                    service_key=service_key,
+                    staff_key=resolved_staff_id,
+                    customer_key=resolved_customer_id,
+                    connection_id=connection_id,
+                )
+                if wa_result.get("success"):
+                    msg_channel = "sms+whatsapp" if msg_sent else "whatsapp"
+                    msg_sent = True
+
+        # Record the booking link in DynamoDB for WhatsApp session resolution
+        if msg_sent and to_number:
+            business_phone = context.get("phone_number") or context.get("phoneNumber") or ""
+            if business_phone:
+                asyncio.ensure_future(write_booking_link(
+                    table_name=config.settings.user_booking_link_table,
+                    customer_phone=to_number,
+                    business_phone=business_phone,
+                    booking_url=prefilled_url or "",
+                    service_name=service_name,
+                    staff_name=staff_name,
+                    channel=msg_channel or "sms",
+                    aws_region=config.settings.aws_region,
+                ))
 
         sent_text = f" Sent to {to_number} via text." if msg_sent else ""
         return {
