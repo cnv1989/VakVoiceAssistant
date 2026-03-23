@@ -108,18 +108,15 @@ export class VakAppStack extends cdk.Stack {
     });
     this.sessionsTable = sessionsTable;
 
-    // ─── DynamoDB — UserBookingLink table (owned by VakDeepGram) ──────────────
-    // Tracks booking links sent to customers so the WhatsApp endpoint can
-    // resolve which business a customer was last interacting with.
-    // PK = customerPhone (E.164), SK = createdAt (ISO timestamp, latest first)
-    const userBookingLinkTable = new dynamodb.Table(this, 'UserBookingLinkTable', {
-      tableName: `UserBookingLink-${cap(stage)}`,
-      partitionKey: { name: 'customerPhone', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
-      timeToLiveAttribute: 'ttl',
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-    });
+    // ─── DynamoDB — UserBookingLink table (shared/imported) ───────────────────
+    // This table may already exist from manual provisioning. Import by name so
+    // deploys are idempotent across alpha/beta/prod and avoid CFN name conflicts.
+    const userBookingLinkTableName = `UserBookingLink-${cap(stage)}`;
+    const userBookingLinkTable = dynamodb.Table.fromTableName(
+      this,
+      'UserBookingLinkTable',
+      userBookingLinkTableName,
+    );
 
     // ─── S3 Artifacts bucket ─────────────────────────────────────────────────
     const artifactsBucket = new s3.Bucket(this, 'ArtifactsBucket', {
