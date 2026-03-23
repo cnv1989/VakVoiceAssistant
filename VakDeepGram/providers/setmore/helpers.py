@@ -25,7 +25,14 @@ logger = logging.getLogger(__name__)
 # ── Service / staff resolution ────────────────────────────────────────────────
 
 def match_service(business_context: dict, service_name: str) -> Optional[dict]:
-    """Match a service name (exact then partial) from context services list."""
+    """Match a service name (exact then partial) from context services list.
+
+    Returns a single service only when the match is unambiguous:
+    - Exact match always wins.
+    - Partial match returns a result only when exactly one service matches.
+    - If multiple services partially match, returns None so the caller
+      can present suggestions and let the agent disambiguate.
+    """
     services = business_context.get("services") or []
     target = service_name.strip().lower()
     # Exact match first
@@ -33,13 +40,17 @@ def match_service(business_context: dict, service_name: str) -> Optional[dict]:
         name = (svc.get("name") or "").strip().lower()
         if name == target:
             return svc
-    # Partial: target contains service name or service name contains target
+    # Partial: collect all services whose name contains the target or vice versa
+    partial_matches = []
     for svc in services:
         name = (svc.get("name") or "").strip().lower()
         if not name:
             continue
         if target in name or name in target:
-            return svc
+            partial_matches.append(svc)
+    # Only return if exactly one partial match — otherwise ambiguous
+    if len(partial_matches) == 1:
+        return partial_matches[0]
     return None
 
 

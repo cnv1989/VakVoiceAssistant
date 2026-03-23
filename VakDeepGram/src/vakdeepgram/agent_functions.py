@@ -548,7 +548,7 @@ FUNCTION_DEFINITIONS = [
                 },
                 "service": {
                     "type": "string",
-                    "description": "Type of service requested. Always validate against get_services results and clarify if needed.",
+                    "description": "Exact service name from get_services results. Must match exactly — if ambiguous, ask the customer to clarify first.",
                 },
             },
             "required": ["first_name", "last_name", "customer_id", "date", "service"],
@@ -632,12 +632,15 @@ FUNCTION_DEFINITIONS = [
     },
     {
         "name": "select_service",
-        "description": "Save the customer's selected service in the connection context for reuse in availability and booking.",
+        "description": "Save the customer's selected service. IMPORTANT: Use the exact service name from get_services results. If the customer's request matches multiple services (e.g. 'Haircut' matches both 'Haircut' and 'Haircut and Wet Shave'), ask the customer which specific service they want before calling this.",
         "parameters": {
             "type": "object",
             "properties": {
                 "connection_id": {"type": "string"},
-                "service": {"type": "string"},
+                "service": {
+                    "type": "string",
+                    "description": "The exact service name as returned by get_services. Do not use abbreviated or partial names.",
+                },
             },
             "required": ["connection_id", "service"],
         },
