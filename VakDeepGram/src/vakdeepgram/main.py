@@ -77,7 +77,9 @@ from vakdeepgram.connection_store import (
     normalize_phone_number,
     get_localized_datetime_from_context,
     _fetch_first_business_number_by_user,
+    update_connection_context,
 )
+from vakdeepgram.business_logic import get_customer
 from vakdeepgram.repositories import (
     get_connection_context_by_id,
     set_connection_context_by_id,
@@ -210,6 +212,28 @@ async def _resolve_and_set_context(
             connection_id,
             business_number,
         )
+        # Auto-lookup customer by caller phone when context resolves
+        caller_phone = (extra_context or {}).get("caller") or merged_context.get("caller")
+        if caller_phone:
+            try:
+                lookup = await get_customer(phone=caller_phone, connection_id=connection_id)
+                if lookup.get("success") and lookup.get("customer"):
+                    customer = lookup["customer"]
+                    update_connection_context(connection_id, {
+                        "customer": customer,
+                        "new_customer": False,
+                        "customer_lookup_source": "auto_caller_phone",
+                        "customerFound": True,
+                    })
+                    cust_name = customer.get("first_name") or customer.get("given_name") or ""
+                    logger.info(
+                        "Auto-resolved customer for %s by caller phone: %s",
+                        connection_id, cust_name,
+                    )
+                else:
+                    logger.debug("No customer found for caller phone %s on %s", caller_phone, connection_id)
+            except Exception as e:
+                logger.debug("Auto customer lookup failed for %s: %s", connection_id, e)
     else:
         logger.warning("Failed to resolve business context: %s", merged_context.get("error"))
 
@@ -2075,23 +2099,27 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
     
     stream_sid_ref = {"value": None}  # Use dict to allow modification in nested functions
     session_ref = {"value": None}
+    twilio_ws_closed = {"value": False}
     audio_queue = asyncio.Queue()
     streamsid_queue = asyncio.Queue()
-    
+
     # Buffer for Twilio audio (160 bytes = 20ms of mulaw at 8kHz)
     # Buffer 20 twilio messages (0.4 seconds) to improve throughput (matches sts-twilio)
     BUFFER_SIZE = 20 * 160  # 0.4 seconds of audio
-    
+
     async def send_to_twilio(data: dict):
         """Send JSON message to Twilio"""
+        if twilio_ws_closed["value"]:
+            return
         try:
             if data.get("type") == "disconnect":
+                twilio_ws_closed["value"] = True
                 await websocket.close(code=1000, reason=data.get("reason") or "end_call")
                 return
             await websocket.send_json(data)
         except Exception as e:
-            logger.error(f"Error sending to Twilio {connection_id}: {e}")
-            raise
+            twilio_ws_closed["value"] = True
+            logger.debug(f"Twilio WS already closed for {connection_id}: {e}")
     
     async def send_to_deepgram_wrapper(data: dict):
         """Wrapper to handle Deepgram messages and send to Twilio (matches sts-twilio)"""
