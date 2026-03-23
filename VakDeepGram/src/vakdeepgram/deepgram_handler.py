@@ -529,28 +529,36 @@ class DeepgramManager:
                     _endpoint_from_connection_id(session.connection_id),
                     error_code or "DeepgramError",
                 )
-                if session.on_fatal_error:
-                    logger.info("Triggering fatal error fallback for %s (code=%s)", session.connection_id, error_code)
-                    await session.send_to_client_safe({
-                        "type": "error",
-                        "message": error_msg,
-                    })
-                    await session.on_fatal_error(error_msg)
-                else:
-                    # Auto-reconnect: restart the Deepgram session without closing the browser WS
-                    logger.info("🔄 Auto-reconnecting Deepgram session for %s (code=%s)", session.connection_id, error_code)
+
+                # Transient errors: attempt reconnect before giving up
+                transient_codes = {
+                    "FAILED_TO_THINK", "FAILED_TO_LISTEN", "FAILED_TO_SPEAK",
+                    "INTERNAL_SERVER_ERROR", "SERVICE_UNAVAILABLE",
+                }
+                is_transient = error_code in transient_codes
+
+                if is_transient:
+                    logger.info(
+                        "🔄 Transient error — attempting Deepgram reconnect for %s (code=%s)",
+                        session.connection_id, error_code,
+                    )
                     connection_id = session.connection_id
                     send_to_client = session.send_to_client
                     use_mulaw = session.use_mulaw
+                    on_fatal = session.on_fatal_error
                     try:
                         new_session = await self.create_session(connection_id, use_mulaw=use_mulaw)
                         if send_to_client:
                             new_session.set_send_callback(send_to_client)
+                        if on_fatal:
+                            new_session.on_fatal_error = on_fatal
                         await new_session.send_to_client_safe({"type": "deepgram-ready"})
                         logger.info("✅ Deepgram session reconnected for %s", connection_id)
                     except Exception as reconnect_exc:
                         logger.error("❌ Deepgram reconnect failed for %s: %s", connection_id, reconnect_exc)
-                        if send_to_client:
+                        if on_fatal:
+                            await on_fatal(f"Reconnect failed after {error_code}: {reconnect_exc}")
+                        elif send_to_client:
                             try:
                                 await send_to_client({
                                     "type": "error",
@@ -558,6 +566,20 @@ class DeepgramManager:
                                 })
                             except Exception:
                                 pass
+                elif session.on_fatal_error:
+                    logger.info("Triggering fatal error fallback for %s (code=%s)", session.connection_id, error_code)
+                    await session.send_to_client_safe({
+                        "type": "error",
+                        "message": error_msg,
+                    })
+                    await session.on_fatal_error(error_msg)
+                else:
+                    # Non-transient, no fatal handler (browser) — notify client
+                    logger.warning("Unhandled Deepgram error for %s (code=%s): %s", session.connection_id, error_code, error_msg)
+                    await session.send_to_client_safe({
+                        "type": "error",
+                        "message": error_msg,
+                    })
         
         elif msg_type in ("FunctionCall", "FunctionCallRequest"):
             # Handle function call request from Deepgram
@@ -767,11 +789,15 @@ class DeepgramManager:
             logger.info(f"✅ Sent function result to Deepgram for call_id: {call_id}")
 
             if function_name == "end_call":
-                # Wait for the farewell speech to start before arming the disconnect.
-                # This prevents a prior AgentAudioDone from dropping the call before
-                # the agent speaks its goodbye.
-                session.pending_disconnect_after_speech = True
                 session.pending_disconnect_reason = "end_call"
+                if session.connection_id.startswith("twilio-"):
+                    # Twilio/mulaw calls never receive AgentStartedSpeaking,
+                    # so arm disconnect immediately for the next AgentAudioDone.
+                    session.pending_disconnect = True
+                else:
+                    # Browser calls: wait for AgentStartedSpeaking before arming,
+                    # so a prior AgentAudioDone doesn't drop the call too early.
+                    session.pending_disconnect_after_speech = True
             elif function_name in ("transfer_to_staff", "talk_to_owner"):
                 if result.get("success"):
                     session.pending_disconnect = True

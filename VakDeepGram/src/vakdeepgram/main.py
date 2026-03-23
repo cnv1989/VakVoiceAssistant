@@ -1775,7 +1775,7 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.warning("Voice AI disabled%s (connectionId=%s). Closing WebSocket.", biz_part, connection_id)
         await websocket.send_json({
             "type": "error",
-            "message": f"Voice AI{biz_part} is not currently active. Please contact the business directly.",
+            "message": f"The business owner has not activated this number{biz_part}. Please reach out to the business directly.",
         })
         await websocket.close(code=1008, reason="voice_ai_disabled")
         return
@@ -2281,8 +2281,8 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                             account_sid,
                             call_sid,
                             message=(
-                                f"We're sorry, the voice assistant{biz_part} is not currently active. "
-                                "Please contact the business directly. Goodbye."
+                                f"We're sorry, the business owner has not activated this number{biz_part}. "
+                                "Please reach out to the business directly. Goodbye."
                             ),
                         )
                         await websocket.close()
