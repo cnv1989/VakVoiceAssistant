@@ -1765,7 +1765,21 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
             except Exception as exc:
                 logger.warning("Failed to apply voiceConfigOverride for %s: %s", connection_id, exc)
-    
+
+    # Check if voice AI is enabled for the resolved business
+    ws_resolved_ctx = get_connection_context_by_id(connection_id)
+    if ws_resolved_ctx.get("success") and ws_resolved_ctx.get("voice_ai_enabled") is False:
+        loc = ws_resolved_ctx.get("location") or {}
+        biz_name = loc.get("business_name") or "" if isinstance(loc, dict) else ""
+        biz_part = f" for {biz_name}" if biz_name else ""
+        logger.warning("Voice AI disabled%s (connectionId=%s). Closing WebSocket.", biz_part, connection_id)
+        await websocket.send_json({
+            "type": "error",
+            "message": f"Voice AI{biz_part} is not currently active. Please contact the business directly.",
+        })
+        await websocket.close(code=1008, reason="voice_ai_disabled")
+        return
+
     session = None
     # When the browser client stops recording, it currently closes the Deepgram
     # session inside the message loop. In that case we must snapshot buffered
@@ -2248,6 +2262,32 @@ async def twilio_websocket_endpoint(websocket: WebSocket):
                         stream_sid_ref["value"] = sid
                         streamsid_queue.put_nowait(sid)
                         logger.info(f"Got streamSid: {sid}")
+
+                    # Check if voice AI is enabled for this business number.
+                    # If disabled (subscription inactive/suspended), play a message and hang up.
+                    resolved_ctx = get_connection_context_by_id(connection_id)
+                    if resolved_ctx.get("success") and resolved_ctx.get("voice_ai_enabled") is False:
+                        business_name = ""
+                        loc = resolved_ctx.get("location") or {}
+                        if isinstance(loc, dict):
+                            business_name = loc.get("business_name") or ""
+                        biz_part = f" for {business_name}" if business_name else ""
+                        logger.warning(
+                            "Voice AI disabled%s (connectionId=%s). Rejecting call.",
+                            biz_part, connection_id,
+                        )
+                        await _say_and_end_twilio_call(
+                            connection_id,
+                            account_sid,
+                            call_sid,
+                            message=(
+                                f"We're sorry, the voice assistant{biz_part} is not currently active. "
+                                "Please contact the business directly. Goodbye."
+                            ),
+                        )
+                        await websocket.close()
+                        return
+
                     if session_ref["value"] is None:
                         logger.info(f"Starting Deepgram session for Twilio {connection_id} (mulaw mode)")
                         try:

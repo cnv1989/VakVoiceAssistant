@@ -682,7 +682,7 @@ FUNCTION_DEFINITIONS = [
     },
     {
         "name": "end_call",
-        "description": """End the conversation and close the connection. Call this when:
+        "description": """End the conversation and disconnect the call. Call this IMMEDIATELY when:
         - User says goodbye, thank you, etc.
         - User indicates they're done ("that's all I need", "I'm all set", etc.)
         - User wants to end the conversation
@@ -692,6 +692,7 @@ FUNCTION_DEFINITIONS = [
         - "Have a good day"
         - "Goodbye"
         - "I'm done"
+        IMPORTANT: Do NOT speak a farewell before calling this function. Instead, pass your farewell message in the 'message' parameter. The system will speak it and then disconnect.
         Do not call this function if the user is just saying thanks but continuing the conversation.""",
         "parameters": {
             "type": "object",
@@ -700,7 +701,11 @@ FUNCTION_DEFINITIONS = [
                     "type": "string",
                     "description": "Type of farewell to use in response",
                     "enum": ["thanks", "general", "help"],
-                }
+                },
+                "message": {
+                    "type": "string",
+                    "description": "The farewell message to speak before disconnecting, e.g. 'Goodbye! Have a wonderful day!'",
+                },
             },
             "required": ["farewell_type"],
         },

@@ -1502,6 +1502,12 @@ async def resolve_business_context(
 
     provider = (record.get("provider") or record.get("bookingProvider") or "square").lower()
 
+    # Check if voice AI is enabled for this business number.
+    # Default to True for backwards compatibility (existing records without the field).
+    voice_ai_enabled = record.get("voiceAiEnabled")
+    if voice_ai_enabled is None:
+        voice_ai_enabled = True
+
     if provider == "setmore":
         account_id = (
             record.get("setmoreAccountId")
@@ -1641,6 +1647,7 @@ async def resolve_business_context(
                 "booking_page_url": booking_page_url,
                 "setmore_api_ready": False,
                 "voiceConfig": voice_config_limited,
+                "voice_ai_enabled": voice_ai_enabled,
             }
             _emit("setmore", True)
             return to_snake_case(result)
@@ -1746,6 +1753,7 @@ async def resolve_business_context(
             "setmore_appointments": appointments_raw,
             "booking_page_url": booking_page_url,
             "voiceConfig": setmore_voice_config,
+            "voice_ai_enabled": voice_ai_enabled,
         }
         _emit("setmore", True)
         return to_snake_case(result)
@@ -1864,6 +1872,7 @@ async def resolve_business_context(
         "staff": staff,
         "customer": customer,
         "voiceConfig": voice_config,
+        "voice_ai_enabled": voice_ai_enabled,
     }
     _emit("square", True)
     return to_snake_case(result)
