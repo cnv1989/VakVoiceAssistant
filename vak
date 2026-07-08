@@ -1,0 +1,50 @@
+#!/usr/bin/env node
+'use strict';
+
+const { banner, color } = require('./cli/lib/theme');
+
+const HELP = `
+Usage: ./vak <command>
+
+Commands:
+  init      Interactive setup wizard — configure business profile, Deepgram,
+            provider data, and (optionally) AWS deployment settings.
+  dev       Run VakDeepGram + VakClient locally (installs dependencies on
+            first run).
+  deploy    Deploy VakInfra to AWS (prompts for confirmation before making
+            changes).
+  doctor    Check that your environment has everything Vak needs.
+  help      Show this message.
+`;
+
+async function main() {
+  const [, , command, ...rest] = process.argv;
+
+  switch (command) {
+    case 'init':
+      return require('./cli/commands/init').init(rest);
+    case 'dev':
+      return require('./cli/commands/dev').dev(rest);
+    case 'deploy':
+      return require('./cli/commands/deploy').deploy(rest);
+    case 'doctor':
+      return require('./cli/commands/doctor').doctor(rest);
+    case 'help':
+    case '--help':
+    case '-h':
+    case undefined:
+      banner();
+      console.log(HELP);
+      return;
+    default:
+      banner();
+      console.log(color.red(`\n  Unknown command: ${command}`));
+      console.log(HELP);
+      process.exitCode = 1;
+  }
+}
+
+main().catch((err) => {
+  console.error(color.red(`\nUnexpected error: ${err.stack || err.message}`));
+  process.exitCode = 1;
+});

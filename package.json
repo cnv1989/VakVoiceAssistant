@@ -1,0 +1,19 @@
+{
+  "name": "vak",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Vak Voice Assistant Kit — setup, run, and deploy CLI",
+  "bin": {
+    "vak": "./vak"
+  },
+  "scripts": {
+    "init": "./vak init",
+    "dev": "./vak dev",
+    "deploy": "./vak deploy",
+    "doctor": "./vak doctor"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "ISC"
+}

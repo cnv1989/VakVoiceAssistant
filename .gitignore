@@ -10,12 +10,8 @@ dist/
 build/
 *.tsbuildinfo
 
-# CDK
+# CDK (VakInfra has its own .gitignore for compiled *.js/*.d.ts output)
 cdk.out/
-*.js
-!bin/*.js
-!lib/*.js
-*.d.ts
 
 # Environment files
 .env
