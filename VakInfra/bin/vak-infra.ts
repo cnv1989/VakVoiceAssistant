@@ -2,111 +2,80 @@
 import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
 import { VakNetworkStack } from '../lib/vak-network-stack';
-import { VakAppStack } from '../lib/vak-app-stack';
+import { VakAppStack, ExistingTableNames } from '../lib/vak-app-stack';
 import { VakMonitoringStack } from '../lib/vak-monitoring-stack';
-import { VakDnsStack } from '../lib/vak-dns-stack';
 
 const app = new cdk.App();
 
-const env = { region: 'us-west-2' };
-
-// ─── Shared secrets (same keys used across all stages) ───────────────────────
-const deepgramApiKeySecretArn = 'arn:aws:secretsmanager:us-west-2:844341423871:secret:vak/deepgram-api-key-l5hv2P';
-const twilioAuthTokenSecretArn = 'arn:aws:secretsmanager:us-west-2:844341423871:secret:vak/twilio-auth-token-odOYCC';
-
-const enableTwilioOnlyAccess =
-  app.node.tryGetContext('enableTwilioOnlyAccess') === 'true' ||
-  process.env.ENABLE_TWILIO_ONLY_ACCESS === 'true';
-
-// ─── Shared DNS stack (groommate.ai hosted zone + wildcard cert) ──────────────
-// Deploy once; all stage stacks share this zone and certificate.
-const dnsStack = new VakDnsStack(app, 'VakDnsStack', { env });
-
-// ─── Shared network stack (VPC + ECR repo) ────────────────────────────────────
-// All stage ECS clusters run inside the same VPC (saves NAT gateway costs).
-const networkStack = new VakNetworkStack(app, 'VakNetworkStack', { env });
-
-// ─── Per-stage configuration ──────────────────────────────────────────────────
-//
-// amplifyEnvId: the Amplify Gen 2 App ID suffix embedded in DynamoDB table names.
-//   Format:  <ModelName>-<amplifyEnvId>-NONE
-//   prod:    pxy5meaaojbaxjwedt6v6oidw4  (existing, already deployed)
-//   beta/alpha: run `aws dynamodb list-tables | grep BusinessNumber` after the
-//               Amplify branch first deploys, then update these values.
-//
-// Domain layout:
-//   prod  →  app.groommate.ai   (Integrin frontend)  api.groommate.ai  (VakDeepGram)
-//   beta  →  beta.groommate.ai                        beta-api.groommate.ai
-//   alpha →  alpha.groommate.ai                       alpha-api.groommate.ai
-//
-// Amplify custom domains are configured in the Amplify console (Amplify
-// auto-provisions CloudFront certs in us-east-1).
-// Route53 CNAME records for Amplify custom domains are added automatically
-// by Amplify when you add the domain in the console.
-//
-const stageConfigs: Array<{
-  stage: string;
-  amplifyEnvId: string;
-  apiDomain: string;
-  cognitoDomainPrefix: string;
-  cognitoUserPoolId: string;
-  cognitoAppClientId: string;
-  agentcoreMemoryId: string;
-}> = [
-  {
-    stage: 'prod',
-    amplifyEnvId: 'pxy5meaaojbaxjwedt6v6oidw4',
-    apiDomain: 'api.groommate.ai',
-    cognitoDomainPrefix: 'groommate-auth-prod',
-    cognitoUserPoolId: 'us-west-2_3yVGKZ2z0',
-    cognitoAppClientId: '5fq3taa9n3n5h2fhbmfbq3pcp4',
-    agentcoreMemoryId: 'groommate_844341423871_us_west_2_prod-ELoLBVHnZm',
-  },
-  {
-    stage: 'beta',
-    amplifyEnvId: app.node.tryGetContext('betaAmplifyEnvId') || 'PLACEHOLDER_BETA_ENV_ID',
-    apiDomain: 'beta-api.groommate.ai',
-    cognitoDomainPrefix: 'groommate-auth-beta',
-    cognitoUserPoolId: 'us-west-2_XUe8abnY6',
-    cognitoAppClientId: '2a7h870f41vo85h46am9o6pu86',
-    agentcoreMemoryId: 'groommate_844341423871_us_west_2_beta-sad8dkCXMm',
-  },
-  {
-    stage: 'alpha',
-    amplifyEnvId: app.node.tryGetContext('alphaAmplifyEnvId') || 'PLACEHOLDER_ALPHA_ENV_ID',
-    apiDomain: 'alpha-api.groommate.ai',
-    cognitoDomainPrefix: 'groommate-auth-alpha',
-    cognitoUserPoolId: 'us-west-2_wNKLafztj',
-    cognitoAppClientId: '6vn5anbqmdk1cp4abh1t1rn6d8',
-    agentcoreMemoryId: 'groommate_844341423871_us_west_2_alpha-KuP9gY21Rq',
-  },
-];
-
-for (const cfg of stageConfigs) {
-  const cap = cfg.stage.charAt(0).toUpperCase() + cfg.stage.slice(1);
-
-  const appStack = new VakAppStack(app, `VakAppStack-${cap}`, {
-    env,
-    networkStack,
-    stage: cfg.stage,
-    amplifyEnvId: cfg.amplifyEnvId,
-    apiDomain: cfg.apiDomain,
-    hostedZone: dnsStack.hostedZone,
-    certificateArn: dnsStack.wildcardCertificate.certificateArn,
-    deepgramApiKeySecretArn,
-    twilioAuthTokenSecretArn,
-    enableTwilioOnlyAccess,
-    cognitoDomainPrefix: cfg.cognitoDomainPrefix,
-    cognitoUserPoolId: cfg.cognitoUserPoolId,
-    cognitoAppClientId: cfg.cognitoAppClientId,
-    agentcoreMemoryId: cfg.agentcoreMemoryId,
-  });
-  appStack.addDependency(networkStack);
-  appStack.addDependency(dnsStack);
-
-  const monitoringStack = new VakMonitoringStack(app, `VakMonitoringStack-${cap}`, {
-    env,
-    appStack,
-  });
-  monitoringStack.addDependency(appStack);
+/** Read a value from `-c key=value` CDK context, falling back to an env var, then a default. */
+function opt(contextKey: string, envKey: string, fallback?: string): string | undefined {
+  const fromContext = app.node.tryGetContext(contextKey);
+  if (fromContext !== undefined) return String(fromContext);
+  return process.env[envKey] ?? fallback;
 }
+
+function flag(contextKey: string, envKey: string): boolean {
+  const value = opt(contextKey, envKey);
+  return value === 'true' || value === '1';
+}
+
+const region = opt('awsRegion', 'AWS_REGION', process.env.CDK_DEFAULT_REGION || 'us-west-2');
+const env = { account: process.env.CDK_DEFAULT_ACCOUNT, region };
+
+const stackName = opt('stackName', 'VAK_STACK_NAME', 'Vak')!;
+const stage = opt('stage', 'VAK_STAGE', 'production')!;
+
+const existingTables: ExistingTableNames = {
+  squareAccount: opt('squareAccountTable', 'EXISTING_SQUARE_ACCOUNT_TABLE'),
+  setmoreAccount: opt('setmoreAccountTable', 'EXISTING_SETMORE_ACCOUNT_TABLE'),
+  businessNumber: opt('businessNumberTable', 'EXISTING_BUSINESS_NUMBER_TABLE'),
+  businessAutomations: opt('businessAutomationsTable', 'EXISTING_BUSINESS_AUTOMATIONS_TABLE'),
+  callRecord: opt('callRecordTable', 'EXISTING_CALL_RECORD_TABLE'),
+  voiceCustomer: opt('voiceCustomerTable', 'EXISTING_VOICE_CUSTOMER_TABLE'),
+  userBookingLink: opt('userBookingLinkTable', 'EXISTING_USER_BOOKING_LINK_TABLE'),
+};
+
+const networkStack = new VakNetworkStack(app, `${stackName}NetworkStack`, {
+  env,
+  ecrRepositoryName: opt('ecrRepositoryName', 'ECR_REPOSITORY_NAME'),
+});
+
+const appStack = new VakAppStack(app, `${stackName}AppStack`, {
+  env,
+  networkStack,
+  stage,
+  imageTag: opt('imageTag', 'IMAGE_TAG', 'latest'),
+
+  domainName: opt('domainName', 'DOMAIN_NAME'),
+  hostedZoneDomain: opt('hostedZoneDomain', 'HOSTED_ZONE_DOMAIN'),
+  certificateArn: opt('certificateArn', 'CERTIFICATE_ARN'),
+
+  apiKey: opt('apiKey', 'API_KEY'),
+  enableTwilioOnlyAccess: flag('enableTwilioOnlyAccess', 'ENABLE_TWILIO_ONLY_ACCESS'),
+
+  deepgramApiKey: opt('deepgramApiKey', 'DEEPGRAM_API_KEY'),
+  deepgramApiKeySecretArn: opt('deepgramApiKeySecretArn', 'DEEPGRAM_API_KEY_SECRET_ARN'),
+
+  twilioAccountSid: opt('twilioAccountSid', 'TWILIO_ACCOUNT_SID'),
+  twilioFromNumber: opt('twilioFromNumber', 'TWILIO_FROM_NUMBER'),
+  twilioWhatsappNumber: opt('twilioWhatsappNumber', 'TWILIO_WHATSAPP_NUMBER'),
+  twilioAuthToken: opt('twilioAuthToken', 'TWILIO_AUTH_TOKEN'),
+  twilioAuthTokenSecretArn: opt('twilioAuthTokenSecretArn', 'TWILIO_AUTH_TOKEN_SECRET_ARN'),
+
+  chatApiKey: opt('chatApiKey', 'CHAT_API_KEY'),
+
+  businessName: opt('businessName', 'BUSINESS_NAME'),
+  businessVertical: opt('businessVertical', 'BUSINESS_VERTICAL', 'generic'),
+  agentcoreMemoryId: opt('agentcoreMemoryId', 'AGENTCORE_MEMORY_ID'),
+
+  existingTables,
+  cognitoDomainPrefix: opt('cognitoDomainPrefix', 'COGNITO_DOMAIN_PREFIX'),
+});
+appStack.addDependency(networkStack);
+
+const monitoringStack = new VakMonitoringStack(app, `${stackName}MonitoringStack`, {
+  env,
+  appStack,
+  alarmEmail: opt('alarmEmail', 'ALARM_EMAIL'),
+});
+monitoringStack.addDependency(appStack);

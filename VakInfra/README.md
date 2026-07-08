@@ -1,273 +1,165 @@
-# Vak Infrastructure
+# VakInfra
 
-CDK v2 infrastructure for the Vak Voice Assistant stack.
+AWS CDK v2 (TypeScript) infrastructure for the Vak voice assistant. One
+`cdk deploy` stands up everything VakDeepGram needs — VPC, ECR repo, ECS
+Fargate service, ALB, DynamoDB tables, and an S3 bucket — with no external
+dependencies. Custom domain/TLS, WAF, and Cognito auth are all optional
+opt-ins layered on top of that baseline.
+
+For the guided version of everything below, run `./vak deploy` from the repo
+root instead — it wraps the same CDK commands with prompts. See
+[docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md) for the full walkthrough and
+[docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md) for how the pieces fit
+together.
+
+## Stacks
+
+| Stack | Contents |
+|---|---|
+| `<name>NetworkStack` | VPC (2 AZs, 1 NAT gateway), ECR repository |
+| `<name>AppStack` | ECS Fargate service, ALB, DynamoDB tables, S3 bucket, IAM roles, optional WAF/TLS/Cognito |
+| `<name>MonitoringStack` | CloudWatch dashboards, alarms, SNS topic |
+
+`<name>` defaults to `Vak` (override with `-c stackName=...`).
 
 ## Prerequisites
 
 - Node.js 20+
-- AWS CLI configured
-- AWS CDK CLI installed: `npm install -g aws-cdk`
+- AWS CLI configured with credentials for the target account
+- AWS CDK CLI: `npm install -g aws-cdk` (or use `npx cdk`)
+- A Deepgram API key ([console.deepgram.com](https://console.deepgram.com))
 
-## Setup
+## Quick deploy
 
-1. Install dependencies:
 ```bash
 npm install
-```
 
-2. Bootstrap CDK (if not already done):
-```bash
-# Your AWS Account ID: 844341423871
-cdk bootstrap aws://844341423871/us-west-2
-
-# Or let CDK auto-detect from your AWS credentials:
+# One-time per account/region:
 cdk bootstrap
+
+# Deploy with just a Deepgram key — everything else uses sane defaults.
+cdk deploy --all -c deepgramApiKey=YOUR_DEEPGRAM_KEY
 ```
 
-3. Build the TypeScript code:
-```bash
-npm run build
-```
+This gives you a working HTTP/WS endpoint (`AlbDns` output) you can point
+`VakClient`'s `VITE_WS_URL` at immediately. Add a custom domain and TLS
+whenever you're ready to go live — see below.
 
-4. Synthesize CloudFormation template:
-```bash
-npm run synth
-```
-
-5. Deploy the stack:
-```bash
-npm run deploy
-```
-
-## Stack Components
-
-- **VPC**: 2 Availability Zones with public and private subnets
-- **ECS Fargate**: Deepgram Voice Agent service on port 8080
-- **Application Load Balancer**: Public-facing ALB with HTTP/HTTPS listeners
-- **WAF**: Web Application Firewall for API key authentication (optional)
-- **SSM Parameter Store**: Stores API key securely (if WAF enabled)
-- **DynamoDB**: Sessions table with TTL
-- **S3**: Artifacts bucket for transcripts and audio
-- **ECR**: Repository for Docker images
-- **IAM**: Roles with minimal permissions (Deepgram uses external API)
-
-## Secure WebSocket (WSS) Setup
-
-To enable secure WebSocket connections (WSS), you need to provide an ACM certificate ARN:
-
-### Creating an ACM Certificate
-
-#### Option 1: AWS Console (Recommended for first-time setup)
-
-1. **Navigate to Certificate Manager**:
-   - Go to [AWS Certificate Manager Console](https://console.aws.amazon.com/acm/home)
-   - Make sure you're in the **us-west-2** region (same as your stack)
-   - Click **"Request a certificate"**
-
-2. **Request a public certificate**:
-   - Select **"Request a public certificate"**
-   - Click **"Next"**
-
-3. **Enter domain names**:
-   - **Fully qualified domain name**: Enter your domain (e.g., `example.com`)
-   - **Subject alternative names (SANs)**: Optional - add `*.example.com` for wildcard or additional domains
-   - Click **"Request"**
-
-4. **Choose validation method**:
-   - **DNS validation** (Recommended):
-     - ACM provides CNAME records to add to your DNS
-     - More secure and doesn't require email access
-     - Copy the CNAME name and value
-     - Add them to your DNS provider (Route 53, Cloudflare, etc.)
-   - **Email validation**:
-     - ACM sends validation emails to domain admin addresses
-     - Click the link in the email to validate
-
-5. **Wait for validation**:
-   - Status changes from "Pending validation" to "Issued" (usually 5-30 minutes)
-   - You'll receive an email when validation is complete
-
-6. **Get the Certificate ARN**:
-   - Click on your certificate in the ACM console
-   - Copy the **Certificate ARN** (format: `arn:aws:acm:us-west-2:844341423871:certificate/xxxx-xxxx-xxxx-xxxx`)
-
-#### Option 2: AWS CLI
+Then build and push the VakDeepGram image (see
+[`../VakDeepGram/deploy-to-ecr.sh`](../VakDeepGram/deploy-to-ecr.sh)) and
+force a new ECS deployment to pick it up:
 
 ```bash
-# Request a certificate
-aws acm request-certificate \
-  --domain-name example.com \
-  --subject-alternative-names "*.example.com" \
-  --validation-method DNS \
-  --region us-west-2
-
-# This returns the Certificate ARN immediately
-# Example output:
-# {
-#   "CertificateArn": "arn:aws:acm:us-west-2:844341423871:certificate/12345678-1234-1234-1234-123456789012"
-# }
-
-# Get validation records (for DNS validation)
-aws acm describe-certificate \
-  --certificate-arn arn:aws:acm:us-west-2:844341423871:certificate/YOUR-CERT-ID \
-  --region us-west-2 \
-  --query 'Certificate.DomainValidationOptions[*].[DomainName,ResourceRecord.Name,ResourceRecord.Value]' \
-  --output table
-
-# Check certificate status
-aws acm describe-certificate \
-  --certificate-arn arn:aws:acm:us-west-2:844341423871:certificate/YOUR-CERT-ID \
-  --region us-west-2 \
-  --query 'Certificate.Status' \
-  --output text
+cd ../VakDeepGram && ./deploy-to-ecr.sh
+aws ecs update-service --cluster vak-cluster-production --service <service-name> --force-new-deployment
 ```
 
-#### Option 3: CDK (Automated - requires Route 53 hosted zone)
+## Configuration
 
-If you have a Route 53 hosted zone, you can create the certificate via CDK:
+Everything is passed as CDK context (`-c key=value`) or an equivalent
+environment variable — use whichever fits your workflow (context for
+one-offs, env vars for CI). Context takes precedence when both are set.
 
-```typescript
-// Add to vak-app-stack.ts or create a separate certificate stack
-import * as route53 from 'aws-cdk-lib/aws-route53';
-import * as route53targets from 'aws-cdk-lib/aws-route53-targets';
+| Context key | Env var | Default | Description |
+|---|---|---|---|
+| `stackName` | `VAK_STACK_NAME` | `Vak` | Prefix for all stack/resource names |
+| `stage` | `VAK_STAGE` | `production` | Logical environment label (used in resource names/tags) |
+| `awsRegion` | `AWS_REGION` | `us-west-2` | Deployment region |
+| `imageTag` | `IMAGE_TAG` | `latest` | ECR image tag to deploy |
+| `ecrRepositoryName` | `ECR_REPOSITORY_NAME` | `vak-deepgram` | ECR repo name (created by the network stack) |
+| `deepgramApiKey` | `DEEPGRAM_API_KEY` | — | Deepgram API key (plaintext; fine for a first deploy) |
+| `deepgramApiKeySecretArn` | `DEEPGRAM_API_KEY_SECRET_ARN` | — | Secrets Manager ARN instead of plaintext (recommended for production) |
+| `businessName` | `BUSINESS_NAME` | — | Forwarded to the container as `BUSINESS_NAME` |
+| `businessVertical` | `BUSINESS_VERTICAL` | `generic` | Forwarded as `BUSINESS_VERTICAL` — see [docs/CUSTOMIZING_YOUR_AGENT.md](../docs/CUSTOMIZING_YOUR_AGENT.md) |
+| `domainName` | `DOMAIN_NAME` | — | Custom API domain, e.g. `voice.example.com` |
+| `hostedZoneDomain` | `HOSTED_ZONE_DOMAIN` | — | Name of an **existing** Route 53 public hosted zone that owns `domainName`; CDK creates a DNS-validated cert + A record automatically |
+| `certificateArn` | `CERTIFICATE_ARN` | — | Use a pre-existing ACM certificate instead of `hostedZoneDomain` |
+| `apiKey` | `API_KEY` | — | Require `X-Api-Key` header (enforced by WAF) on all requests except `/health` |
+| `enableTwilioOnlyAccess` | `ENABLE_TWILIO_ONLY_ACCESS` | `false` | Restrict the ALB to Twilio's published Media Streams IP ranges |
+| `twilioAccountSid` | `TWILIO_ACCOUNT_SID` | — | Forwarded to the container |
+| `twilioFromNumber` | `TWILIO_FROM_NUMBER` | — | Forwarded to the container |
+| `twilioAuthToken` | `TWILIO_AUTH_TOKEN` | — | Plaintext (fine for a first deploy) |
+| `twilioAuthTokenSecretArn` | `TWILIO_AUTH_TOKEN_SECRET_ARN` | — | Secrets Manager ARN instead of plaintext |
+| `chatApiKey` | `CHAT_API_KEY` | — | Bearer key required on `/chat` (omit to leave `/chat` unauthenticated — fine for local testing only) |
+| `cognitoDomainPrefix` | `COGNITO_DOMAIN_PREFIX` | — | Enables Cognito hosted-UI auth in front of `/ws` and `/chat` at the ALB layer (requires `domainName`) |
+| `alarmEmail` | `ALARM_EMAIL` | — | Email address subscribed to CloudWatch alarm notifications (no subscription created if omitted) |
 
-const hostedZone = route53.HostedZone.fromLookup(this, 'HostedZone', {
-  domainName: 'example.com',
-});
+### Bringing your own tables
 
-const certificate = new certificatemanager.Certificate(this, 'VakCertificate', {
-  domainName: 'example.com',
-  subjectAlternativeNames: ['*.example.com'],
-  validation: certificatemanager.CertificateValidation.fromDns(hostedZone),
-});
-```
+If you already run a separate business-management app that owns the
+Square/Setmore account tables, import them instead of letting this stack
+create fresh ones:
 
-### Deploying with Certificate
+| Context key | Env var |
+|---|---|
+| `squareAccountTable` | `EXISTING_SQUARE_ACCOUNT_TABLE` |
+| `setmoreAccountTable` | `EXISTING_SETMORE_ACCOUNT_TABLE` |
+| `businessNumberTable` | `EXISTING_BUSINESS_NUMBER_TABLE` |
+| `businessAutomationsTable` | `EXISTING_BUSINESS_AUTOMATIONS_TABLE` |
+| `callRecordTable` | `EXISTING_CALL_RECORD_TABLE` |
+| `voiceCustomerTable` | `EXISTING_VOICE_CUSTOMER_TABLE` |
+| `userBookingLinkTable` | `EXISTING_USER_BOOKING_LINK_TABLE` |
 
-Once you have the certificate ARN:
+Any table left unset gets created fresh by this stack with the schema
+VakDeepGram expects (see [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md)).
+
+## Custom domain + TLS
 
 ```bash
-# Option 1: Using environment variable (RECOMMENDED)
-CERTIFICATE_ARN=arn:aws:acm:us-west-2:844341423871:certificate/YOUR-CERT-ID cdk deploy
-
-# Option 2: Using CDK context
-cdk deploy -c certificateArn=arn:aws:acm:us-west-2:844341423871:certificate/YOUR-CERT-ID
-
-# Option 3: Export and use
-export CERTIFICATE_ARN=arn:aws:acm:us-west-2:844341423871:certificate/YOUR-CERT-ID
-cdk deploy
+cdk deploy --all \
+  -c deepgramApiKey=YOUR_DEEPGRAM_KEY \
+  -c domainName=voice.example.com \
+  -c hostedZoneDomain=example.com
 ```
 
-**Important Notes**:
-- Certificate must be in the **same region** as your ALB (us-west-2)
-- Certificate must be **validated** (status: "Issued") before use
-- For ALB, you can use a certificate for a different domain than the ALB DNS name
-- If using ALB DNS name directly, you'll need a certificate for that specific domain or use a wildcard
+This requires `example.com` to already be a Route 53 public hosted zone in
+the same account. CDK creates a DNS-validated ACM certificate, an HTTPS
+listener, and an A record automatically. Prefer to manage certificates
+yourself? Pass `-c certificateArn=...` instead of `hostedZoneDomain`.
 
-3. **What happens when certificate is provided**:
-   - HTTPS listener created on port 443 with TLS 1.2/1.3
-   - HTTP listener on port 80 redirects to HTTPS
-   - WebSocket connections use `wss://` protocol
-   - All traffic is encrypted end-to-end
+Without a domain, the stack still serves plain HTTP/WS on the ALB's
+auto-generated DNS name — convenient for testing, not recommended for
+production (no encryption in transit).
 
-4. **Without certificate**:
-   - Only HTTP listener on port 80 (no encryption)
-   - WebSocket connections use `ws://` protocol
-   - Suitable for development/testing only
+## WAF API key protection
 
-## WAF API Key Authentication
+```bash
+cdk deploy --all -c deepgramApiKey=YOUR_DEEPGRAM_KEY -c apiKey=$(openssl rand -hex 32)
+```
 
-To protect your ALB with static API key authentication using AWS WAF:
+Every request other than `/health` must include a matching `X-Api-Key`
+header, enforced by a WAF WebACL in front of the ALB.
 
-1. **Deploy with API Key**:
-   ```bash
-   # Option 1: Using environment variable (RECOMMENDED)
-   API_KEY=your-secret-api-key-here cdk deploy
-   
-   # Option 2: Using CDK context (not recommended - stores key in cdk.context.json)
-   cdk deploy -c apiKey=your-secret-api-key-here
-   ```
+## Twilio-only access
 
-2. **How it works**:
-   - WAF WebACL is attached to the ALB
-   - All requests must include `X-API-Key` header with the correct value
-   - Health checks (`/health`) are allowed without API key
-   - Requests without valid API key are blocked (403 Forbidden)
-   - API key is stored in SSM Parameter Store at `/vak/api-key`
+If the deployment only needs to accept Twilio Media Stream connections (no
+direct browser client), lock the ALB down to Twilio's published IP ranges:
 
-3. **Using the API key in clients**:
-   ```javascript
-   // WebSocket connection with API key
-   const ws = new WebSocket('wss://your-alb-dns/ws', {
-     headers: {
-       'X-API-Key': 'your-secret-api-key-here'
-     }
-   });
-   ```
+```bash
+cdk deploy --all -c deepgramApiKey=YOUR_DEEPGRAM_KEY -c enableTwilioOnlyAccess=true
+```
 
-   ```bash
-   # HTTP request with API key
-   curl -H "X-API-Key: your-secret-api-key-here" https://your-alb-dns/ws
-   ```
+## Useful commands
 
-4. **Updating the API key**:
-   ```bash
-   # Update via AWS CLI
-   aws ssm put-parameter \
-     --name /vak/api-key \
-     --value "new-api-key" \
-     --type SecureString \
-     --overwrite \
-     --region us-west-2
-   
-   # Note: WAF rule needs to be updated separately via CDK or Console
-   ```
-
-5. **Security considerations**:
-   - Use a strong, randomly generated API key (minimum 32 characters recommended)
-   - Rotate the API key periodically
-   - Never commit API keys to version control
-   - Consider using AWS Secrets Manager for more advanced key management
-   - Monitor WAF metrics in CloudWatch for blocked requests
-
-6. **Combining with WSS**:
-   ```bash
-   # Deploy with both certificate and API key
-   CERTIFICATE_ARN=arn:aws:acm:us-west-2:844341423871:certificate/YOUR-CERT-ID \
-   API_KEY=your-secret-api-key-here \
-   cdk deploy
-   ```
-
-## GitHub Actions (CI/CD)
-
-A workflow deploys both CDK stacks on push to `main` when files under `VakInfra/` change.
-
-- **Workflow**: `.github/workflows/deploy-vak-infra.yml`
-- **Trigger**: Push to `main` (path filter: `VakInfra/**`) or manual `workflow_dispatch`
-- **Required secret**: `AWS_ROLE_ARN` — IAM role ARN for OIDC (same as VakDeepGram deploy). The role must allow `sts:AssumeRoleWithWebIdentity` and have permissions to deploy the stacks (CloudFormation, EC2, ECS, ECR, etc.).
-- **One-time**: Run `cdk bootstrap aws://ACCOUNT_ID/us-west-2` in the target account/region if not already done.
+```bash
+npm run synth   # cdk synth — render CloudFormation without deploying
+npm run diff    # cdk diff — preview changes against the deployed stack
+npm run deploy  # cdk deploy
+```
 
 ## Outputs
 
-After deployment, the stack outputs:
-- `WebSocketUrl`: WebSocket endpoint URL (WSS if certificate provided, WS otherwise)
-- `WebSocketSecureUrl`: Secure WebSocket endpoint URL (WSS) - only if certificate provided
-- `WebSocketInsecureUrl`: Insecure WebSocket endpoint URL (WS) - only if certificate provided
-- `AlbDns`: Application Load Balancer DNS name
-- `AlbArn`: Application Load Balancer ARN (for IAM policies)
-- `WebAclArn`: WAF WebACL ARN - only if API key provided
-- `ApiKeyParameterName`: SSM Parameter Store name for API key - only if API key provided
-- `DynamoDbTableName`: DynamoDB Sessions table name
-- `S3BucketName`: S3 Artifacts bucket name
+| Output | Description |
+|---|---|
+| `ApiUrl` | `https://` (or `http://` without a cert) base URL |
+| `WebSocketUrl` | WebSocket URL — set as `VakClient`'s `VITE_WS_URL` |
+| `AlbDns` | Raw ALB DNS name |
+| `EcsCluster` | ECS cluster name (for `aws ecs update-service`) |
+| `EcrRepositoryUri` | Push VakDeepGram images here |
 
-## Environment Variables
+## CI/CD
 
-The ECS task receives these environment variables:
-- `REGION`: AWS region (us-west-2)
-- `BUCKET`: S3 artifacts bucket name
-- `DDB_TABLE`: DynamoDB sessions table name
-- `MODEL_ID`: Bedrock model ID (default: anthropic.claude-3-haiku-20240307-v1:0)
-- `POLLY_VOICE`: Polly voice ID (default: Joanna)
-
-Note: `WS_API_ENDPOINT` must be set manually after deployment. It follows the pattern:
-`https://{api-id}.execute-api.{region}.amazonaws.com/prod`
+`.github/workflows/deploy-vak-infra.yml` deploys on push to `main` when
+files under `VakInfra/` change, using an OIDC role (`AWS_ROLE_ARN` secret).
+Run `cdk bootstrap` once in the target account/region before the first
+automated deploy.

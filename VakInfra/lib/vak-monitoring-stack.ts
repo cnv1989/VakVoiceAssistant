@@ -11,6 +11,8 @@ import { VakAppStack } from './vak-app-stack';
 
 export interface VakMonitoringStackProps extends cdk.StackProps {
   appStack: VakAppStack;
+  /** Email address to notify on alarm (optional — no subscription is created if omitted). */
+  alarmEmail?: string;
 }
 
 export class VakMonitoringStack extends cdk.Stack {
@@ -361,9 +363,9 @@ export class VakMonitoringStack extends cdk.Stack {
       displayName: `Vak Monitoring Alarms (${stage})`,
     });
 
-    alarmTopic.addSubscription(
-      new subscriptions.EmailSubscription('nag@tutzi.ai')
-    );
+    if (props.alarmEmail) {
+      alarmTopic.addSubscription(new subscriptions.EmailSubscription(props.alarmEmail));
+    }
 
     const alarmAction = new cloudwatchActions.SnsAction(alarmTopic);
 

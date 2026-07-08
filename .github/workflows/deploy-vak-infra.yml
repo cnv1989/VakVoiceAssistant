@@ -1,21 +1,20 @@
-# Deploys per-stage VakInfra CDK stacks.
-# Shared stacks (VakDnsStack, VakNetworkStack) are deployed only from prod/main.
-# Required repo secret: AWS_ROLE_ARN (OIDC role for GitHub Actions).
-# Bootstrap CDK once per account/region: cdk bootstrap aws://844341423871/us-west-2
+# Deploys the Vak CDK stacks (network, app, monitoring).
+#
+# Required repo secret:  AWS_ROLE_ARN          — OIDC role for GitHub Actions
+# Optional repo secrets: DEEPGRAM_API_KEY_SECRET_ARN, TWILIO_AUTH_TOKEN_SECRET_ARN
+# Optional repo variables: AWS_REGION, DOMAIN_NAME, HOSTED_ZONE_DOMAIN, BUSINESS_NAME, BUSINESS_VERTICAL
+#
+# Bootstrap CDK once per account/region before the first deploy:
+#   cd VakInfra && npx cdk bootstrap
 name: Deploy VakInfra
 
 on:
   push:
-    branches: [alpha, beta, prod, main]
+    branches: [main]
     paths:
       - 'VakInfra/**'
       - '.github/workflows/deploy-vak-infra.yml'
-  workflow_dispatch:
-    inputs:
-      stage:
-        description: 'Stage to deploy (alpha/beta/prod)'
-        required: false
-        default: ''
+  workflow_dispatch: {}
 
 concurrency:
   group: deploy-vak-infra-${{ github.ref_name }}
@@ -28,29 +27,13 @@ jobs:
       contents: read
       id-token: write
     env:
-      AWS_REGION: us-west-2
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-west-2' }}
     defaults:
       run:
         working-directory: VakInfra
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Resolve stage from branch
-        id: stage
-        run: |
-          INPUT="${{ github.event.inputs.stage }}"
-          BRANCH="${{ github.ref_name }}"
-          RAW="${INPUT:-$BRANCH}"
-          case "$RAW" in
-            alpha) STAGE=alpha; SUFFIX=Alpha ;;
-            beta)  STAGE=beta;  SUFFIX=Beta  ;;
-            prod|main) STAGE=prod; SUFFIX=Prod ;;
-            *) echo "Unknown branch/stage '$RAW'"; exit 1 ;;
-          esac
-          echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
-          echo "suffix=$SUFFIX" >> "$GITHUB_OUTPUT"
-          echo "Deploying stage: $STAGE ($SUFFIX)"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -69,19 +52,12 @@ jobs:
       - name: Build
         run: npm run build
 
-      # Shared stacks only deployed from prod/main to avoid duplicate creates.
-      # On first run for a new environment, deploy shared stacks manually:
-      #   cd VakInfra && npx cdk deploy VakDnsStack VakNetworkStack --require-approval never
-      - name: Deploy shared stacks (prod/main only)
-        if: steps.stage.outputs.stage == 'prod'
-        run: |
-          npx cdk deploy VakDnsStack VakNetworkStack --require-approval never
-
-      - name: Deploy stage-specific stacks
+      - name: Deploy
         env:
-          SUFFIX: ${{ steps.stage.outputs.suffix }}
-        run: |
-          npx cdk deploy \
-            "VakAppStack-${SUFFIX}" \
-            "VakMonitoringStack-${SUFFIX}" \
-            --require-approval never
+          DEEPGRAM_API_KEY_SECRET_ARN: ${{ secrets.DEEPGRAM_API_KEY_SECRET_ARN }}
+          TWILIO_AUTH_TOKEN_SECRET_ARN: ${{ secrets.TWILIO_AUTH_TOKEN_SECRET_ARN }}
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          HOSTED_ZONE_DOMAIN: ${{ vars.HOSTED_ZONE_DOMAIN }}
+          BUSINESS_NAME: ${{ vars.BUSINESS_NAME }}
+          BUSINESS_VERTICAL: ${{ vars.BUSINESS_VERTICAL }}
+        run: npx cdk deploy --all --require-approval never
