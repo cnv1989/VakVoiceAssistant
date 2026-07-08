@@ -17,9 +17,11 @@
   - Entrypoint: `bin/vak-infra.ts`.
   - Stacks: `lib/vak-network-stack.ts`, `lib/vak-app-stack.ts`.
   - Deployment helpers and docs live alongside the stacks.
-- Root docs (`README.md`, `TROUBLESHOOTING.md`, `CONNECT_INTEGRATION.md`, `DEBUG_WSS.md`) describe setup and operational flows.
+- `cli/` implements the `./vak` CLI (`init`/`dev`/`deploy`/`doctor`) — the primary entry point for setup and local dev; see `docs/GETTING_STARTED.md`.
+- `docs/` has the full guide set (getting started, configuration, customizing the agent, deployment, architecture, design, FAQ). Root-level `CONNECT_INTEGRATION.md` and `DEBUG_WSS.md` cover specific integration/debugging deep-dives.
 
 ## Build, Test, and Development Commands
+- Quickest path: `./vak init` then `./vak dev` from the repo root (see `docs/GETTING_STARTED.md`).
 - Client:
   - `cd VakClient && npm install`
   - `cd VakClient && npm run dev`
@@ -27,8 +29,7 @@
 - Server:
   - `cd VakDeepGram && python -m venv venv && source venv/bin/activate`
   - `cd VakDeepGram && pip install -r requirements.txt`
-  - `cd VakDeepGram && python main.py`
-  - `cd VakDeepGram && uvicorn main:app --host 0.0.0.0 --port 8080 --reload`
+  - `cd VakDeepGram && PYTHONPATH=src uvicorn vakdeepgram.api.main:app --host 0.0.0.0 --port 8080 --reload`
   - Docker: `cd VakDeepGram && ./docker-run.sh up -d`
   - ECR build/push: `cd VakDeepGram && ./deploy-to-ecr.sh`
 - Infra:
@@ -53,7 +54,7 @@
 - For infra changes, call out affected AWS resources and any new environment variables.
 
 ## Security & Configuration Tips
-- Do not commit secrets. Use `.env` files or AWS Secrets Manager for sensitive values.
-- `VakDeepGram` relies on `DEEPGRAM_*` and `TWILIO_*` settings; keep them out of source control.
+- Do not commit secrets. Use `.env` files (all gitignored) or AWS Secrets Manager for sensitive values. `./vak init` generates `.env` files for you.
+- `VakDeepGram` relies on `DEEPGRAM_*`, `BUSINESS_*`, and `TWILIO_*` settings; keep them out of source control.
 - `VakClient` requires `VITE_WS_URL` and any AWS credential env vars for signing.
 - Keep AWS credentials local and out of git history.

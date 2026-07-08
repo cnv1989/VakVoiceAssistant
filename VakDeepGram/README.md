@@ -71,10 +71,15 @@ DEEPGRAM_SPEAKING_VOICE_ID=cgSgspJ2msm6clMCkdW9
 DEEPGRAM_INPUT_SAMPLE_RATE=48000
 DEEPGRAM_OUTPUT_SAMPLE_RATE=24000
 
-# Optional: Custom prompt and greeting (defaults are set in config.py)
-# DEEPGRAM_AGENT_PROMPT=Your custom system prompt here
+# Optional: business profile and fallback greeting
+BUSINESS_NAME=
+BUSINESS_VERTICAL=generic
 # DEEPGRAM_AGENT_GREETING=Hello! How may I help you?
 ```
+
+The system prompt itself isn't a raw env var — it's generated from
+`BUSINESS_NAME` / `BUSINESS_VERTICAL` (or a full `BUSINESS_ROLE_DESCRIPTION`
+override). See [../docs/CUSTOMIZING_YOUR_AGENT.md](../docs/CUSTOMIZING_YOUR_AGENT.md).
 
 **Note**: 
 - **Option 1 (Recommended)**: Leave `DEEPGRAM_AGENT_ID` empty or unset. The agent will be created automatically using the configuration settings below.
@@ -171,16 +176,24 @@ Open `test_client.html` in your browser. This provides full audio recording and 
 | `GET /` | HTTP | None | Health / version |
 | `GET /health` | HTTP | None | Health check |
 | `POST /chat` | HTTP | API key | Text chat |
-| `POST /chat/oauth` | HTTP | Cognito JWT | Text chat (Integrin) |
+| `POST /chat/oauth` | HTTP | Cognito JWT | Text chat (for an OAuth-authenticated companion app) |
 | `POST /voice/oauth/connect` | HTTP | Cognito JWT | Get WebSocket URL for browser voice |
 | `POST /twilio-chat` | HTTP | Twilio signature | Inbound SMS webhook |
 | `POST /twilio/twiml` | HTTP | Twilio signature | Inbound voice call → returns `<Connect><Stream>` TwiML |
-| `WebSocket /ws` | WS | Cognito JWT | Browser voice (Integrin voice tester) |
+| `WebSocket /ws` | WS | Cognito JWT (optional) | Browser voice — this is what VakClient connects to |
 | `WebSocket /twilio` | WS | Twilio signature | Twilio Media Streams (phone calls) |
+
+The `/oauth` variants and Cognito JWT validation are only relevant if
+you're fronting Vak with your own authenticated business dashboard; set
+`OAUTH_JWKS_URL` / `OAUTH_ISSUER` / `OAUTH_AUDIENCE` to enable them (see
+[../docs/CONFIGURATION.md](../docs/CONFIGURATION.md)). Without them, `/ws`
+and `/chat` fall back to the `CHAT_API_KEY` / local dev checks.
 
 ### Multi-Tenant SMS & Voice Routing
 
-Each business (Integrin customer) has a dedicated Twilio phone number stored in the `BusinessNumber` DynamoDB table. Both inbound SMS and inbound voice calls are routed to the correct business's AI agent based on the `To` number:
+Each business has a dedicated Twilio phone number stored in the
+`BusinessNumber` DynamoDB table. Both inbound SMS and inbound voice calls
+are routed to the correct business's AI agent based on the `To` number:
 
 ```
 Inbound SMS:   Twilio → POST /twilio-chat  {To, From, Body}
@@ -206,34 +219,36 @@ Connect to this endpoint for real-time audio streaming.
 
 1. Start recording:
 ```json
-{
-  "action": "start-deepgram"
-}
+{ "action": "start-recording" }
 ```
+(`start-deepgram` is accepted as a legacy alias.)
 
 2. Stop recording:
 ```json
-{
-  "action": "stop-deepgram"
-}
+{ "action": "stop-recording" }
 ```
+(`stop-deepgram` is accepted as a legacy alias.)
 
 3. Audio data: Send binary PCM16 audio at 48kHz
 
 **Messages to client:**
 
-1. `deepgram-ready`: Agent is ready and connected
-2. `settings-applied`: Agent settings have been applied
-3. `welcome`: Welcome message from the agent (if configured)
-4. `transcript`: Final user transcript (role: "user")
-5. `llm-token`: Streaming LLM response tokens (role: "agent")
-6. `llm-response`: Complete LLM response text (role: "agent")
-7. `tts`: Base64-encoded TTS audio chunk from agent
+1. `welcome`: Welcome message from the agent (if configured)
+2. `message-id`: New conversational turn started — pair subsequent messages by this ID
+3. `partial-transcript`: Live user transcript (not yet final)
+4. `transcript`: Final user transcript for this turn
+5. `llm-token`: Streaming LLM response tokens
+6. `llm-response`: Complete LLM response text
+7. `tts`: Base64-encoded TTS audio chunk (24kHz PCM16)
 8. `ready-to-listen`: Agent finished speaking and is ready for next input
-9. `deepgram-disconnected`: Agent connection closed
-10. `error`: Error message
+9. `user-started-speaking`: Triggers client-side barge-in (stop TTS playback)
+10. `agent-started-speaking`: Agent has begun producing audio
+11. `deepgram-ready` / `settings-applied` / `deepgram-disconnected`: session lifecycle events
+12. `error`: Error message
 
-All messages include a `connectionId` field to identify the session.
+All messages include a `connectionId` field to identify the session. See
+[../VakClient/README.md](../VakClient/README.md#websocket-protocol) for the
+client-side view of this same protocol.
 
 ### REST Endpoints
 
@@ -261,36 +276,42 @@ All messages include a `connectionId` field to identify the session.
 
 ## Architecture
 
+```mermaid
+flowchart LR
+    Client["VakClient<br/>(browser / Twilio)"] -- "WebSocket" --> API["FastAPI server<br/>(src/vakdeepgram/main.py)"]
+    API -- "STS WebSocket<br/>wss://agent.deepgram.com/v1/agent/converse" --> DG["Deepgram Voice Agent API<br/>STT → LLM → TTS"]
+    DG --> API
+    API -- "WebSocket" --> Client
 ```
-Client (VakClient/Browser)
-    ↓ WebSocket
-FastAPI Server (main.py)
-    ↓ STS WebSocket (wss://agent.deepgram.com/v1/agent/converse)
-Deepgram Voice Agents API
-    ↓
-STT → LLM → TTS
-    ↓
-FastAPI Server
-    ↓ WebSocket
-Client
-```
+
+See [../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md) for the full
+system-level diagram and data model.
 
 ## Development
 
-### Project Structure
+### Project structure
 
 ```
 VakDeepGram/
-├── main.py                  # FastAPI server with WebSocket endpoint
-├── deepgram_handler.py      # Deepgram Voice Agent handler (WebSocket-based implementation)
-├── config.py                # Configuration and settings
-├── test_client.html         # HTML test client
-├── requirements.txt         # Python dependencies
-├── .env.example            # Environment variables template
-└── README.md               # This file
+├── src/vakdeepgram/
+│   ├── main.py               # FastAPI server, WebSocket + REST endpoints
+│   ├── deepgram_handler.py    # Deepgram Voice Agent session handler (STS WebSocket)
+│   └── config.py               # Settings (business profile, Deepgram, AWS, ...)
+├── providers/                  # Square/Setmore tools, prompts, and clients
+├── services/, repositories/, utils/
+├── scripts/                     # Seeding, verification, manual test scripts
+├── tests/                        # pytest suite
+├── test_client.html               # Minimal manual HTML test client
+├── requirements.txt
+└── .env.example
 ```
 
-**Note**: The implementation uses `deepgram_handler.py` which connects directly to Deepgram Voice Agent WebSocket API using STS (Secure Token Service) authentication. The API key is passed as a WebSocket subprotocol, following the same pattern as the sts-twilio reference implementation.
+See [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md) for the
+in-progress layering migration, and
+[../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md) for the full module
+reference.
+
+**Note**: `deepgram_handler.py` connects directly to the Deepgram Voice Agent WebSocket API using STS (Secure Token Service) authentication. The API key is passed as a WebSocket subprotocol, following the same pattern as the sts-twilio reference implementation.
 
 ## How It Works
 

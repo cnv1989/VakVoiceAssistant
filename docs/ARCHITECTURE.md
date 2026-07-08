@@ -1,530 +1,256 @@
-# Vak Architecture Guide
+# Architecture
 
-## Repository Structure
+A code-level reference for how Vak is built. For the "why" behind these
+choices, see [DESIGN.md](./DESIGN.md). For "how do I deploy this," see
+[DEPLOYMENT.md](./DEPLOYMENT.md).
 
-```
-vak/
-├── VakClient/              # React frontend
-├── VakDeepGram/            # Python backend
-├── VakInfra/               # AWS CDK infrastructure
-├── Twilio/                 # Twilio integration helpers
-├── docs/                   # Documentation
-└── .github/workflows/      # CI/CD pipelines
-```
-
-## Technology Stack
-
-### VakClient
-
-| Component | Technology | Version |
-|-----------|------------|---------|
-| Framework | React | 18.2.0 |
-| Build Tool | Vite | 5.0.0 |
-| Language | TypeScript | 5.0.0 |
-| Styling | CSS Modules | - |
-| WebSocket | Native WS | - |
-| Audio | Web Audio API | - |
-
-### VakDeepGram
-
-| Component | Technology | Version |
-|-----------|------------|---------|
-| Framework | FastAPI | 0.128.0 |
-| Language | Python | 3.8+ |
-| Runtime | uvicorn | 0.40.0 |
-| Agent Framework | Strands Agents | 1.23.0 |
-| Voice API | Deepgram SDK | 5.3.1 |
-| TTS | ElevenLabs | - |
-| LLM | AWS Bedrock (Claude) | - |
-| Database | DynamoDB | - |
-
-### VakInfra
-
-| Component | Technology | Version |
-|-----------|------------|---------|
-| IaC | AWS CDK | v2 |
-| Language | TypeScript | - |
-| Cloud | AWS | - |
-
-## VakClient Architecture
-
-### Component Structure
+## Repository structure
 
 ```
-VakClient/
-├── src/
-│   ├── main.tsx           # Entry point
-│   ├── App.tsx            # Main voice application (7KB)
-│   ├── ChatPage.tsx       # REST chat interface
-│   ├── Layout.tsx         # Layout wrapper
-│   ├── ws-signer.ts       # AWS SigV4 WebSocket signing
-│   └── assets/            # Static assets
-├── public/
-├── index.html
-├── package.json
-├── tsconfig.json
-└── vite.config.ts
+.
+├── vak                     # CLI entry point
+├── cli/                    # CLI implementation (init/dev/deploy/doctor)
+├── VakClient/               # React frontend
+├── VakDeepGram/              # Python backend
+├── VakInfra/                 # AWS CDK infrastructure
+├── docs/                     # This directory
+└── .github/workflows/        # CI/CD
 ```
 
-### Audio Pipeline
+## Technology stack
+
+| Component | Technology |
+|---|---|
+| VakClient | React 18, Vite, TypeScript |
+| VakDeepGram | FastAPI, Python, Strands Agents, Deepgram SDK |
+| VakInfra | AWS CDK v2 (TypeScript) |
+| LLM | AWS Bedrock (Claude), via Strands Agents |
+| Voice | Deepgram Voice Agent API (STT, LLM bridge, TTS) |
+| Booking data | Square or Setmore |
+
+## VakClient
+
+### Structure
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Browser Audio Pipeline                      │
-│                                                                  │
-│  ┌─────────────┐     ┌─────────────┐     ┌─────────────────┐   │
-│  │ getUserMedia│────▶│ MediaStream │────▶│ MediaRecorder   │   │
-│  │             │     │             │     │ (PCM16 @ 48kHz) │   │
-│  └─────────────┘     └─────────────┘     └─────────────────┘   │
-│                                                  │               │
-│                                                  ▼               │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │                    WebSocket                             │   │
-│  │         ws://localhost:8080/ws or wss://alb/ws          │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                              │                                   │
-│                              ▼                                   │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │                  Audio Playback                          │   │
-│  │  ┌─────────────┐     ┌─────────────┐     ┌───────────┐ │   │
-│  │  │ Base64      │────▶│ AudioBuffer │────▶│ AudioCtx  │ │   │
-│  │  │ Decode      │     │ Queue       │     │ Play      │ │   │
-│  │  └─────────────┘     └─────────────┘     └───────────┘ │   │
-│  └─────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
+VakClient/src/
+├── main.tsx           # Entry point
+├── App.tsx            # Voice page
+├── ChatPage.tsx        # Text chat page
+├── Layout.tsx           # Shared header/nav
+├── ws-signer.ts          # AWS SigV4 WebSocket signing (Cognito-authenticated deployments)
+└── *.css
 ```
 
-### State Management
+### Audio pipeline
 
-```typescript
-// App.tsx state structure
-interface AppState {
-  // Connection
-  isConnected: boolean;
-  connectionStatus: 'disconnected' | 'connecting' | 'connected' | 'error';
-
-  // Recording
-  isRecording: boolean;
-  micPermission: 'unknown' | 'granted' | 'denied';
-
-  // Messages
-  messages: Message[];
-  currentTranscript: string;
-
-  // Audio
-  audioQueue: AudioBuffer[];
-  isPlaying: boolean;
-}
-
-interface Message {
-  id: string;
-  role: 'user' | 'agent' | 'system';
-  content: string;
-  timestamp: Date;
-  status: 'pending' | 'complete';
-}
+```mermaid
+flowchart LR
+    Mic["getUserMedia()"] --> Stream["MediaStream"]
+    Stream --> Ctx["AudioContext<br/>(48kHz)"]
+    Ctx --> Proc["ScriptProcessorNode<br/>Float32 → PCM16"]
+    Proc -- "binary WebSocket frames" --> WS["/ws"]
+    WS -- "base64 TTS audio" --> Queue["Playback queue<br/>(per messageId)"]
+    Queue --> Out["AudioContext<br/>playback (24kHz)"]
 ```
 
-### WebSocket Protocol
+The client captures raw PCM16 audio at 48kHz and streams it as binary
+WebSocket frames; the server resamples as needed. TTS audio comes back
+base64-encoded, queued per `messageId` so playback stays in order and can
+be interrupted immediately on barge-in (the user starts talking while the
+agent is still speaking).
+
+### WebSocket protocol
 
 ```typescript
 // Client → Server
-interface ClientMessage {
-  action: 'start-deepgram' | 'stop-deepgram';
-}
-// Or binary PCM16 audio data
+{ action: 'start-recording' | 'stop-recording' }
+// or binary PCM16 audio frames
 
 // Server → Client
-interface ServerMessage {
-  type:
-    | 'deepgram-ready'
-    | 'settings-applied'
-    | 'welcome'
-    | 'transcript'
-    | 'llm-token'
-    | 'llm-response'
-    | 'tts'
-    | 'ready-to-listen'
-    | 'deepgram-disconnected'
-    | 'error';
-  connectionId: string;
-  data?: any;
+{
+  type: 'welcome' | 'transcript' | 'partial-transcript' | 'llm-token'
+      | 'llm-response' | 'tts' | 'ready-to-listen' | 'message-id'
+      | 'user-started-speaking' | 'agent-started-speaking' | 'error',
+  connectionId: string,
+  messageId?: string,
+  ...
 }
 ```
 
-## VakDeepGram Architecture
+Each conversational turn gets a server-generated `messageId`; the client
+pairs the user's transcript with the agent's reply using it (see
+`MessagePair` in `App.tsx`).
 
-### Module Structure
+## VakDeepGram
+
+### Module layout
+
+The backend is mid-migration from a flat module layout to a layered
+`src/vakdeepgram/` package — see
+[`VakDeepGram/docs/PROJECT_STRUCTURE.md`](../VakDeepGram/docs/PROJECT_STRUCTURE.md)
+for the migration plan. Both layers are live today:
 
 ```
 VakDeepGram/
 ├── src/vakdeepgram/
-│   ├── __init__.py
-│   ├── main.py                    # FastAPI app (72KB)
-│   ├── config.py                  # Settings (20KB)
-│   ├── deepgram_handler.py        # Voice Agent handler (37KB)
-│   ├── business_logic.py          # Business operations (77KB)
-│   ├── agent_functions.py         # AI agent tools (31KB)
-│   ├── connection_store.py        # Session management (56KB)
-│   ├── store_tools.py             # Tool definitions (12KB)
-│   │
-│   ├── api/                       # REST & WebSocket endpoints
-│   │   ├── __init__.py
-│   │   ├── routes.py
-│   │   └── websocket.py
-│   │
-│   ├── core/                      # Core utilities
-│   │   ├── __init__.py
-│   │   ├── exceptions.py
-│   │   └── dependencies.py
-│   │
-│   ├── domain/                    # Domain models
-│   │   ├── __init__.py
-│   │   ├── appointment.py
-│   │   ├── customer.py
-│   │   └── service.py
-│   │
-│   ├── providers/                 # Business platform adapters
-│   │   ├── __init__.py
-│   │   ├── base.py
-│   │   ├── square/
-│   │   │   ├── __init__.py
-│   │   │   ├── client.py
-│   │   │   └── helpers.py
-│   │   ├── setmore/
-│   │   │   ├── __init__.py
-│   │   │   ├── client.py
-│   │   │   └── helpers.py
-│   │   └── common/
-│   │       └── transformers.py
-│   │
-│   ├── repositories/              # Data access layer
-│   │   ├── __init__.py
-│   │   ├── session_repository.py
-│   │   └── connection_context_repository.py
-│   │
-│   ├── services/                  # Business services
-│   │   ├── __init__.py
-│   │   ├── auth_context_service.py
-│   │   └── business_context_service.py
-│   │
-│   ├── security/                  # Auth & validation
-│   │   ├── __init__.py
-│   │   └── oauth.py
-│   │
-│   └── utils/                     # Utilities
-│       ├── __init__.py
-│       ├── logging.py
-│       ├── metrics.py
-│       └── case.py
+│   ├── main.py                 # FastAPI app, routes, WebSocket handlers
+│   ├── config.py                # Settings (business profile, Deepgram, AWS, ...)
+│   ├── deepgram_handler.py       # Deepgram Voice Agent session management
+│   ├── business_logic.py          # Booking/customer orchestration
+│   ├── agent_functions.py          # Deepgram function-call tool definitions
+│   ├── connection_store.py         # Per-connection context + business data resolution
+│   ├── store_tools.py               # Tool helpers shared across providers
+│   ├── api/                          # Thin facade: `vakdeepgram.api.main:app` re-exports `main.app`
+│   ├── core/, domain/                 # Newer layered modules (in progress)
+│   ├── repositories/, services/         # Newer layered modules (in progress)
+│   └── security/oauth.py                 # JWT validation
 │
-├── tests/                         # Test suite
-│   ├── conftest.py
-│   ├── test_main.py
-│   └── test_providers/
-│
-├── scripts/                       # Deployment scripts
-│   └── deploy-to-ecr.sh
-│
-├── requirements.txt               # Dependencies
-├── Dockerfile                     # Container definition
-├── docker-run.sh                  # Docker wrapper
-└── main.py                        # Entry point
+├── providers/                # Provider abstraction (see below)
+├── services/                  # auth_context_service, business_context_service
+├── repositories/               # connection_context_repository
+├── utils/                       # logging, metrics, phone/case helpers, S3 session storage
+├── scripts/                      # Seeding, verification, and manual test scripts
+└── tests/                         # pytest suite
 ```
 
-### Request Processing Flow
+### Request flow
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    FastAPI Application                           │
-│                                                                  │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │                    Middleware Stack                      │    │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌───────────┐  │    │
-│  │  │  CORS   │─▶│ Logging │─▶│  Auth   │─▶│ Rate Limit│  │    │
-│  │  └─────────┘  └─────────┘  └─────────┘  └───────────┘  │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                              │                                   │
-│                              ▼                                   │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │                     Route Handlers                       │    │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐ │    │
-│  │  │  /ws        │  │  /twilio    │  │  /chat          │ │    │
-│  │  │  WebSocket  │  │  WebSocket  │  │  REST           │ │    │
-│  │  └─────────────┘  └─────────────┘  └─────────────────┘ │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                              │                                   │
-│                              ▼                                   │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │                  Deepgram Handler                        │    │
-│  │  ┌───────────────────────────────────────────────────┐  │    │
-│  │  │              WebSocket Connection                  │  │    │
-│  │  │  wss://agent.deepgram.com/v1/agent/converse       │  │    │
-│  │  └───────────────────────────────────────────────────┘  │    │
-│  │                          │                               │    │
-│  │  ┌───────────────────────┼───────────────────────────┐  │    │
-│  │  │                       │                            │  │    │
-│  │  ▼                       ▼                            ▼  │    │
-│  │  ┌─────────┐      ┌─────────────┐      ┌───────────┐   │    │
-│  │  │  STT    │─────▶│    LLM      │─────▶│    TTS    │   │    │
-│  │  │ Events  │      │  + Tools    │      │  Audio    │   │    │
-│  │  └─────────┘      └─────────────┘      └───────────┘   │    │
-│  └─────────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph FastAPI
+        WSEP["/ws — web client"]
+        Twilio["/twilio — phone media stream"]
+        Chat["/chat — REST"]
+    end
+
+    WSEP --> Handler["Deepgram handler<br/>session management"]
+    Twilio --> Handler
+    Handler <--> DGAgent["Deepgram Voice Agent<br/>wss://agent.deepgram.com"]
+
+    Chat --> Agent["Strands Agent<br/>(Bedrock/Claude)"]
+    DGAgent -. "function calls" .-> Tools["Agent tools"]
+    Agent --> Tools
+
+    Tools --> Providers["Provider factory<br/>(Square / Setmore)"]
+    Providers --> External["Square API / Setmore API"]
 ```
 
-### Agent Configuration
+### Provider abstraction
+
+Square and Setmore are exposed behind a common tool interface
+(`get_services`, `get_staff`, `check_availability`, `create_appointment`,
+etc.), selected per-connection based on which provider the resolved
+business account uses:
 
 ```python
-# config.py
-class Settings(BaseSettings):
-    # Server
-    host: str = "0.0.0.0"
-    port: int = 8080
-    log_level: str = "debug"
-
-    # Deepgram
-    deepgram_api_key: str
-    deepgram_project_id: str
-    deepgram_agent_id: Optional[str] = None
-
-    # Agent configuration
-    deepgram_agent_language: str = "en"
-    deepgram_listening_model: str = "flux-general-en"
-    deepgram_listening_version: str = "v2"
-    deepgram_thinking_provider: str = "google"
-    deepgram_thinking_model: str = "gemini-2.5-flash"
-    deepgram_speaking_provider: str = "eleven_labs"
-    deepgram_speaking_model_id: str = "eleven_multilingual_v2"
-    deepgram_speaking_voice_id: str = "cgSgspJ2msm6clMCkdW9"
-
-    # Audio
-    deepgram_input_sample_rate: int = 48000
-    deepgram_output_sample_rate: int = 24000
-
-    # AWS
-    aws_region: str = "us-west-2"
-    dynamodb_table: str = "vak-sessions"
-    s3_bucket: str = "vak-artifacts"
-
-    # Rate limiting
-    rate_limit_connections: int = 10
-    rate_limit_messages: int = 100
-    rate_limit_window: int = 60
+# providers/__init__.py
+def get_tools_for_provider(provider: str) -> list: ...
+def get_voice_prompt_for_provider(provider: str) -> str: ...
+def get_chat_prompt_for_provider(provider: str) -> str: ...
 ```
 
-### Tool Execution Flow
+The prompts themselves (`providers/square/prompts.py`,
+`providers/setmore/prompts.py`) share a booking-flow structure but differ
+where the providers genuinely differ — Setmore can't create appointments
+directly (it returns a prefilled booking link sent via SMS/WhatsApp),
+Square books directly and supports rescheduling. Both build their opening
+persona from `providers/common/persona.py` — see
+[CUSTOMIZING_YOUR_AGENT.md](./CUSTOMIZING_YOUR_AGENT.md).
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Tool Execution Pipeline                       │
-│                                                                  │
-│  ┌─────────────┐     ┌─────────────┐     ┌─────────────────┐   │
-│  │  LLM        │────▶│   Tool      │────▶│  Tool           │   │
-│  │  Decision   │     │   Router    │     │  Executor       │   │
-│  └─────────────┘     └─────────────┘     └─────────────────┘   │
-│                                                  │               │
-│                          ┌───────────────────────┴───────────┐   │
-│                          │                                   │   │
-│                          ▼                                   ▼   │
-│                   ┌─────────────┐                    ┌───────────┐
-│                   │   Square    │                    │  Setmore  │
-│                   │   Provider  │                    │  Provider │
-│                   └─────────────┘                    └───────────┘
-│                          │                                   │   │
-│                          └───────────────────┬───────────────┘   │
-│                                              │                   │
-│                                              ▼                   │
-│                                       ┌─────────────┐            │
-│                                       │  Response   │            │
-│                                       │  Transform  │            │
-│                                       └─────────────┘            │
-│                                              │                   │
-│                                              ▼                   │
-│                                       ┌─────────────┐            │
-│                                       │  LLM        │            │
-│                                       │  Synthesis  │            │
-│                                       └─────────────┘            │
-└─────────────────────────────────────────────────────────────────┘
-```
+### Data model
 
-## VakInfra Architecture
+DynamoDB tables VakDeepGram reads and writes (created by VakInfra's CDK
+stack by default — see
+[VakInfra/README.md](../VakInfra/README.md#bringing-your-own-tables) to
+import existing tables instead):
 
-### Stack Hierarchy
+| Table | Partition key | Sort key | Purpose |
+|---|---|---|---|
+| Sessions | `sid` | — | WebSocket/chat session state (TTL) |
+| BusinessNumber | `phoneNumber` | — | Maps a business phone number to its provider account |
+| SquareAccount | `userId` | `merchantId` | Square OAuth credentials per business |
+| SetmoreAccount | `accountId` | `userId` | Setmore refresh/access tokens per business |
+| BusinessAutomations | `merchantId` | `locationId` | Per-location voice/automation settings |
+| CallRecord | `callId` | — | Per-call analytics (duration, outcome, tool calls, ...) |
+| VoiceCustomer | `customerId` | — | Caller profile, upserted per call (`caller:<phone>:<businessNumber>`) |
+| UserBookingLink | `customerPhone` | `createdAt` | Booking links sent via SMS/WhatsApp (TTL) |
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        VakInfra CDK App                          │
-│                                                                  │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │                   VakNetworkStack                        │    │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐ │    │
-│  │  │     VPC     │  │   Subnets   │  │      ECR        │ │    │
-│  │  │   2 AZs     │  │  Pub/Priv   │  │   Repository    │ │    │
-│  │  └─────────────┘  └─────────────┘  └─────────────────┘ │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                              │                                   │
-│                              ▼                                   │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │                    VakAppStack                           │    │
-│  │  ┌─────────────────────────────────────────────────┐    │    │
-│  │  │                 Compute                          │    │    │
-│  │  │  ┌───────────┐  ┌───────────┐  ┌─────────────┐ │    │    │
-│  │  │  │   ECS     │  │  Fargate  │  │    ALB      │ │    │    │
-│  │  │  │  Cluster  │  │  Service  │  │             │ │    │    │
-│  │  │  └───────────┘  └───────────┘  └─────────────┘ │    │    │
-│  │  └─────────────────────────────────────────────────┘    │    │
-│  │  ┌─────────────────────────────────────────────────┐    │    │
-│  │  │                 Security                         │    │    │
-│  │  │  ┌───────────┐  ┌───────────┐  ┌─────────────┐ │    │    │
-│  │  │  │    WAF    │  │  Cognito  │  │    IAM      │ │    │    │
-│  │  │  │  WebACL   │  │ UserPool  │  │   Roles     │ │    │    │
-│  │  │  └───────────┘  └───────────┘  └─────────────┘ │    │    │
-│  │  └─────────────────────────────────────────────────┘    │    │
-│  │  ┌─────────────────────────────────────────────────┐    │    │
-│  │  │                 Storage                          │    │    │
-│  │  │  ┌───────────┐  ┌───────────┐  ┌─────────────┐ │    │    │
-│  │  │  │ DynamoDB  │  │    S3     │  │ CloudWatch  │ │    │    │
-│  │  │  │ Sessions  │  │ Artifacts │  │    Logs     │ │    │    │
-│  │  │  └───────────┘  └───────────┘  └─────────────┘ │    │    │
-│  │  └─────────────────────────────────────────────────┘    │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                              │                                   │
-│                              ▼                                   │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │                  VakMonitoringStack                      │    │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐ │    │
-│  │  │ Dashboards  │  │   Alarms    │  │    Metrics      │ │    │
-│  │  └─────────────┘  └─────────────┘  └─────────────────┘ │    │
-│  └─────────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────┘
+### Session lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Connect
+    Connect --> Active: business context resolved
+    Active --> Active: tool calls, transcripts, TTS
+    Active --> Idle: call ends / WS closes
+    Idle --> [*]: TTL expiry (DynamoDB) or explicit cleanup
 ```
 
-### Resource Configuration
+## VakInfra
 
-```typescript
-// ECS Task Definition
-const taskDefinition = new ecs.FargateTaskDefinition(this, 'TaskDef', {
-  memoryLimitMiB: 2048,
-  cpu: 1024,
-  runtimePlatform: {
-    cpuArchitecture: ecs.CpuArchitecture.X86_64,
-    operatingSystemFamily: ecs.OperatingSystemFamily.LINUX,
-  },
-});
+### Stack hierarchy
 
-// Container Definition
-taskDefinition.addContainer('VakDeepGram', {
-  image: ecs.ContainerImage.fromEcrRepository(ecrRepo, 'latest'),
-  portMappings: [{ containerPort: 8080 }],
-  environment: {
-    REGION: 'us-west-2',
-    DDB_TABLE: dynamoTable.tableName,
-    BUCKET: s3Bucket.bucketName,
-  },
-  secrets: {
-    DEEPGRAM_API_KEY: ecs.Secret.fromSecretsManager(deepgramSecret),
-  },
-  logging: ecs.LogDrivers.awsLogs({
-    streamPrefix: 'vak',
-    logGroup: logGroup,
-  }),
-});
+```mermaid
+flowchart TD
+    subgraph NetworkStack["VakNetworkStack"]
+        VPC["VPC (2 AZs)"]
+        ECR["ECR repository"]
+    end
 
-// ALB Configuration
-const alb = new elbv2.ApplicationLoadBalancer(this, 'ALB', {
-  vpc,
-  internetFacing: true,
-});
+    subgraph AppStack["VakAppStack"]
+        ECS["ECS Fargate service"]
+        ALB["Application Load Balancer"]
+        DDB["8 DynamoDB tables"]
+        S3["S3 artifacts bucket"]
+        WAF["WAF (optional)"]
+        Cognito["Cognito (optional)"]
+    end
 
-// HTTPS Listener (if certificate provided)
-if (certificateArn) {
-  alb.addListener('HTTPS', {
-    port: 443,
-    certificates: [
-      elbv2.ListenerCertificate.fromArn(certificateArn),
-    ],
-    defaultAction: elbv2.ListenerAction.forward([targetGroup]),
-  });
-}
+    subgraph MonitoringStack["VakMonitoringStack"]
+        Dash["CloudWatch dashboards"]
+        Alarms["Alarms + SNS"]
+    end
+
+    NetworkStack --> AppStack --> MonitoringStack
 ```
 
-## Deployment Pipeline
+One environment per deployment by default (`stage` defaults to
+`production`); run `cdk deploy` again with a different `-c stage=` /
+`-c stackName=` to stand up a second environment. See
+[VakInfra/README.md](../VakInfra/README.md) for the full configuration
+reference.
 
-### CI/CD Flow
+### Deployment pipeline
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    GitHub Actions Pipeline                       │
-│                                                                  │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │                   Trigger: Push to main                  │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                              │                                   │
-│              ┌───────────────┼───────────────┐                  │
-│              │               │               │                  │
-│              ▼               ▼               ▼                  │
-│  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐       │
-│  │  VakClient    │  │  VakDeepGram  │  │   VakInfra    │       │
-│  │  Build & Test │  │  Build & Push │  │  CDK Deploy   │       │
-│  └───────────────┘  └───────────────┘  └───────────────┘       │
-│         │                   │                   │               │
-│         ▼                   ▼                   ▼               │
-│  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐       │
-│  │  S3 + CDN     │  │     ECR       │  │ CloudFormation│       │
-│  │  Deploy       │  │    Push       │  │   Deploy      │       │
-│  └───────────────┘  └───────────────┘  └───────────────┘       │
-│                              │                                   │
-│                              ▼                                   │
-│                    ┌───────────────┐                            │
-│                    │  ECS Service  │                            │
-│                    │    Update     │                            │
-│                    └───────────────┘                            │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    Push["Push to main"] --> Infra["deploy-vak-infra.yml<br/>(if VakInfra/** changed)"]
+    Push --> App["deploy-vakdeepgram.yml<br/>(if VakDeepGram/** changed)"]
+    Infra --> CDK["cdk deploy --all"]
+    App --> Build["docker build + push to ECR"]
+    Build --> ECS["ecs update-service<br/>--force-new-deployment"]
 ```
 
-### Deployment Commands
+Both workflows are also runnable manually (`workflow_dispatch`) and via
+`./vak deploy` / `VakDeepGram/deploy-to-ecr.sh` locally.
 
-```bash
-# Deploy infrastructure
-cd VakInfra
-npm install
-cdk deploy VakNetworkStack
-cdk deploy VakAppStack
+## Security model
 
-# Build and push Docker image
-cd ../VakDeepGram
-./deploy-to-ecr.sh
+| Layer | Mechanism |
+|---|---|
+| Transport | TLS via ALB (when a certificate is configured) |
+| API auth | Bearer/API-key checks in FastAPI (`CHAT_API_KEY`, OAuth JWT validation) |
+| Edge auth (optional) | WAF static API key, or Cognito hosted-UI login at the ALB |
+| Phone webhooks | Twilio request signature validation |
+| Rate limiting | Per-IP request and WebSocket connection limits (`slowapi`) |
 
-# Update ECS service
-aws ecs update-service \
-  --cluster vak-cluster \
-  --service vak-deepgram \
-  --force-new-deployment
-```
+## Observability
 
-## Configuration Reference
-
-### Environment Variables
-
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `DEEPGRAM_API_KEY` | Deepgram API key | Yes |
-| `DEEPGRAM_PROJECT_ID` | Deepgram project ID | Yes |
-| `AWS_REGION` | AWS region | Yes |
-| `DDB_TABLE` | DynamoDB table name | Yes |
-| `S3_BUCKET` | S3 bucket name | Yes |
-| `DEEPGRAM_SPEAKING_PROVIDER` | TTS provider | No |
-| `DEEPGRAM_SPEAKING_VOICE_ID` | Voice ID | No |
-| `LOG_LEVEL` | Log level | No |
-| `CERTIFICATE_ARN` | ACM certificate ARN | No |
-| `API_KEY` | WAF API key | No |
-
-### Port Configuration
-
-| Service | Port | Protocol |
-|---------|------|----------|
-| VakClient (dev) | 5173 | HTTP |
-| VakDeepGram | 8080 | HTTP/WS |
-| ALB HTTP | 80 | HTTP |
-| ALB HTTPS | 443 | HTTPS/WSS |
+- **Logging**: structured, PII-redacting (`utils/logging.py`) — phone
+  numbers, emails, and tokens are redacted from log output.
+- **Metrics**: emitted via `utils/metrics.py`; the CDK-provisioned
+  CloudWatch dashboards chart ECS CPU/memory, ALB latency/error rate, and
+  Sessions table capacity.
+- **Call analytics**: every call writes a `CallRecord` (duration, outcome,
+  tool-call counts, booking success) for downstream analysis.

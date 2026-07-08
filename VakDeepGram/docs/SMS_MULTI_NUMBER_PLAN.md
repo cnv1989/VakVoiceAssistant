@@ -26,13 +26,13 @@ Customer's phone
        ▼
   Twilio Cloud
        │
-       ├─ SMS ──────────────────► POST https://vak.tutzi.ai/twilio-chat
+       ├─ SMS ──────────────────► POST https://your-domain.example.com/twilio-chat
        │                               ↓ lookup BusinessNumber by To
        │                               ↓ resolve business context
        │                               ↓ Strands AI agent responds
        │                               ↓ Twilio sends reply SMS
        │
-       └─ Voice call ──────────► POST https://vak.tutzi.ai/twilio/twiml
+       └─ Voice call ──────────► POST https://your-domain.example.com/twilio/twiml
                                        ↓ returns <Connect><Stream> TwiML
                                        ↓ Twilio opens WebSocket to /twilio
                                        ↓ lookup by customParameters.businessNumber
@@ -75,9 +75,9 @@ if (!available.length) throw new Error('No numbers available in requested area')
 // 2. Purchase and configure webhooks
 const purchased = await twilioClient.incomingPhoneNumbers.create({
   phoneNumber: available[0].phoneNumber,
-  smsUrl: 'https://vak.tutzi.ai/twilio-chat',
+  smsUrl: 'https://your-domain.example.com/twilio-chat',
   smsMethod: 'POST',
-  voiceUrl: 'https://vak.tutzi.ai/twilio/twiml',
+  voiceUrl: 'https://your-domain.example.com/twilio/twiml',
   voiceMethod: 'POST',
   friendlyName: `VakAI - ${merchantId ?? setmoreAccountId}`,
 });
@@ -125,7 +125,7 @@ async def twilio_voice_twiml(request: Request):
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="wss://vak.tutzi.ai/twilio">
+    <Stream url="wss://your-domain.example.com/twilio">
       <Parameter name="businessNumber" value="{business_number}"/>
     </Stream>
   </Connect>
@@ -135,7 +135,7 @@ async def twilio_voice_twiml(request: Request):
 
 The `businessNumber` custom parameter is already read by the `/twilio` WebSocket handler's `start` event processing (`customParameters`).
 
-**Webhook URL to configure per number:** `https://vak.tutzi.ai/twilio/twiml` (POST)
+**Webhook URL to configure per number:** `https://your-domain.example.com/twilio/twiml` (POST)
 
 ---
 
@@ -184,7 +184,7 @@ After provisioning a number, auto-create a Messaging Service:
 ```typescript
 const service = await twilioClient.messaging.v1.services.create({
   friendlyName: `VakAI SMS - ${merchantId}`,
-  inboundRequestUrl: 'https://vak.tutzi.ai/twilio-chat',
+  inboundRequestUrl: 'https://your-domain.example.com/twilio-chat',
 });
 await twilioClient.messaging.v1.services(service.sid)
   .phoneNumbers.create({ phoneNumberSid: purchased.sid });
@@ -214,9 +214,9 @@ Add to the Automations page or a dedicated Phone Numbers page:
 
 | Endpoint | Purpose | Configure on |
 |----------|---------|-------------|
-| `POST https://vak.tutzi.ai/twilio-chat` | Inbound SMS webhook | Each Twilio number's SMS URL |
-| `POST https://vak.tutzi.ai/twilio/twiml` | Voice call → TwiML response | Each Twilio number's Voice URL |
-| `WSS https://vak.tutzi.ai/twilio` | Twilio Media Stream (voice audio) | Referenced in TwiML `<Stream url>` |
+| `POST https://your-domain.example.com/twilio-chat` | Inbound SMS webhook | Each Twilio number's SMS URL |
+| `POST https://your-domain.example.com/twilio/twiml` | Voice call → TwiML response | Each Twilio number's Voice URL |
+| `WSS https://your-domain.example.com/twilio` | Twilio Media Stream (voice audio) | Referenced in TwiML `<Stream url>` |
 
 ---
 

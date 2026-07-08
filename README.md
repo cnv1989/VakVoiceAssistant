@@ -1,194 +1,122 @@
-# Vak - Voice Assistant Kit
+# Vak — Voice Assistant Kit
 
-A complete voice AI platform for deploying intelligent voice agents that integrate with business platforms.
+Vak is a complete, self-hostable platform for building AI voice and chat
+assistants for service businesses — barbers, salons, spas, clinics, gyms,
+home services, or anything in between. Customers call, text, chat, or talk
+in the browser; a real-time voice agent answers questions, checks
+availability, and books appointments through Square or Setmore.
 
-## Overview
+It ships as three parts that deploy independently but work as one system:
 
-Vak enables businesses to deploy AI-powered voice assistants that can handle customer calls, book appointments, answer questions, and perform business operations through natural conversation.
+| Component | What it is | Stack |
+|---|---|---|
+| [`VakClient`](./VakClient/) | Web voice + chat UI | React, Vite, TypeScript |
+| [`VakDeepGram`](./VakDeepGram/) | Real-time voice agent server | FastAPI, Python, Strands Agents |
+| [`VakInfra`](./VakInfra/) | AWS deployment (CDK) | AWS CDK v2, TypeScript |
 
-## Architecture
+Everything is driven by one interactive setup wizard — no manual `.env`
+editing required to get started.
 
-```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│  VakClient  │────▶│ VakDeepGram │────▶│   Deepgram  │────▶│   Square/   │
-│  (React)    │ WS  │  (FastAPI)  │ WS  │  Voice API  │     │   Setmore   │
-└─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
-                           │
-                    ┌──────┴──────┐
-                    │  VakInfra   │
-                    │  (AWS CDK)  │
-                    └─────────────┘
-```
+```mermaid
+flowchart LR
+    subgraph Clients
+        Browser["VakClient<br/>(browser)"]
+        Phone["Phone / Twilio"]
+    end
 
-## Components
+    subgraph Backend["VakDeepGram"]
+        WS["FastAPI<br/>WebSocket + REST"]
+    end
 
-| Component | Description | Tech Stack |
-|-----------|-------------|------------|
-| [VakClient](./VakClient/) | Web-based voice interface | React, Vite, TypeScript |
-| [VakDeepGram](./VakDeepGram/) | Voice agent server | FastAPI, Python, Strands |
-| [VakInfra](./VakInfra/) | AWS infrastructure | CDK, TypeScript |
+    Deepgram["Deepgram<br/>Voice Agent API<br/>(STT + LLM bridge + TTS)"]
+    Bedrock["AWS Bedrock<br/>(Claude)"]
+    Providers["Square / Setmore<br/>(booking data)"]
 
-## Features
-
-- **Real-time Voice** - Bidirectional audio streaming via WebSocket
-- **AI Agent** - Strands Agent framework with AWS Bedrock (Claude)
-- **Voice Processing** - Deepgram for STT, ElevenLabs/Deepgram for TTS
-- **Business Integration** - Square and Setmore appointment booking
-- **Phone Support** - Twilio media stream integration
-- **Scalable Infrastructure** - ECS Fargate, ALB, DynamoDB
-
-## Quick Start
-
-### Prerequisites
-
-- Node.js 20+
-- Python 3.8+
-- Docker
-- AWS CLI configured
-- AWS CDK CLI (`npm install -g aws-cdk`)
-
-### Local Development
-
-**1. Start the backend:**
-```bash
-cd VakDeepGram
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-
-# Configure environment
-cp .env.example .env
-# Edit .env with your Deepgram API key
-
-# Run server
-./docker-run.sh
-# Or: uvicorn vakdeepgram.api.main:app --port 8080
+    Browser -- "WebSocket" --> WS
+    Phone -- "Media Stream" --> WS
+    WS <--> Deepgram
+    WS <--> Bedrock
+    WS <--> Providers
 ```
 
-**2. Start the frontend:**
-```bash
-cd VakClient
-npm install
-npm run dev
-```
+## Quick start
 
-**3. Open browser:**
-Navigate to [http://localhost:5173](http://localhost:5173)
-
-### AWS Deployment
+You need [Node.js 20+](https://nodejs.org), [Python 3.8+](https://python.org),
+and a free [Deepgram API key](https://console.deepgram.com). Docker and the
+AWS CLI are only needed if you deploy to AWS.
 
 ```bash
-# Deploy infrastructure
-cd VakInfra
-npm install
-cdk deploy VakNetworkStack
+git clone <this-repo>
+cd VakVoiceAssistant
 
-# Build and push Docker image
-cd ../VakDeepGram
-./deploy-to-ecr.sh
-
-# Deploy application
-cd ../VakInfra
-cdk deploy VakAppStack
+./vak init      # interactive setup — business profile, Deepgram key, etc.
+./vak dev       # runs VakDeepGram + VakClient locally
 ```
 
-## Project Structure
+Open [http://localhost:5173](http://localhost:5173), click **Connect**, then
+**Start Conversation** and talk to your agent. That's it — `./vak init`'s
+"local test mode" runs a mock business with no Square/Setmore account
+required, so you can hear it working in under two minutes.
 
+Run `./vak doctor` any time to check your environment, or `./vak help` to
+see all commands.
+
+## Deploying to AWS
+
+```bash
+./vak deploy
 ```
-vak/
-├── VakClient/              # React frontend
-│   ├── src/
-│   │   ├── App.tsx         # Main voice app
-│   │   └── ws-signer.ts    # AWS SigV4 signing
-│   └── package.json
-│
-├── VakDeepGram/            # Python backend
-│   ├── src/vakdeepgram/
-│   │   ├── main.py         # FastAPI server
-│   │   ├── config.py       # Configuration
-│   │   ├── deepgram_handler.py
-│   │   ├── business_logic.py
-│   │   └── providers/      # Square/Setmore adapters
-│   ├── requirements.txt
-│   └── Dockerfile
-│
-├── VakInfra/               # AWS CDK
-│   ├── lib/
-│   │   ├── vak-network-stack.ts
-│   │   ├── vak-app-stack.ts
-│   │   └── vak-monitoring-stack.ts
-│   └── package.json
-│
-├── docs/                   # Documentation
-│   ├── DESIGN.md
-│   └── ARCHITECTURE.md
-│
-└── .github/workflows/      # CI/CD
-```
+
+This walks you through `cdk bootstrap` and `cdk deploy`, prompting for
+confirmation before touching your AWS account. It provisions a VPC, ECR
+repo, ECS Fargate service, ALB, DynamoDB tables, and an S3 bucket — no
+existing AWS infrastructure required. Custom domains, TLS, WAF API-key
+protection, and Cognito auth are all optional add-ons layered on top; see
+[VakInfra/README.md](./VakInfra/README.md) for the full reference and
+[docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) for a guided walkthrough.
 
 ## Documentation
 
-- [Design Document](./docs/DESIGN.md) - System architecture and design decisions
-- [Architecture Guide](./docs/ARCHITECTURE.md) - Technical implementation details
-- [VakDeepGram README](./VakDeepGram/README.md) - Backend setup and API reference
-- [VakInfra README](./VakInfra/README.md) - Infrastructure deployment guide
+| Doc | What's in it |
+|---|---|
+| [docs/GETTING_STARTED.md](./docs/GETTING_STARTED.md) | Guided first run: `./vak init` → `./vak dev` → your first conversation |
+| [docs/CONFIGURATION.md](./docs/CONFIGURATION.md) | Full environment variable reference for all three components |
+| [docs/CUSTOMIZING_YOUR_AGENT.md](./docs/CUSTOMIZING_YOUR_AGENT.md) | Give the agent a business name, pick a vertical, or write your own persona |
+| [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) | Deploying to AWS, step by step |
+| [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) | Module-level technical reference, with diagrams |
+| [docs/DESIGN.md](./docs/DESIGN.md) | System design and the reasoning behind it |
+| [docs/FAQ.md](./docs/FAQ.md) | Common problems and fixes |
+| [VakClient/README.md](./VakClient/README.md) | Frontend-specific setup |
+| [VakDeepGram/README.md](./VakDeepGram/README.md) | Backend-specific setup and API reference |
+| [VakInfra/README.md](./VakInfra/README.md) | Infrastructure reference |
 
-## Configuration
+## Features
 
-### Environment Variables
+- **Real-time voice** — bidirectional audio streaming over WebSocket, with barge-in support
+- **Any business vertical** — generic by default; built-in presets for barber, salon, spa, medical, fitness, and home services (see [docs/CUSTOMIZING_YOUR_AGENT.md](./docs/CUSTOMIZING_YOUR_AGENT.md))
+- **AI agent with tools** — Strands Agents on AWS Bedrock (Claude), with callable tools for hours, services, staff, availability, and booking
+- **Two booking providers** — Square and Setmore, behind a common tool interface
+- **Phone support** — Twilio Media Streams for inbound/outbound calls, plus SMS and WhatsApp
+- **Text chat** — a REST `/chat` endpoint and a web chat UI, sharing the same agent and tools as voice
+- **One-command AWS deployment** — a single CDK app with no required external dependencies
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `DEEPGRAM_API_KEY` | Deepgram API key | Yes |
-| `DEEPGRAM_PROJECT_ID` | Deepgram project ID | Yes |
-| `DEEPGRAM_SPEAKING_PROVIDER` | TTS provider (eleven_labs/deepgram) | No |
-| `DEEPGRAM_SPEAKING_VOICE_ID` | ElevenLabs voice ID | No |
-| `AWS_REGION` | AWS region | Yes |
-| `DDB_TABLE` | DynamoDB table name | Yes |
+## Project structure
 
-See [VakDeepGram README](./VakDeepGram/README.md) for complete configuration reference.
+```
+.
+├── vak                     # CLI entry point (./vak init | dev | deploy | doctor)
+├── cli/                    # CLI implementation
+├── VakClient/              # React + Vite frontend
+├── VakDeepGram/             # FastAPI voice agent backend
+├── VakInfra/                # AWS CDK infrastructure
+├── docs/                    # Guides, tutorials, architecture
+└── .github/workflows/       # CI/CD (deploy on push to main)
+```
 
-## API Reference
+## Contributing
 
-### WebSocket Endpoints
-
-| Endpoint | Description |
-|----------|-------------|
-| `/ws` | Web client connection |
-| `/twilio` | Twilio media stream |
-
-### REST Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | Service info |
-| `/health` | GET | Health check |
-| `/chat` | POST | REST chat interface |
-
-## Agent Tools
-
-The voice agent can perform these actions:
-
-| Tool | Description |
-|------|-------------|
-| `get_appointments` | List scheduled appointments |
-| `check_availability` | Find open time slots |
-| `book_appointment` | Create new booking |
-| `get_customers` | List customer records |
-| `get_staff` | List staff members |
-| `get_services` | List available services |
-| `get_business_hours` | Get operating hours |
-
-## CI/CD
-
-GitHub Actions workflows deploy on push to `main`:
-
-- **VakDeepGram**: Build Docker image → Push to ECR → Update ECS
-- **VakInfra**: CDK diff → CDK deploy
-
-## Related Projects
-
-- [Integrin Dashboard](../integrin/) - Business management dashboard
+Issues and PRs welcome. See [AGENTS.md](./AGENTS.md) for repo conventions
+(directory layout, coding style, commit/PR expectations).
 
 ## License
 

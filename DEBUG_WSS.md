@@ -5,7 +5,7 @@
 ✅ **Working:**
 - WebSocket upgrade handshake: `HTTP/1.1 101 Switching Protocols`
 - ALB HTTP/2: Disabled
-- Certificate: Valid for `vak.tutzi.ai`
+- Certificate: Valid for `your-domain.example.com`
 - DNS: Correctly configured
 - Target Health: Healthy
 - Backend Service: Running and responding
@@ -16,7 +16,7 @@
 
 Open browser console and run:
 ```javascript
-const ws = new WebSocket('wss://vak.tutzi.ai/ws');
+const ws = new WebSocket('wss://your-domain.example.com/ws');
 ws.onopen = () => console.log('✅ Connected!');
 ws.onerror = (e) => console.error('❌ Error:', e);
 ws.onclose = (e) => console.log('🔌 Closed:', e.code, e.reason);

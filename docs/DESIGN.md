@@ -1,477 +1,123 @@
-# Vak (Voice Assistant Kit) Design Document
+# Design
 
-## Overview
+The reasoning behind Vak's architecture. For code-level structure, see
+[ARCHITECTURE.md](./ARCHITECTURE.md).
 
-Vak is a comprehensive voice assistant platform that enables businesses to deploy AI-powered voice agents for customer interactions. The system provides real-time voice interaction capabilities, integrating with business platforms like Square and Setmore for appointment booking, customer management, and business operations.
+## Problem
 
-## System Architecture
+Small service businesses (barbers, salons, clinics, gyms, repair shops)
+lose customers to unanswered calls and slow replies, but can't justify a
+full-time receptionist or a bespoke IVR build. Vak gives them an AI
+assistant that answers the phone, texts, and web chat the same way a good
+front-desk person would — and that a developer can stand up, brand, and
+deploy in an afternoon.
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              Client Layer                                    │
-│  ┌───────────────────────────────┐    ┌───────────────────────────────┐    │
-│  │         VakClient             │    │       Phone (Twilio)           │    │
-│  │     React + Vite + WS         │    │      PSTN → Media Stream       │    │
-│  └───────────────────────────────┘    └───────────────────────────────┘    │
-│                │                                     │                       │
-│                │ WebSocket                           │ WebSocket             │
-│                │ (PCM16 Audio)                       │ (mulaw Audio)         │
-│                ▼                                     ▼                       │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                      │
-                                      ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           VakDeepGram Server                                 │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                        FastAPI Application                           │   │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌────────────┐ │   │
-│  │  │  /ws        │  │  /twilio    │  │  /chat      │  │  /health   │ │   │
-│  │  │  Endpoint   │  │  Endpoint   │  │  Endpoint   │  │  Endpoint  │ │   │
-│  │  └─────────────┘  └─────────────┘  └─────────────┘  └────────────┘ │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                      │                                       │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                     Deepgram Handler                                 │   │
-│  │  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐ │   │
-│  │  │  Session Mgmt   │    │  Audio Router   │    │  Event Handler  │ │   │
-│  │  └─────────────────┘    └─────────────────┘    └─────────────────┘ │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                      │                                       │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                     Business Logic Layer                             │   │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌────────────┐ │   │
-│  │  │  Strands    │  │  Tool       │  │  Provider   │  │  Context   │ │   │
-│  │  │  Agent      │  │  Registry   │  │  Factory    │  │  Store     │ │   │
-│  │  └─────────────┘  └─────────────┘  └─────────────┘  └────────────┘ │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                      │
-                                      ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           External Services                                  │
-│  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐  ┌─────────────┐  │
-│  │   Deepgram    │  │  AWS Bedrock  │  │   Square      │  │   Setmore   │  │
-│  │   Voice API   │  │   (Claude)    │  │     API       │  │     API     │  │
-│  │               │  │               │  │               │  │             │  │
-│  │  - STT        │  │  - LLM        │  │  - Bookings   │  │ - Bookings  │  │
-│  │  - TTS        │  │  - Reasoning  │  │  - Customers  │  │ - Services  │  │
-│  │  - Agent      │  │  - Tools      │  │  - Staff      │  │ - Staff     │  │
-│  └───────────────┘  └───────────────┘  └───────────────┘  └─────────────┘  │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                      │
-                                      ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              AWS Infrastructure                              │
-│  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐  ┌─────────────┐  │
-│  │  ECS Fargate  │  │   DynamoDB    │  │      S3       │  │ CloudWatch  │  │
-│  │   Cluster     │  │   Sessions    │  │   Artifacts   │  │  Metrics    │  │
-│  └───────────────┘  └───────────────┘  └───────────────┘  └─────────────┘  │
-│  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐                   │
-│  │     ALB       │  │     WAF       │  │    Cognito    │                   │
-│  │  (HTTP/WSS)   │  │  (API Auth)   │  │  (User Auth)  │                   │
-│  └───────────────┘  └───────────────┘  └───────────────┘                   │
-└─────────────────────────────────────────────────────────────────────────────┘
+## Design goals
+
+1. **One agent, every channel.** The same booking logic and business
+   context should power a phone call, a browser conversation, an SMS
+   thread, and a WhatsApp chat — not four separate implementations.
+2. **Generic by default, specific by configuration.** The core product
+   shouldn't assume any one industry. A barber shop and a dental clinic
+   should both feel first-class, driven by settings rather than forked code
+   (see [CUSTOMIZING_YOUR_AGENT.md](./CUSTOMIZING_YOUR_AGENT.md)).
+3. **Swap booking backends without touching the agent.** Square and
+   Setmore have different APIs and different capabilities (Setmore can't
+   book directly; Square can). The agent's tool contract hides that
+   difference as much as the underlying platforms allow.
+4. **Deployable from zero.** No pre-existing AWS account setup, hosted
+   zone, or companion dashboard should be required for a first deploy —
+   see [DEPLOYMENT.md](./DEPLOYMENT.md).
+
+## System overview
+
+```mermaid
+flowchart TB
+    subgraph Channels
+        Web["Browser<br/>(voice + chat)"]
+        Phone["Phone (Twilio)"]
+        SMS["SMS / WhatsApp"]
+    end
+
+    subgraph Vak["VakDeepGram"]
+        direction TB
+        Transport["Transport layer<br/>(WebSocket / REST / webhooks)"]
+        Context["Business context resolution<br/>(who is this? which provider?)"]
+        Agent["Strands Agent<br/>+ tool registry"]
+        Transport --> Context --> Agent
+    end
+
+    subgraph External
+        Deepgram["Deepgram<br/>(STT / TTS / LLM bridge)"]
+        Bedrock["AWS Bedrock<br/>(Claude)"]
+        Square["Square"]
+        Setmore["Setmore"]
+    end
+
+    Web --> Transport
+    Phone --> Transport
+    SMS --> Transport
+    Agent <--> Deepgram
+    Agent <--> Bedrock
+    Agent --> Square
+    Agent --> Setmore
 ```
 
-## Component Overview
+Every channel converges on the same context-resolution step and the same
+agent + tool registry — a booking made over the phone is visible to a
+customer texting the same business number a minute later, because both
+paths resolve to the same business account and customer record.
 
-### VakClient (Frontend)
+## Key decisions
 
-**Purpose:** Web-based voice interface for direct user interaction
+### Multi-tenancy by phone number
 
-**Technology:**
-- React 18.2.0 with Vite 5.0.0
-- TypeScript 5.0.0
-- WebSocket for real-time communication
-- Web Audio API for audio handling
+A single VakDeepGram deployment can serve many businesses. Incoming
+connections (a call, a web session with a `businessNumber` param, an SMS)
+are resolved to a specific business account by phone number
+(`BusinessNumber` table → provider account → cached business context). This
+is what makes local test mode possible too: with no matching record and
+`OAUTH_ALLOW_LOCALHOST_NOAUTH=true`, VakDeepGram falls back to a mock
+business instead of failing, so development doesn't require seeding real
+data.
 
-**Key Features:**
-- Browser microphone capture (PCM16 @ 48kHz)
-- WebSocket audio streaming with AWS SigV4 signing
-- Real-time TTS audio playback with barge-in support
-- Message pairing (user → agent responses)
-- Connection state management
+### Provider abstraction, not provider abstraction *theater*
 
-### VakDeepGram (Backend)
+Square and Setmore aren't just different APIs — they support genuinely
+different operations (Setmore returns a booking link instead of creating
+an appointment directly). Rather than force a lowest-common-denominator
+interface that hides this, the agent's tool set and prompts differ exactly
+where the providers differ, and are identical everywhere else. See
+`providers/square/` vs `providers/setmore/` in
+[ARCHITECTURE.md](./ARCHITECTURE.md#provider-abstraction).
 
-**Purpose:** Core voice agent server handling audio processing and business logic
+### Persona as configuration, not a fork
 
-**Technology:**
-- FastAPI 0.128.0
-- Python 3.8+
-- Strands Agents 1.23.0
-- Deepgram SDK 5.3.1
+Early versions of this project were hard-coded to one vertical. Generalizing
+it meant identifying the one part of the system prompt that's actually
+industry-specific (the opening role description and one example exchange)
+and making everything else — the booking flow, tool usage rules, style
+guidance — vertical-agnostic. See
+[`providers/common/persona.py`](../VakDeepGram/providers/common/persona.py)
+and [CUSTOMIZING_YOUR_AGENT.md](./CUSTOMIZING_YOUR_AGENT.md).
 
-**Key Features:**
-- WebSocket endpoints for web and Twilio clients
-- Deepgram Voice Agent integration
-- AI agent with callable business tools
-- Session management with DynamoDB
-- Rate limiting and authentication
+### Deployable from zero
 
-### VakInfra (Infrastructure)
+VakInfra creates every resource it needs — VPC, ECR repo, ECS service, ALB,
+DynamoDB tables, S3 bucket — rather than assuming any of them already
+exist. Custom domains, TLS, WAF, and Cognito auth are additive: useful in
+production, entirely optional for a first deploy or a demo environment.
 
-**Purpose:** AWS infrastructure deployment and management
+## Trade-offs and future considerations
 
-**Technology:**
-- AWS CDK v2 (TypeScript)
-- CloudFormation
-
-**Key Resources:**
-- VPC with public/private subnets
-- ECS Fargate cluster
-- Application Load Balancer
-- DynamoDB tables
-- S3 buckets
-- WAF WebACL
-
-## Audio Flow
-
-### Web Client Flow
-```
-┌──────────────┐                    ┌──────────────┐                    ┌──────────────┐
-│  Browser     │                    │  VakDeepGram │                    │   Deepgram   │
-│  Microphone  │                    │    Server    │                    │  Voice API   │
-└──────┬───────┘                    └──────┬───────┘                    └──────┬───────┘
-       │                                   │                                   │
-       │  PCM16 @ 48kHz (binary)           │                                   │
-       │──────────────────────────────────▶│                                   │
-       │                                   │  PCM16 @ 48kHz (binary)           │
-       │                                   │──────────────────────────────────▶│
-       │                                   │                                   │
-       │                                   │         STT Processing            │
-       │                                   │◀──────────────────────────────────│
-       │                                   │                                   │
-       │                                   │         LLM + Tools               │
-       │                                   │◀─────────────────────────────────▶│
-       │                                   │                                   │
-       │                                   │         TTS Audio                 │
-       │                                   │◀──────────────────────────────────│
-       │  PCM16 @ 24kHz (base64)           │                                   │
-       │◀──────────────────────────────────│                                   │
-       │                                   │                                   │
-```
-
-### Twilio Phone Flow
-```
-┌──────────────┐                    ┌──────────────┐                    ┌──────────────┐
-│   Phone      │                    │    Twilio    │                    │  VakDeepGram │
-│   (PSTN)     │                    │    Media     │                    │    Server    │
-└──────┬───────┘                    └──────┬───────┘                    └──────┬───────┘
-       │                                   │                                   │
-       │  Analog Voice                     │                                   │
-       │──────────────────────────────────▶│                                   │
-       │                                   │  mulaw @ 8kHz (base64)            │
-       │                                   │──────────────────────────────────▶│
-       │                                   │                                   │
-       │                                   │         [Processing]              │
-       │                                   │                                   │
-       │                                   │  mulaw @ 8kHz (base64)            │
-       │                                   │◀──────────────────────────────────│
-       │  Analog Voice                     │                                   │
-       │◀──────────────────────────────────│                                   │
-```
-
-## Agent Architecture
-
-### Strands Agent Framework
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Strands Agent                               │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │                    Agent Core                            │    │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐ │    │
-│  │  │   System    │  │  Reasoning  │  │  Tool           │ │    │
-│  │  │   Prompt    │  │   (Claude)  │  │  Execution      │ │    │
-│  │  └─────────────┘  └─────────────┘  └─────────────────┘ │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                              │                                   │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │                    Tool Registry                         │    │
-│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │    │
-│  │  │ Appointments │  │  Customers   │  │    Staff     │  │    │
-│  │  └──────────────┘  └──────────────┘  └──────────────┘  │    │
-│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │    │
-│  │  │   Services   │  │ Availability │  │   Booking    │  │    │
-│  │  └──────────────┘  └──────────────┘  └──────────────┘  │    │
-│  └─────────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Available Tools
-
-| Tool | Description | Provider |
-|------|-------------|----------|
-| `get_appointments` | Retrieve scheduled appointments | Square/Setmore |
-| `get_appointment_details` | Get single appointment info | Square/Setmore |
-| `check_availability` | Check open time slots | Square/Setmore |
-| `book_appointment` | Create new booking | Square/Setmore |
-| `cancel_appointment` | Cancel existing booking | Square/Setmore |
-| `get_customers` | List customer records | Square/Setmore |
-| `get_customer_info` | Get customer details | Square/Setmore |
-| `get_staff` | List staff members | Square/Setmore |
-| `get_services` | List available services | Square/Setmore |
-| `get_business_info` | Get business details | Square/Setmore |
-| `get_business_hours` | Get operating hours | Square/Setmore |
-
-## Session Management
-
-### Session Lifecycle
-
-```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   Connect   │────▶│   Active    │────▶│   Idle      │────▶│  Cleanup    │
-│             │     │             │     │             │     │             │
-└─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
-      │                   │                   │                   │
-      │                   │                   │                   │
-      ▼                   ▼                   ▼                   ▼
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│ Create      │     │ Update      │     │ TTL         │     │ Delete      │
-│ DynamoDB    │     │ Context     │     │ Countdown   │     │ Session     │
-│ Session     │     │ Store       │     │             │     │             │
-└─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
-```
-
-### Session Data Structure
-
-```python
-{
-    "session_id": "uuid",
-    "connection_id": "uuid",
-    "business_id": "string",
-    "provider": "square|setmore",
-    "context": {
-        "customer": {...},
-        "appointments": [...],
-        "conversation_history": [...],
-    },
-    "created_at": "timestamp",
-    "updated_at": "timestamp",
-    "ttl": "timestamp",  # Auto-cleanup
-}
-```
-
-## Provider Integration
-
-### Provider Factory Pattern
-
-```python
-class ProviderFactory:
-    @staticmethod
-    def get_provider(provider_type: str, credentials: dict) -> BaseProvider:
-        if provider_type == "square":
-            return SquareProvider(credentials)
-        elif provider_type == "setmore":
-            return SetmoreProvider(credentials)
-        raise ValueError(f"Unknown provider: {provider_type}")
-
-class BaseProvider(ABC):
-    @abstractmethod
-    async def get_appointments(self, params: dict) -> list: ...
-
-    @abstractmethod
-    async def book_appointment(self, params: dict) -> dict: ...
-
-    @abstractmethod
-    async def get_availability(self, params: dict) -> list: ...
-```
-
-### Square Provider
-
-```python
-class SquareProvider(BaseProvider):
-    def __init__(self, credentials: dict):
-        self.client = Client(
-            access_token=credentials["access_token"],
-            environment=Environment.PRODUCTION,
-        )
-
-    async def get_appointments(self, params: dict) -> list:
-        result = self.client.bookings.list_bookings(
-            location_id=params["location_id"],
-            start_at_min=params.get("start_date"),
-            start_at_max=params.get("end_date"),
-        )
-        return [self._transform_booking(b) for b in result.bookings]
-```
-
-### Setmore Provider
-
-```python
-class SetmoreProvider(BaseProvider):
-    def __init__(self, credentials: dict):
-        self.api_key = credentials["api_key"]
-        self.base_url = "https://developer.setmore.com/api/v1"
-
-    async def get_appointments(self, params: dict) -> list:
-        response = await self._request(
-            "GET",
-            "/bookingapi/appointments",
-            params=params,
-        )
-        return [self._transform_appointment(a) for a in response["data"]]
-```
-
-## Security Model
-
-### Authentication Layers
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Request Flow                                │
-│                                                                  │
-│  ┌─────────────┐     ┌─────────────┐     ┌─────────────────┐   │
-│  │   Client    │────▶│    ALB      │────▶│   FastAPI       │   │
-│  │             │     │             │     │                 │   │
-│  └─────────────┘     └─────────────┘     └─────────────────┘   │
-│                            │                      │              │
-│                            ▼                      ▼              │
-│                      ┌─────────────┐     ┌─────────────────┐   │
-│                      │    WAF      │     │   Auth          │   │
-│                      │  API Key    │     │   Middleware    │   │
-│                      │  Check      │     │                 │   │
-│                      └─────────────┘     └─────────────────┘   │
-│                                                  │              │
-│                            ┌─────────────────────┼──────────┐   │
-│                            │                     │          │   │
-│                            ▼                     ▼          ▼   │
-│                      ┌──────────┐         ┌──────────┐ ┌──────┐│
-│                      │  OAuth   │         │  API     │ │Twilio││
-│                      │  Token   │         │  Key     │ │ Sig  ││
-│                      └──────────┘         └──────────┘ └──────┘│
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Authentication Methods
-
-| Method | Use Case | Implementation |
-|--------|----------|----------------|
-| WAF API Key | ALB protection | X-API-Key header checked by WAF |
-| OAuth Token | User sessions | Cognito JWT validation |
-| API Key | Service accounts | Header-based validation |
-| Twilio Signature | Webhook verification | X-Twilio-Signature validation |
-
-### Rate Limiting
-
-```python
-# Per-IP limits
-limiter = Limiter(key_func=get_remote_address)
-
-@app.websocket("/ws")
-@limiter.limit("10/minute")  # Connection limit
-async def websocket_endpoint(websocket: WebSocket):
-    # Message-level limiting
-    message_limiter = MessageLimiter(
-        max_messages=100,
-        window_seconds=60,
-    )
-```
-
-## Deployment Architecture
-
-### AWS Resources
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                          VPC                                     │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │                    Public Subnet                         │    │
-│  │  ┌─────────────┐              ┌─────────────┐           │    │
-│  │  │     ALB     │              │   NAT GW    │           │    │
-│  │  └─────────────┘              └─────────────┘           │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                              │                                   │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │                    Private Subnet                        │    │
-│  │  ┌─────────────────────────────────────────────────┐    │    │
-│  │  │              ECS Fargate Cluster                 │    │    │
-│  │  │  ┌─────────────────────────────────────────┐    │    │    │
-│  │  │  │         VakDeepGram Service             │    │    │    │
-│  │  │  │  ┌─────────┐  ┌─────────┐  ┌─────────┐ │    │    │    │
-│  │  │  │  │ Task 1  │  │ Task 2  │  │ Task N  │ │    │    │    │
-│  │  │  │  └─────────┘  └─────────┘  └─────────┘ │    │    │    │
-│  │  │  └─────────────────────────────────────────┘    │    │    │
-│  │  └─────────────────────────────────────────────────┘    │    │
-│  └─────────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### CDK Stack Structure
-
-```typescript
-// VakNetworkStack
-- VPC (2 AZs)
-- Public/Private Subnets
-- NAT Gateway
-- ECR Repository
-
-// VakAppStack
-- ECS Fargate Cluster
-- ECS Service (1 vCPU, 2GB RAM)
-- Application Load Balancer
-- WAF WebACL (optional)
-- DynamoDB Table
-- S3 Bucket
-- IAM Roles
-- CloudWatch Log Groups
-
-// VakMonitoringStack
-- CloudWatch Dashboards
-- Custom Metrics
-- Alarms
-```
-
-## Observability
-
-### Logging
-
-```python
-# Structured logging
-logger.info(
-    "Voice agent event",
-    extra={
-        "connection_id": connection_id,
-        "event_type": event_type,
-        "session_id": session_id,
-        "latency_ms": latency,
-    }
-)
-```
-
-### Metrics
-
-| Metric | Description | Type |
-|--------|-------------|------|
-| `voice_agent_connections` | Active connections | Gauge |
-| `voice_agent_latency` | Response latency | Histogram |
-| `voice_agent_tool_calls` | Tool invocations | Counter |
-| `voice_agent_errors` | Error count | Counter |
-| `audio_bytes_processed` | Audio data volume | Counter |
-
-### Tracing
-
-- OpenTelemetry integration
-- Distributed tracing across services
-- Request correlation IDs
-
-## Future Considerations
-
-### Scalability
-- Horizontal scaling via ECS service auto-scaling
-- DynamoDB on-demand capacity
-- Connection pooling for external APIs
-
-### Planned Features
-- Multi-language support
-- Voice authentication (voiceprint)
-- Conversation analytics
-- Custom agent personalities
-- Webhook integrations
-
-### Performance Optimization
-- Audio compression
-- Response caching
-- Connection reuse
-- Lazy tool loading
+- **Multiple environments**: today, one `cdk deploy` = one environment.
+  Running staging + production means deploying twice with different
+  `-c stage=` values — there's no built-in promotion pipeline. That's a
+  deliberate simplification; add one on top if your team needs it.
+- **Connecting a real Square/Setmore account** is still a manual,
+  per-business step (seeding DynamoDB records) rather than a self-serve
+  OAuth flow in this repo — that's the job of a separate business-facing
+  dashboard app, not the voice/chat runtime itself.
+- **Voice authentication, richer analytics, and additional providers**
+  (beyond Square/Setmore) are natural extensions but out of scope for the
+  base kit.
