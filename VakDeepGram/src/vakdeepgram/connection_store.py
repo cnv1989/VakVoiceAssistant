@@ -1400,24 +1400,24 @@ async def resolve_business_context(
                 # Optimized/flat format consumed by store_tools.get_services_from_context()
                 "services": [
                     {
-                        "name": "Men's Haircuts",
-                        "description": "Classic haircut.",
-                        "variations": [{"name": "Men's Haircut", "price": {"amount": 45, "currency": "USD"}}],
+                        "name": "Standard Service",
+                        "description": "Our most popular offering.",
+                        "variations": [{"name": "Standard Service", "price": {"amount": 45, "currency": "USD"}}],
                     },
                     {
-                        "name": "Regular Haircut",
-                        "description": "Full haircut.",
-                        "variations": [{"name": "Regular Haircut", "price": {"amount": 45, "currency": "USD"}}],
+                        "name": "Premium Service",
+                        "description": "A longer, more thorough appointment.",
+                        "variations": [{"name": "Premium Service", "price": {"amount": 45, "currency": "USD"}}],
                     },
                     {
-                        "name": "Beard & Shave",
-                        "description": "Beard trim / shave options.",
-                        "variations": [{"name": "Beard Trim", "price": {"amount": 25, "currency": "USD"}}],
+                        "name": "Quick Service",
+                        "description": "A shorter add-on appointment.",
+                        "variations": [{"name": "Quick Service", "price": {"amount": 25, "currency": "USD"}}],
                     },
                     {
-                        "name": "Extras & Facials",
+                        "name": "Add-on Service",
                         "description": "Additional services.",
-                        "variations": [{"name": "Facial", "price": {"amount": 35, "currency": "USD"}}],
+                        "variations": [{"name": "Add-on Service", "price": {"amount": 35, "currency": "USD"}}],
                     },
                 ],
                 "staff": [
@@ -1441,37 +1441,37 @@ async def resolve_business_context(
                     }
                     for s in [
                         {
-                            "name": "Men's Haircuts",
-                            "description": "Classic haircut.",
+                            "name": "Standard Service",
+                            "description": "Our most popular offering.",
                             "variations": [
                                 {
-                                    "name": "Men's Haircut",
+                                    "name": "Standard Service",
                                     "price": {"amount": 45, "currency": "USD"},
                                 }
                             ],
                         },
                         {
-                            "name": "Regular Haircut",
-                            "description": "Full haircut.",
+                            "name": "Premium Service",
+                            "description": "A longer, more thorough appointment.",
                             "variations": [
                                 {
-                                    "name": "Regular Haircut",
+                                    "name": "Premium Service",
                                     "price": {"amount": 45, "currency": "USD"},
                                 }
                             ],
                         },
                         {
-                            "name": "Beard & Shave",
-                            "description": "Beard trim / shave options.",
+                            "name": "Quick Service",
+                            "description": "A shorter add-on appointment.",
                             "variations": [
-                                {"name": "Beard Trim", "price": {"amount": 25, "currency": "USD"}}
+                                {"name": "Quick Service", "price": {"amount": 25, "currency": "USD"}}
                             ],
                         },
                         {
-                            "name": "Extras & Facials",
+                            "name": "Add-on Service",
                             "description": "Additional services.",
                             "variations": [
-                                {"name": "Facial", "price": {"amount": 35, "currency": "USD"}}
+                                {"name": "Add-on Service", "price": {"amount": 35, "currency": "USD"}}
                             ],
                         },
                     ]

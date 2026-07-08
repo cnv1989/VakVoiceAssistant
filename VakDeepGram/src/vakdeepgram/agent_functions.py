@@ -768,7 +768,7 @@ FUNCTION_DEFINITIONS = [
         "name": "get_services",
         "description": """Get available services and pricing. Use this when customers ask:
         - "What services do you offer?"
-        - "How much is a haircut?"
+        - "How much does [service] cost?"
         - "Do you offer [service]?" """,
         "parameters": {
             "type": "object",

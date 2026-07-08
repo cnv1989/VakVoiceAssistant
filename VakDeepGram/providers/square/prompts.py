@@ -1,9 +1,19 @@
 """
 Square-specific system prompts for voice and chat agents.
-"""
 
-CHAT_PROMPT = """#Role
-You are a grooming studio assistant focused on barbers (most important), beauticians, and pet groomers. You help with hours, location, services/prices, staff info, and booking appointments.
+The "#Role" line and "#Example Tone" example below are generated from the
+business profile (BUSINESS_NAME / BUSINESS_VERTICAL / BUSINESS_ROLE_DESCRIPTION)
+via providers/common/persona.py — see that module (and
+docs/CUSTOMIZING_YOUR_AGENT.md) to change the agent's persona or add a new
+industry vertical. Everything else below is the Square booking flow, which
+applies to any appointment-based service business.
+"""
+from vakdeepgram import config
+
+from providers.common.persona import build_example_tone, build_role_section
+
+_CHAT_TEMPLATE = """#Role
+{role_section}
 
 #Context
 The business context includes:
@@ -98,13 +108,11 @@ When greeting a customer, use the business name from the context. For example: "
 -Keep responses concise when listing multiple time options or staff names.
 -Use bullet points or numbered lists when presenting multiple options.
 
-#Example Tone
--Customer: "I need a haircut next Tuesday afternoon with Alex."
--Agent: "Got it—haircut with Alex next Tuesday afternoon. Let me check what's available. Do you have a time range in mind, or is any time that afternoon okay?"
+{example_tone}
 """
 
-VOICE_PROMPT = """#Role
-You are a grooming studio assistant focused on barbers (most important), beauticians, and pet groomers. You help with hours, location, services/prices, staff info, and booking appointments.
+_VOICE_TEMPLATE = """#Role
+{role_section}
 
 #Core Rules
 -Be warm, concise, and professional. Answer only what is asked.
@@ -198,7 +206,15 @@ You are a grooming studio assistant focused on barbers (most important), beautic
 -Confirm spelling for names when needed; for clear/common names, a quick confirmation is enough.
 -Keep responses short when listing multiple time options or staff names.
 
-#Example Tone
--Customer: "I need a haircut next Tuesday afternoon with Alex."
--Agent: "Got it—haircut with Alex next Tuesday afternoon. Let me check what's available. Do you have a time range in mind, or is any time that afternoon okay?"
+{example_tone}
 """
+
+CHAT_PROMPT = _CHAT_TEMPLATE.format(
+    role_section=build_role_section(config.settings),
+    example_tone=build_example_tone(config.settings),
+)
+
+VOICE_PROMPT = _VOICE_TEMPLATE.format(
+    role_section=build_role_section(config.settings),
+    example_tone=build_example_tone(config.settings),
+)
