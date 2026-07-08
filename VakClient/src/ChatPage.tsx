@@ -11,16 +11,17 @@ type ChatMessage = {
   timestamp: Date;
 };
 
-type EndpointType = 'local' | 'alb';
+type EndpointType = 'local' | 'deployed';
 
 const DEFAULT_LOCAL_URL = 'http://localhost:8080/chat';
-const DEFAULT_ALB_URL = 'https://vak.tutzi.ai/chat';
+const DEFAULT_DEPLOYED_URL = import.meta.env.VITE_CHAT_API_URL || '';
+const BUSINESS_NAME = import.meta.env.VITE_BUSINESS_NAME || 'Vak Assistant';
 
 export default function ChatPage() {
   const [endpointType, setEndpointType] = useState<EndpointType>('local');
   const [endpoint, setEndpoint] = useState(DEFAULT_LOCAL_URL);
-  const [businessNumber, setBusinessNumber] = useState('+15104054454');
-  const [customerNumber, setCustomerNumber] = useState('+15105796565');
+  const [businessNumber, setBusinessNumber] = useState('');
+  const [customerNumber, setCustomerNumber] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isSending, setIsSending] = useState(false);
@@ -37,14 +38,14 @@ export default function ChatPage() {
   // Check authentication status on mount
   useEffect(() => {
     // For ALB with Cognito, check if we have a session cookie
-    if (endpointType === 'alb') {
+    if (endpointType === 'deployed') {
       // Try a simple request to see if authenticated
       checkAuthStatus();
     }
   }, [endpointType]);
 
   const checkAuthStatus = async () => {
-    if (endpointType !== 'alb') return;
+    if (endpointType !== 'deployed') return;
 
     try {
       // Make a request to check auth - Cognito will redirect if not authenticated
@@ -64,7 +65,7 @@ export default function ChatPage() {
       setEndpoint(DEFAULT_LOCAL_URL);
       setIsAuthenticated(true); // Local doesn't need auth
     } else {
-      setEndpoint(DEFAULT_ALB_URL);
+      setEndpoint(DEFAULT_DEPLOYED_URL);
       setIsAuthenticated(false);
     }
   };
@@ -110,7 +111,7 @@ export default function ChatPage() {
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials: endpointType === 'alb' ? 'include' : 'omit',
+        credentials: endpointType === 'deployed' ? 'include' : 'omit',
         body: JSON.stringify(requestBody),
       });
 
@@ -194,18 +195,18 @@ export default function ChatPage() {
                       <span className="endpoint-text">Local</span>
                     </button>
                     <button
-                      className={`endpoint-btn ${endpointType === 'alb' ? 'active' : ''}`}
-                      onClick={() => handleEndpointTypeChange('alb')}
+                      className={`endpoint-btn ${endpointType === 'deployed' ? 'active' : ''}`}
+                      onClick={() => handleEndpointTypeChange('deployed')}
                     >
                       <span className="endpoint-icon">☁️</span>
-                      <span className="endpoint-text">Cloud (vak.tutzi.ai)</span>
+                      <span className="endpoint-text">Deployed</span>
                     </button>
                   </div>
                   <div className="endpoint-url">{endpoint}</div>
                 </div>
 
                 {/* Auth Button for ALB */}
-                {endpointType === 'alb' && (
+                {endpointType === 'deployed' && (
                   <div className="config-section">
                     <div className="auth-status">
                       <span className={`auth-indicator ${isAuthenticated ? 'authenticated' : 'unauthenticated'}`}>
@@ -230,7 +231,7 @@ export default function ChatPage() {
                       type="text"
                       value={businessNumber}
                       onChange={(e) => setBusinessNumber(e.target.value)}
-                      placeholder="+15104054454"
+                      placeholder="+15551234567"
                     />
                   </div>
                   <div className="config-field">
@@ -240,7 +241,7 @@ export default function ChatPage() {
                       type="text"
                       value={customerNumber}
                       onChange={(e) => setCustomerNumber(e.target.value)}
-                      placeholder="+15105796565"
+                      placeholder="+15551234568"
                     />
                   </div>
                 </div>
@@ -254,7 +255,7 @@ export default function ChatPage() {
               <div className="chat-empty-state">
                 <div className="empty-icon">💬</div>
                 <h3>Start a Conversation</h3>
-                <p>Ask Vak Assistant anything about appointments, availability, or services.</p>
+                <p>Ask {BUSINESS_NAME} anything about appointments, availability, or services.</p>
                 <div className="example-prompts">
                   <button onClick={() => setInput("What services do you offer?")}>
                     What services do you offer?
@@ -277,7 +278,7 @@ export default function ChatPage() {
                     <div className="message-content">
                       <div className="message-header">
                         <span className="message-sender">
-                          {msg.role === 'user' ? 'You' : 'Vak Assistant'}
+                          {msg.role === 'user' ? 'You' : BUSINESS_NAME}
                         </span>
                         <span className="message-time">{formatTime(msg.timestamp)}</span>
                       </div>
@@ -296,7 +297,7 @@ export default function ChatPage() {
                     <div className="message-avatar">🤖</div>
                     <div className="message-content">
                       <div className="message-header">
-                        <span className="message-sender">Vak Assistant</span>
+                        <span className="message-sender">{BUSINESS_NAME}</span>
                       </div>
                       <div className="message-text typing">
                         <span className="typing-dot"></span>

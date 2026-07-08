@@ -1,6 +1,8 @@
 import { ReactNode } from 'react';
 import './Layout.css';
 
+const BUSINESS_NAME = import.meta.env.VITE_BUSINESS_NAME || 'Vak Assistant';
+
 interface LayoutProps {
   children: ReactNode;
   currentPage: 'voice' | 'chat';
@@ -19,7 +21,7 @@ export default function Layout({ children, currentPage }: LayoutProps) {
     <div className="layout">
       <header className="layout-header">
         <div className="layout-header-content">
-          <h1 className="layout-title">🗣️ Vak Assistant</h1>
+          <h1 className="layout-title">{BUSINESS_NAME}</h1>
           <nav className="layout-nav">
             <button
               className={`nav-button ${currentPage === 'voice' ? 'active' : ''}`}

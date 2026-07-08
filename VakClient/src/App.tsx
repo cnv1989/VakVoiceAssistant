@@ -34,8 +34,6 @@ const STATUS_META: Record<MessagePair['status'], { icon: string; label: string; 
   complete: { icon: '✅', label: 'Complete', variant: 'complete' },
 };
 
-type EndpointType = 'local' | 'alb';
-
 /** Voice options for Deepgram Aura (backend applies via voiceConfigOverride). */
 const VOICE_OPTIONS: { value: string; label: string; provider: string }[] = [
   { value: '', label: 'Default (server)', provider: 'deepgram' },
@@ -45,17 +43,16 @@ const VOICE_OPTIONS: { value: string; label: string; provider: string }[] = [
   { value: 'aura-2-zeus-en', label: 'Zeus (male)', provider: 'deepgram' },
 ];
 
+const DEFAULT_WS_URL = 'ws://localhost:8080/ws';
+const BUSINESS_NAME = import.meta.env.VITE_BUSINESS_NAME || 'Vak Assistant';
+
 function App() {
-  // Default to Deepgram server WebSocket for local development
-  // For ALB, use: wss://vak.tutzi.ai/ws
-  const defaultWsUrl = import.meta.env.VITE_WS_URL || `ws://localhost:8080/ws`;
+  const defaultWsUrl = import.meta.env.VITE_WS_URL || DEFAULT_WS_URL;
   const [wsUrl, setWsUrl] = useState<string>(defaultWsUrl);
-  const [endpointType, setEndpointType] = useState<EndpointType>(
-    defaultWsUrl.includes('localhost') ? 'local' : 'alb'
-  );
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [connected, setConnected] = useState(false);
   const [systemMessages, setSystemMessages] = useState<SystemMessageEntry[]>([]);
-  const [businessNumber, setBusinessNumber] = useState('+15104054454');
+  const [businessNumber, setBusinessNumber] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
   const [selectedVoiceId, setSelectedVoiceId] = useState<string>(''); // '' = use server default; else e.g. aura-2-thalia-en
   const [isRecording, setIsRecording] = useState(false);
@@ -1350,231 +1347,111 @@ function App() {
     }
   };
 
+  const statusVariant = connectionStatus === 'Connected' ? 'connected' : connectionStatus === 'Error' ? 'error' : 'disconnected';
+  const statusLabel = connectionStatus === 'Connected' ? 'Connected' : connectionStatus === 'Error' ? 'Connection error' : 'Disconnected';
+
   return (
     <Layout currentPage="voice">
       <div className="app">
         <div className="container">
 
         <div className="connection-section">
-          {/* Endpoint Type Selection */}
-          <div style={{ 
-            marginBottom: '15px',
-            display: 'flex',
-            gap: '10px',
-            flexWrap: 'wrap',
-            alignItems: 'center'
-          }}>
-            <label style={{ fontSize: '14px', fontWeight: '500', color: '#374151' }}>
-              Endpoint:
-            </label>
-            <button
-              onClick={() => {
-                setEndpointType('local');
-                setWsUrl('ws://localhost:8080/ws');
-              }}
-              disabled={connected}
-              style={{
-                padding: '8px 16px',
-                fontSize: '14px',
-                borderRadius: '6px',
-                border: '1px solid #d1d5db',
-                backgroundColor: endpointType === 'local' ? '#3b82f6' : '#ffffff',
-                color: endpointType === 'local' ? '#ffffff' : '#374151',
-                cursor: connected ? 'not-allowed' : 'pointer',
-                opacity: connected ? 0.6 : 1,
-                transition: 'all 0.2s'
-              }}
-            >
-              🏠 Local Deepgram (localhost:8080)
-            </button>
-            <button
-              onClick={() => {
-                setEndpointType('alb');
-                setWsUrl('wss://vak.tutzi.ai/ws');
-              }}
-              disabled={connected}
-              style={{
-                padding: '8px 16px',
-                fontSize: '14px',
-                borderRadius: '6px',
-                border: '1px solid #d1d5db',
-                backgroundColor: endpointType === 'alb' ? '#3b82f6' : '#ffffff',
-                color: endpointType === 'alb' ? '#ffffff' : '#374151',
-                cursor: connected ? 'not-allowed' : 'pointer',
-                opacity: connected ? 0.6 : 1,
-                transition: 'all 0.2s'
-              }}
-            >
-              ☁️ vak.tutzi.ai
-            </button>
-          </div>
-
-          {/* Local Endpoint Info */}
-          {endpointType === 'local' && (
-            <div style={{ 
-              marginBottom: '15px',
-              fontSize: '12px',
-              color: '#6b7280',
-              fontFamily: 'monospace',
-              padding: '6px',
-              backgroundColor: '#f9fafb',
-              borderRadius: '4px',
-              border: '1px solid #e5e7eb'
-            }}>
-              📡 Will connect to: {wsUrl}
+          <div className="connection-primary">
+            <div className={`status-badge status-badge--${statusVariant}`}>
+              <span className="status-dot" aria-hidden="true" />
+              {statusLabel}
             </div>
-          )}
-
-          {endpointType === 'alb' && (
-            <div style={{ 
-              marginBottom: '15px',
-              fontSize: '12px',
-              color: '#6b7280',
-              fontFamily: 'monospace',
-              padding: '6px',
-              backgroundColor: '#f9fafb',
-              borderRadius: '4px',
-              border: '1px solid #e5e7eb'
-            }}>
-              📡 Will connect to: wss://vak.tutzi.ai/ws
-            </div>
-          )}
-
-          {/* Connection Button */}
-          <div className="input-group">
             {!connected ? (
-              <button 
-                onClick={connectWebSocket} 
-                className="btn btn-primary"
-                style={{
-                  opacity: 1,
-                  cursor: 'pointer'
-                }}
-              >
-                🔌 Connect
+              <button onClick={connectWebSocket} className="btn btn-primary btn-lg">
+                Connect
               </button>
             ) : (
-              <button onClick={disconnectWebSocket} className="btn btn-danger">
-                🚫 Disconnect
+              <button onClick={disconnectWebSocket} className="btn btn-danger btn-lg">
+                Disconnect
               </button>
             )}
-            <button
-              onClick={startCognitoAuth}
-              className="btn btn-secondary"
-              disabled={!getAuthUrl()}
-              style={{
-                marginLeft: '10px',
-                opacity: getAuthUrl() ? 1 : 0.5,
-                cursor: getAuthUrl() ? 'pointer' : 'not-allowed'
-              }}
-            >
-              🔐 Authenticate
-            </button>
           </div>
-          <div style={{ marginTop: '12px' }}>
-            <label style={{ 
-              display: 'block', 
-              fontSize: '14px', 
-              fontWeight: '500', 
-              color: '#374151',
-              marginBottom: '5px'
-            }}>
-              Business Number (for testing):
-            </label>
-            <input
-              type="text"
-              placeholder="+15551234567"
-              value={businessNumber}
-              onChange={(e) => setBusinessNumber(e.target.value)}
-              disabled={connected}
-              style={{
-                width: '100%',
-                padding: '10px',
-                fontSize: '14px',
-                borderRadius: '6px',
-                border: '1px solid #d1d5db',
-                backgroundColor: connected ? '#f3f4f6' : '#ffffff'
-              }}
-            />
-          </div>
-          <div style={{ marginTop: '12px' }}>
-            <label style={{ 
-              display: 'block', 
-              fontSize: '14px', 
-              fontWeight: '500', 
-              color: '#374151',
-              marginBottom: '5px'
-            }}>
-              Customer Phone (for booking):
-            </label>
-            <input
-              type="text"
-              placeholder="+15551234567"
-              value={customerPhone}
-              onChange={(e) => setCustomerPhone(e.target.value)}
-              disabled={connected}
-              style={{
-                width: '100%',
-                padding: '10px',
-                fontSize: '14px',
-                borderRadius: '6px',
-                border: '1px solid #d1d5db',
-                backgroundColor: connected ? '#f3f4f6' : '#ffffff'
-              }}
-            />
-          </div>
-          <div style={{ marginTop: '12px' }}>
-            <label style={{ 
-              display: 'block', 
-              fontSize: '14px', 
-              fontWeight: '500', 
-              color: '#374151',
-              marginBottom: '5px'
-            }}>
-              Voice:
-            </label>
-            <select
-              value={selectedVoiceId}
-              onChange={(e) => setSelectedVoiceId(e.target.value)}
-              disabled={connected}
-              style={{
-                width: '100%',
-                padding: '10px',
-                fontSize: '14px',
-                borderRadius: '6px',
-                border: '1px solid #d1d5db',
-                backgroundColor: connected ? '#f3f4f6' : '#ffffff',
-                cursor: connected ? 'not-allowed' : 'pointer'
-              }}
-            >
-              {VOICE_OPTIONS.map((opt) => (
-                <option key={opt.value || 'default'} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-            <span style={{ fontSize: '12px', color: '#6b7280', marginTop: '4px', display: 'block' }}>
-              Applied when connecting (voice switching via voiceConfigOverride).
-            </span>
-          </div>
-          <div className="status">
-            Status:{' '}
-            <span className={connected ? 'status-connected' : 'status-disconnected'}>
-              {connectionStatus === 'Connected'
-                ? '🟢 Connected'
-                : connectionStatus === 'Error'
-                ? '⚠️ Error'
-                : '🔴 Disconnected'}
-            </span>
-          </div>
+
+          <button
+            type="button"
+            className="advanced-toggle"
+            onClick={() => setShowAdvanced((prev) => !prev)}
+            aria-expanded={showAdvanced}
+          >
+            <span className={`advanced-toggle-caret ${showAdvanced ? 'is-open' : ''}`} aria-hidden="true">›</span>
+            Advanced settings
+          </button>
+
+          {showAdvanced && (
+            <div className="advanced-panel">
+              <div className="field">
+                <label htmlFor="ws-url">Backend WebSocket URL</label>
+                <input
+                  id="ws-url"
+                  type="text"
+                  className="text-input"
+                  value={wsUrl}
+                  onChange={(e) => setWsUrl(e.target.value)}
+                  disabled={connected}
+                  placeholder={DEFAULT_WS_URL}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="business-number">Business number (for testing)</label>
+                <input
+                  id="business-number"
+                  type="text"
+                  className="text-input"
+                  placeholder="+15551234567"
+                  value={businessNumber}
+                  onChange={(e) => setBusinessNumber(e.target.value)}
+                  disabled={connected}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="customer-phone">Customer phone (for booking)</label>
+                <input
+                  id="customer-phone"
+                  type="text"
+                  className="text-input"
+                  placeholder="+15551234567"
+                  value={customerPhone}
+                  onChange={(e) => setCustomerPhone(e.target.value)}
+                  disabled={connected}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="voice-select">Voice</label>
+                <select
+                  id="voice-select"
+                  className="tts-select"
+                  value={selectedVoiceId}
+                  onChange={(e) => setSelectedVoiceId(e.target.value)}
+                  disabled={connected}
+                >
+                  {VOICE_OPTIONS.map((opt) => (
+                    <option key={opt.value || 'default'} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+                <span className="field-hint">Applied when connecting.</span>
+              </div>
+              {getAuthUrl() && (
+                <button onClick={startCognitoAuth} className="btn btn-secondary">
+                  Authenticate
+                </button>
+              )}
+              <p className="field-hint">
+                Will connect to: <code>{wsUrl}</code>
+              </p>
+            </div>
+          )}
         </div>
 
         <div className="conversation-section">
           <div className="conversation-header">
-            <div className="conversation-title">
-              <span className="conversation-icon" aria-hidden="true">💬</span>
-              Conversation
-            </div>
+            <div className="conversation-title">Conversation</div>
             <div className={`conversation-pill ${connected ? 'is-live' : 'is-idle'}`}>
               {connectionStatus === 'Error' ? 'Error' : connected ? 'Live' : 'Idle'}
             </div>
@@ -1582,7 +1459,6 @@ function App() {
           <div className="conversation-content">
             {messagePairs.length === 0 && systemMessages.length === 0 && (
               <div className="conversation-placeholder">
-                <span role="img" aria-hidden="true">👋</span>
                 <p>Connect and start a conversation to see messages here.</p>
               </div>
             )}
@@ -1608,7 +1484,7 @@ function App() {
 
                   {pair.aiReply && (
                     <div className="message-bubble ai">
-                      <div className="bubble-label">Vak</div>
+                      <div className="bubble-label">{BUSINESS_NAME}</div>
                       <p>{pair.aiReply}</p>
                     </div>
                   )}
@@ -1636,28 +1512,10 @@ function App() {
           </div>
         </div>
 
-        {/* Live Transcription (for current recording) */}
         {isRecording && currentTranscript && (
-          <div className="transcription-section" style={{ 
-            marginTop: '20px', 
-            padding: '15px', 
-            backgroundColor: '#fff3cd', 
-            borderRadius: '8px',
-            border: '1px solid #ddd'
-          }}>
-            <div style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '10px', color: '#856404' }}>
-              🎙️ Live Transcription
-            </div>
-            <div style={{ 
-              padding: '8px', 
-              backgroundColor: '#ffffff', 
-              borderRadius: '4px',
-              fontSize: '14px',
-              color: '#856404',
-              fontStyle: 'italic'
-            }}>
-              {currentTranscript}
-            </div>
+          <div className="transcription-section">
+            <div className="transcription-title">Live transcription</div>
+            <div className="transcription-text">{currentTranscript}</div>
           </div>
         )}
 
@@ -1666,194 +1524,73 @@ function App() {
             <button
               onClick={startRecording}
               disabled={!connected || isAgentSpeaking}
-              className="btn btn-record"
+              className="btn btn-record btn-lg"
             >
-              🎙️ Start Conversation
+              Start Conversation
             </button>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '15px', width: '100%' }}>
-              <button
-                onClick={stopRecording}
-                className="btn btn-stop"
-              >
-                ⏹️ End Conversation
+            <div className="recording-panel">
+              <button onClick={stopRecording} className="btn btn-stop btn-lg">
+                End Conversation
               </button>
-              
-              {/* Audio Level Visualizer */}
-              <div style={{ 
-                width: '100%', 
-                maxWidth: '400px',
-                padding: '15px',
-                backgroundColor: '#f9fafb',
-                borderRadius: '8px',
-                border: '1px solid #e5e7eb'
-              }}>
-                <div style={{ 
-                  fontSize: '12px', 
-                  fontWeight: '600', 
-                  color: '#666', 
-                  marginBottom: '8px',
-                  textAlign: 'center'
-                }}>
-                  🎤 Audio Level
-                </div>
-                
-                {/* Audio Level Bar */}
-                <div style={{
-                  width: '100%',
-                  height: '30px',
-                  backgroundColor: '#e5e7eb',
-                  borderRadius: '15px',
-                  overflow: 'hidden',
-                  position: 'relative',
-                  border: '2px solid #d1d5db'
-                }}>
+
+              <div className="audio-meter">
+                <div className="audio-meter-label">Audio level</div>
+                <div className="meter-bar">
                   <div
-                    style={{
-                      height: '100%',
-                      width: `${audioLevel}%`,
-                      background: audioLevel > 70 
-                        ? 'linear-gradient(90deg, #10b981 0%, #059669 50%, #dc2626 100%)'
-                        : audioLevel > 30
-                        ? 'linear-gradient(90deg, #10b981 0%, #059669 100%)'
-                        : 'linear-gradient(90deg, #6b7280 0%, #9ca3af 100%)',
-                      transition: 'width 0.1s ease-out, background 0.2s',
-                      borderRadius: '15px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'flex-end',
-                      paddingRight: '8px',
-                      boxShadow: audioLevel > 10 ? '0 0 10px rgba(16, 185, 129, 0.3)' : 'none'
-                    }}
+                    className={`meter-bar-fill ${audioLevel > 70 ? 'is-hot' : audioLevel > 30 ? 'is-active' : 'is-quiet'}`}
+                    style={{ width: `${audioLevel}%` }}
                   >
-                    {audioLevel > 5 && (
-                      <span style={{ 
-                        color: 'white', 
-                        fontSize: '10px', 
-                        fontWeight: 'bold',
-                        textShadow: '0 1px 2px rgba(0,0,0,0.3)'
-                      }}>
-                        {Math.round(audioLevel)}%
-                      </span>
-                    )}
+                    {audioLevel > 5 && <span className="meter-bar-value">{Math.round(audioLevel)}%</span>}
                   </div>
                 </div>
-                
-                {/* Waveform Visualization */}
-                <div style={{
-                  marginTop: '10px',
-                  height: '40px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '2px'
-                }}>
+
+                <div className="meter-bars">
                   {Array.from({ length: 20 }).map((_, i) => {
                     const barHeight = Math.max(4, (audioLevel / 100) * 40 * (1 - Math.abs(i - 10) / 10));
                     return (
                       <div
                         key={i}
-                        style={{
-                          width: '4px',
-                          height: `${barHeight}px`,
-                          backgroundColor: audioLevel > 5 
-                            ? (i < 10 ? '#10b981' : '#059669')
-                            : '#d1d5db',
-                          borderRadius: '2px',
-                          transition: 'height 0.1s ease-out, background-color 0.2s',
-                          boxShadow: audioLevel > 5 ? '0 0 4px rgba(16, 185, 129, 0.4)' : 'none'
-                        }}
+                        className={`meter-bar-item ${audioLevel > 5 ? (i < 10 ? 'is-loud' : 'is-active') : ''}`}
+                        style={{ height: `${barHeight}px` }}
                       />
                     );
                   })}
                 </div>
-                
-                {/* Status Indicator */}
-                <div style={{ 
-                  fontSize: '12px', 
-                  color: '#666', 
-                  marginTop: '8px',
-                  textAlign: 'center'
-                }}>
-                  {audioLevel < 1 && <span style={{ color: '#9ca3af' }}>🔇 No audio detected</span>}
-                  {audioLevel >= 1 && audioLevel < 10 && <span style={{ color: '#6b7280' }}>🔉 Low audio</span>}
-                  {audioLevel >= 10 && audioLevel < 30 && <span style={{ color: '#10b981' }}>🔊 Good audio</span>}
-                  {audioLevel >= 30 && <span style={{ color: '#059669' }}>🔊 Strong audio</span>}
+
+                <div className="audio-meter-hint">
+                  {audioLevel < 1 && <span className="hint-quiet">No audio detected</span>}
+                  {audioLevel >= 1 && audioLevel < 10 && <span className="hint-low">Low audio</span>}
+                  {audioLevel >= 10 && audioLevel < 30 && <span className="hint-good">Good audio</span>}
+                  {audioLevel >= 30 && <span className="hint-strong">Strong audio</span>}
                 </div>
               </div>
-              
-              <div style={{ fontSize: '14px', color: '#666' }}>
-                {isAgentSpeaking && <span style={{ color: '#4CAF50' }}>🔊 Agent Speaking...</span>}
-                {isProcessing && !isAgentSpeaking && <span style={{ color: '#FF9800' }}>⏳ Processing...</span>}
-                {!isProcessing && !isAgentSpeaking && <span style={{ color: '#2196F3' }}>👂 Listening...</span>}
+
+              <div className="agent-state">
+                {isAgentSpeaking && <span className="state-speaking">Agent speaking…</span>}
+                {isProcessing && !isAgentSpeaking && <span className="state-processing">Processing…</span>}
+                {!isProcessing && !isAgentSpeaking && <span className="state-listening">Listening…</span>}
               </div>
             </div>
           )}
 
-          {/* Recording Playback Controls */}
           {recordedAudioUrl && !isRecording && (
-            <div style={{
-              marginTop: '20px',
-              padding: '15px',
-              backgroundColor: '#f9fafb',
-              borderRadius: '8px',
-              border: '1px solid #e5e7eb',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '10px',
-              alignItems: 'center'
-            }}>
-              <div style={{
-                fontSize: '14px',
-                fontWeight: '600',
-                color: '#666',
-                marginBottom: '5px'
-              }}>
-                🎙️ Recording Available
-              </div>
-              <div style={{
-                display: 'flex',
-                gap: '10px',
-                flexWrap: 'wrap',
-                justifyContent: 'center'
-              }}>
+            <div className="recording-playback">
+              <div className="recording-playback-title">Recording available</div>
+              <div className="recording-playback-actions">
                 <button
                   onClick={playRecordedAudio}
-                  className="btn"
-                  style={{
-                    backgroundColor: isPlayingRecording ? '#ef4444' : '#10b981',
-                    color: 'white',
-                    padding: '10px 20px',
-                    fontSize: '14px'
-                  }}
+                  className={`btn ${isPlayingRecording ? 'btn-pause' : 'btn-play'}`}
                 >
-                  {isPlayingRecording ? '⏸️ Pause' : '▶️ Play Recording'}
+                  {isPlayingRecording ? 'Pause' : 'Play Recording'}
                 </button>
                 {isPlayingRecording && (
-                  <button
-                    onClick={stopRecordedAudio}
-                    className="btn"
-                    style={{
-                      backgroundColor: '#6b7280',
-                      color: 'white',
-                      padding: '10px 20px',
-                      fontSize: '14px'
-                    }}
-                  >
-                    ⏹️ Stop
+                  <button onClick={stopRecordedAudio} className="btn btn-neutral">
+                    Stop
                   </button>
                 )}
-                <button
-                  onClick={downloadRecordedAudio}
-                  className="btn"
-                  style={{
-                    backgroundColor: '#3b82f6',
-                    color: 'white',
-                    padding: '10px 20px',
-                    fontSize: '14px'
-                  }}
-                >
-                  💾 Download
+                <button onClick={downloadRecordedAudio} className="btn btn-download">
+                  Download
                 </button>
               </div>
             </div>

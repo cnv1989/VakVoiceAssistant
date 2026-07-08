@@ -1,179 +1,88 @@
-# Vak Client
+# VakClient
 
-React + Vite client application for the Vak Voice Assistant.
+React + Vite web client for the Vak voice assistant — a voice page and a
+text chat page, both talking to the same VakDeepGram backend.
+
+Prefer the guided setup? Run `./vak init` and `./vak dev` from the repo
+root instead of the steps below — see [../docs/GETTING_STARTED.md](../docs/GETTING_STARTED.md).
 
 ## Features
 
-- WebSocket connection to VakDeepGram server
-- Text message input and sending
-- Real-time bidirectional audio streaming (PCM16, 48kHz)
-- Real-time display of LLM streaming tokens
-- PCM audio playback using Web Audio API (24kHz TTS output)
-- Connection status indicator
-- Live transcription display
-- Message pair tracking (user input + AI response)
+- WebSocket connection to VakDeepGram, with real-time bidirectional PCM16
+  audio streaming (48kHz capture, 24kHz TTS playback)
+- Live transcript display and barge-in (interrupting the agent mid-reply)
+- A collapsible "Advanced settings" panel for the WebSocket URL, test
+  business/customer numbers, and voice selection
+- A separate text chat page hitting the same backend's REST `/chat` endpoint
 
 ## Setup
 
-1. Install dependencies:
 ```bash
 npm install
-```
-
-2. Start development server:
-```bash
+cp .env.example .env   # then edit VITE_WS_URL / VITE_BUSINESS_NAME as needed
 npm run dev
 ```
 
-3. Build for production:
+The dev server runs on [http://localhost:5173](http://localhost:5173) by
+default (Vite's standard port).
+
 ```bash
-npm run build
+npm run build      # production build to dist/
+npm run preview    # preview the production build locally
 ```
 
-4. Preview production build:
-```bash
-npm run preview
-```
+## Environment variables
 
-## Usage
+See `.env.example`. Full reference: [../docs/CONFIGURATION.md](../docs/CONFIGURATION.md#vakclient-vakclientenv).
 
-### Local Development
+| Variable | Default | Description |
+|---|---|---|
+| `VITE_WS_URL` | `ws://localhost:8080/ws` | Backend WebSocket URL for the voice page |
+| `VITE_CHAT_API_URL` | — | Backend URL for the chat page's "Deployed" option |
+| `VITE_BUSINESS_NAME` | `Vak Assistant` | Shown in the header and chat page |
 
-1. Start the VakDeepGram server on `localhost:8080`
-2. The client defaults to `ws://localhost:8080/ws` for local development
-3. Click "Connect" to establish WebSocket connection
-4. **Text Mode**: Type a message and click "Send" or press Enter
-5. **Voice Mode**: Click "🎙️ Start Conversation" to start recording, then click "⏹️ End Conversation" when done
+For a deployed backend, use the `WebSocketUrl` output from `cdk deploy`
+(see [../VakInfra/README.md](../VakInfra/README.md)) — no API Gateway
+involved, VakDeepGram serves `/ws` directly behind an ALB.
 
-### Production/AWS
-
-1. Set `VITE_WS_URL` environment variable or update the WebSocket URL in the connection field
-2. Enter the WebSocket URL (from CDK stack output) in the connection field
-3. Click "Connect" to establish WebSocket connection
-4. Use text or voice modes as described above
-
-### Environment Variables
-
-Create a `.env` file (see `.env.example`):
-- `VITE_WS_URL`: WebSocket URL (default: `ws://localhost:8080/ws`)
-
-## WebSocket URL Format
-
-The WebSocket URL should be in the format:
-```
-wss://{api-id}.execute-api.{region}.amazonaws.com/prod
-```
-
-Get this from the CDK stack output `WebSocketUrl`.
-
-## Message Protocol
+## WebSocket protocol
 
 ### Client → Server
 
-**Text Message:**
 ```json
-{
-  "action": "message",
-  "text": "Hello, how are you?"
-}
+{ "action": "start-recording" }
+{ "action": "stop-recording" }
 ```
-
-**Audio:**
-Binary PCM16 audio chunks (48kHz) sent directly via WebSocket.
+Plus binary PCM16 audio frames (48kHz, mono) sent directly over the socket
+while recording.
 
 ### Server → Client
 
-**LLM Token:**
-```json
-{
-  "t": "llm-token",
-  "token": "Hello"
-}
-```
+| `type` | Payload | Meaning |
+|---|---|---|
+| `welcome` | `message` | Sent on connect |
+| `message-id` | `messageId` | New conversational turn started |
+| `partial-transcript` | `text`, `messageId` | Live STT (not yet final) |
+| `transcript` | `text`, `messageId` | Final STT for this turn |
+| `llm-token` | `token`, `messageId` | Streaming LLM output |
+| `tts` | `audio` (base64 PCM16), `messageId` | TTS audio chunk, 24kHz |
+| `ready-to-listen` | `messageId` | Agent finished responding |
+| `user-started-speaking` | — | Triggers client-side barge-in (stops playback) |
+| `agent-started-speaking` | — | Agent has started producing audio |
+| `error` | `message` | Something went wrong |
 
-**TTS Audio:**
-```json
-{
-  "t": "tts",
-  "audio": "base64-encoded-pcm16-data",
-  "messageId": "msg_123",
-  "connectionId": "ws-abc123"
-}
-```
+Each conversational turn gets a server-generated `messageId`; the client
+pairs the user's transcript with the agent's reply using it.
 
-**Transcript:**
-```json
-{
-  "t": "transcript",
-  "text": "Hello world",
-  "messageId": "msg_123",
-  "role": "user"
-}
-```
+## Browser requirements
 
-**Partial Transcript:**
-```json
-{
-  "t": "partial-transcript",
-  "text": "Hello",
-  "messageId": "msg_123"
-}
-```
+- WebSocket and Web Audio API support (Chrome, Firefox, Edge, Safari)
+- Microphone permission for the voice page
+- Note: microphone access requires `https://` or `http://localhost` — it
+  won't work over plain HTTP on a non-localhost origin
 
-**Message ID:**
-```json
-{
-  "t": "message-id",
-  "messageId": "msg_123",
-  "connectionId": "ws-abc123"
-}
-```
+## Backend compatibility
 
-**Deepgram Ready:**
-```json
-{
-  "t": "deepgram-ready",
-  "connectionId": "ws-abc123"
-}
-```
-
-**Ready to Listen:**
-```json
-{
-  "t": "ready-to-listen",
-  "messageId": "msg_123"
-}
-```
-
-**Error:**
-```json
-{
-  "t": "error",
-  "message": "Error description"
-}
-```
-
-## Audio Format
-
-- **Input**: PCM16, 48kHz, mono
-- **Output**: PCM16, 24kHz, mono (from Deepgram Voice Agents)
-
-## Browser Requirements
-
-- Modern browser with WebSocket support
-- Web Audio API support (Chrome, Firefox, Edge, Safari)
-- Microphone permissions
-- ScriptProcessorNode support (for PCM16 audio capture)
-
-## Development
-
-The app runs on `http://localhost:3001` by default. Hot module replacement is enabled for fast development.
-
-## Backend Compatibility
-
-This client is designed to work with **VakDeepGram** server, which uses Deepgram Voice Agents for:
-- Speech-to-text (STT)
-- Large language model (LLM) processing
-- Text-to-speech (TTS)
-
-The server accepts 48kHz input and returns 24kHz TTS audio.
+Built against **VakDeepGram**, which uses the Deepgram Voice Agent API for
+STT, LLM bridging, and TTS. The server accepts 48kHz PCM16 input and
+returns 24kHz PCM16 TTS audio.
