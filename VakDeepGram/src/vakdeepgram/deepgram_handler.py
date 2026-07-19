@@ -114,26 +114,23 @@ class DeepgramManager:
         if config.settings.deepgram_listening_version:
             listen_provider["version"] = config.settings.deepgram_listening_version
 
-        # Build think provider
-        if config.settings.deepgram_thinking_provider == "open_ai":
-            think_provider = {
-                "type": "open_ai",
-                "model": config.settings.deepgram_thinking_model or "gpt-4o-mini",
-            }
-        elif config.settings.deepgram_thinking_provider == "google":
-            think_provider = {
-                "type": "google",
-                "model": config.settings.deepgram_thinking_model or "gemini-2.5-flash",
-            }
-        else:
-            logger.warning(
-                f"Unknown thinking provider '{config.settings.deepgram_thinking_provider}', "
-                "defaulting to OpenAI"
-            )
-            think_provider = {
-                "type": "open_ai",
-                "model": config.settings.deepgram_thinking_model or "gpt-4o-mini",
-            }
+        # Build think provider. Deepgram's Voice Agent API accepts several
+        # provider types here (open_ai, anthropic, google, amazon_bedrock,
+        # groq, ...) — pass whatever DEEPGRAM_THINKING_PROVIDER is set to
+        # straight through rather than hardcoding an allow-list, so new
+        # providers Deepgram adds work without a code change. Known defaults
+        # below just pick a sensible model when none is configured.
+        thinking_provider_type = config.settings.deepgram_thinking_provider or "open_ai"
+        default_thinking_models = {
+            "open_ai": "gpt-4o-mini",
+            "google": "gemini-2.5-flash",
+            "anthropic": "claude-3-5-haiku-latest",
+        }
+        think_provider = {
+            "type": thinking_provider_type,
+            "model": config.settings.deepgram_thinking_model
+            or default_thinking_models.get(thinking_provider_type, "gpt-4o-mini"),
+        }
 
         # Build think config with provider-specific functions and prompt
         function_definitions = get_function_definitions_for_provider(provider)
@@ -150,7 +147,7 @@ class DeepgramManager:
 
         # Build speak provider - use voice config from business context or fall back to defaults
         # Keys are snake_case: voice_provider, voice_id, voice_model_id
-        voice_provider = voice_config.get("voice_provider") or config.settings.deepgram_speaking_provider
+        voice_provider = voice_config.get("voice_provider") or config.settings.deepgram_speaking_provider or "deepgram"
 
         if voice_provider == "eleven_labs":
             speak_provider = {
@@ -158,11 +155,24 @@ class DeepgramManager:
                 "model_id": voice_config.get("voice_model_id") or config.settings.deepgram_speaking_model_id or "eleven_flash_v2_5",
                 "voice_id": voice_config.get("voice_id") or config.settings.deepgram_speaking_voice_id or "0mevMNFMwHxBOUTpeMGN",
             }
-        else:
+        elif voice_provider == "deepgram":
             speak_provider = {
                 "type": "deepgram",
                 "model": voice_config.get("voice_id") or config.settings.deepgram_speaking_model or "aura-2-thalia-en",
             }
+        else:
+            # Generic passthrough for any other TTS provider Deepgram's Voice
+            # Agent API supports (e.g. cartesia, open_ai) — see
+            # docs/CONFIGURATION.md. Only include fields that are actually set.
+            speak_provider = {"type": voice_provider}
+            model_id_value = voice_config.get("voice_model_id") or config.settings.deepgram_speaking_model_id
+            if model_id_value:
+                speak_provider["model_id"] = model_id_value
+            elif config.settings.deepgram_speaking_model:
+                speak_provider["model"] = config.settings.deepgram_speaking_model
+            voice_id_value = voice_config.get("voice_id") or config.settings.deepgram_speaking_voice_id
+            if voice_id_value:
+                speak_provider["voice_id"] = voice_id_value
 
         # Log voice config usage
         if voice_config:

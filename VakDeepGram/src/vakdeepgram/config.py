@@ -97,6 +97,14 @@ class Settings(BaseSettings):
     recordings_bucket: Optional[str] = None  # S3 bucket name (e.g. vak-artifacts-{account}-{region}-prod)
     recordings_key_prefix: str = "call-sessions"  # S3 key prefix inside the bucket
 
+    # LLM Provider (Strands Agent — powers /chat and voice function-calling)
+    # "bedrock" (default, AWS Bedrock/Claude), "anthropic" (direct Anthropic API),
+    # or "openai" (direct OpenAI API). See vakdeepgram/llm.py.
+    llm_provider: str = "bedrock"
+    llm_model_id: Optional[str] = None  # Overrides the provider's default model ID
+    anthropic_api_key: Optional[str] = None  # Required if llm_provider=anthropic
+    openai_api_key: Optional[str] = None  # Required if llm_provider=openai
+
     bedrock_model_id: str = "us.anthropic.claude-opus-4-6-v1"
     bedrock_max_tokens: int = 8192  # Maximum tokens for Claude models - increased for tool usage
     bedrock_temperature: float = 0.4
@@ -116,11 +124,19 @@ class Settings(BaseSettings):
     deepgram_agent_language: str = "en"
     deepgram_listening_model: str = "flux-general-en"
     deepgram_listening_version: str = "v2"
+    # LLM bridge used *inside* the Deepgram Voice Agent (STT->LLM->TTS in one
+    # WebSocket). Deepgram accepts several provider types here — "open_ai",
+    # "anthropic", "google", "amazon_bedrock", etc. — passed straight through,
+    # so any value Deepgram supports works without a code change. This is
+    # independent of LLM_PROVIDER, which is used for the /chat endpoint's
+    # Strands agent.
     deepgram_thinking_provider: str = "google"
     deepgram_thinking_model: str = "gemini-2.0-flash"
-    
+
     # Speaking/TTS Configuration
-    # Set to "eleven_labs" to use ElevenLabs, "deepgram" (or empty) for Deepgram TTS
+    # "eleven_labs" or "deepgram" have first-class field mapping below; any
+    # other value Deepgram's Voice Agent API supports (e.g. "cartesia") is
+    # passed through generically using deepgram_speaking_model_id/_model/_voice_id.
     deepgram_speaking_provider: str = "eleven_labs"
     deepgram_speaking_model: Optional[str] = None  # Used for Deepgram TTS
     deepgram_speaking_model_id: Optional[str] = "eleven_flash_v2_5"  # Used for ElevenLabs (low latency)

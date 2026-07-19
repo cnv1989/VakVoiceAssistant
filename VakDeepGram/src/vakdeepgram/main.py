@@ -21,8 +21,8 @@ from slowapi.errors import RateLimitExceeded
 import uvicorn
 from vakdeepgram import config
 from strands import Agent
-from strands.models import BedrockModel
 from strands.session.file_session_manager import FileSessionManager
+from vakdeepgram.llm import build_llm_model
 try:
     from strands.event_loop._recover_message_on_max_tokens_reached import MaxTokensReachedException
 except ImportError:
@@ -583,12 +583,7 @@ async def chat(
     agent_start = time.monotonic()
     try:
         # Create Bedrock model with Strands
-        bedrock_model = BedrockModel(
-            model_id=model_id,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            region_name=config.settings.aws_region,
-        )
+        llm_model = build_llm_model(model_id=model_id, max_tokens=max_tokens, temperature=temperature)
 
         # Create agent with provider-specific system prompt and tools
         # Pass business context via state so tools receive it deterministically
@@ -604,7 +599,7 @@ async def chat(
         serializable_context = to_snake_case(serializable_context)
         initial_state = {"business_context": serializable_context, **serializable_context}
         agent = Agent(
-            model=bedrock_model,
+            model=llm_model,
             system_prompt=system_prompt if system_prompt else None,
             tools=provider_tools,
             state=initial_state,
@@ -650,7 +645,7 @@ async def chat(
                     session_manager = _get_chat_session_manager(retry_session_id)
                     initial_state = {"business_context": serializable_context, **serializable_context}
                     agent = Agent(
-                        model=bedrock_model,
+                        model=llm_model,
                         system_prompt=system_prompt if system_prompt else None,
                         tools=provider_tools,
                         state=initial_state,
@@ -1060,12 +1055,7 @@ async def twilio_chat(request: Request):
     agent_start = time.monotonic()
     try:
         # Create Bedrock model with Strands
-        bedrock_model = BedrockModel(
-            model_id=model_id,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            region_name=config.settings.aws_region,
-        )
+        llm_model = build_llm_model(model_id=model_id, max_tokens=max_tokens, temperature=temperature)
 
         # Create agent with provider-specific system prompt and tools
         # Pass business context via state so tools receive it deterministically
@@ -1081,7 +1071,7 @@ async def twilio_chat(request: Request):
         serializable_context = to_snake_case(serializable_context)
         initial_state = {"business_context": serializable_context, **serializable_context}
         agent = Agent(
-            model=bedrock_model,
+            model=llm_model,
             system_prompt=system_prompt if system_prompt else None,
             tools=provider_tools,
             state=initial_state,
@@ -1126,7 +1116,7 @@ async def twilio_chat(request: Request):
                     session_manager = _get_chat_session_manager(retry_session_id)
                     initial_state = {"business_context": serializable_context, **serializable_context}
                     agent = Agent(
-                        model=bedrock_model,
+                        model=llm_model,
                         system_prompt=system_prompt if system_prompt else None,
                         tools=provider_tools,
                         state=initial_state,
@@ -1359,12 +1349,7 @@ async def whatsapp_chat(request: Request):
 
     agent_start = time.monotonic()
     try:
-        bedrock_model = BedrockModel(
-            model_id=model_id,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            region_name=config.settings.aws_region,
-        )
+        llm_model = build_llm_model(model_id=model_id, max_tokens=max_tokens, temperature=temperature)
 
         business_context["current_local_time"] = get_localized_datetime_from_context(business_context)
         serializable_context = _make_json_serializable(business_context)
@@ -1372,7 +1357,7 @@ async def whatsapp_chat(request: Request):
         serializable_context = to_snake_case(serializable_context)
         initial_state = {"business_context": serializable_context, **serializable_context}
         agent = Agent(
-            model=bedrock_model,
+            model=llm_model,
             system_prompt=system_prompt if system_prompt else None,
             tools=provider_tools,
             state=initial_state,
@@ -1416,7 +1401,7 @@ async def whatsapp_chat(request: Request):
                     session_manager = _get_chat_session_manager(retry_session_id, actor_id=wa_actor_id)
                     initial_state = {"business_context": serializable_context, **serializable_context}
                     agent = Agent(
-                        model=bedrock_model,
+                        model=llm_model,
                         system_prompt=system_prompt if system_prompt else None,
                         tools=provider_tools,
                         state=initial_state,
@@ -1524,12 +1509,7 @@ async def _run_chat_agent(
     endpoint_label: str,
 ) -> str:
     """Shared Strands agent invocation for chat endpoints. Returns reply text."""
-    bedrock_model = BedrockModel(
-        model_id=model_id,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        region_name=config.settings.aws_region,
-    )
+    llm_model = build_llm_model(model_id=model_id, max_tokens=max_tokens, temperature=temperature)
     provider_tools = get_tools_for_provider(provider)
     business_context["current_local_time"] = get_localized_datetime_from_context(business_context)
     serializable_context = _make_json_serializable(business_context)
@@ -1541,7 +1521,7 @@ async def _run_chat_agent(
     session_manager = _get_chat_session_manager(session_id)
 
     agent = Agent(
-        model=bedrock_model,
+        model=llm_model,
         system_prompt=system_prompt or None,
         tools=provider_tools,
         state=initial_state,
@@ -1583,7 +1563,7 @@ async def _run_chat_agent(
                 retry_sid = f"{session_id}:retry-{uuid.uuid4().hex[:8]}"
                 session_manager = _get_chat_session_manager(retry_sid)
                 agent = Agent(
-                    model=bedrock_model,
+                    model=llm_model,
                     system_prompt=system_prompt or None,
                     tools=provider_tools,
                     state={"business_context": serializable_context, **serializable_context},

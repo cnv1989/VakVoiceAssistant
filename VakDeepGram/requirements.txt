@@ -64,7 +64,7 @@ squareup==43.2.0.20251016
 tenacity==9.1.2
 sse-starlette==3.2.0
 starlette==0.50.0
-strands-agents==1.23.0
+strands-agents[anthropic,openai]==1.23.0
 twilio==9.9.1
 typing-inspection==0.4.2
 typing_extensions==4.15.0
