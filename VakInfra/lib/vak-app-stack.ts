@@ -67,6 +67,23 @@ export interface VakAppStackProps extends cdk.StackProps {
   /** ARN of a Secrets Manager secret holding the Deepgram API key (recommended for production). */
   deepgramApiKeySecretArn?: string;
 
+  /** LLM provider for the Strands agent (/chat + voice tool-calling): 'bedrock' (default), 'anthropic', or 'openai'. */
+  llmProvider?: string;
+  /** Overrides the provider's default model ID. */
+  llmModelId?: string;
+  anthropicApiKey?: string;
+  anthropicApiKeySecretArn?: string;
+  openaiApiKey?: string;
+  openaiApiKeySecretArn?: string;
+
+  /** TTS voice provider used by the Deepgram Voice Agent: 'eleven_labs' (default), 'deepgram', or any other Deepgram supports. */
+  deepgramSpeakingProvider?: string;
+  deepgramSpeakingModelId?: string;
+  deepgramSpeakingVoiceId?: string;
+  /** LLM bridge used *inside* the Deepgram Voice Agent (independent of llmProvider above). */
+  deepgramThinkingProvider?: string;
+  deepgramThinkingModel?: string;
+
   twilioAccountSid?: string;
   twilioFromNumber?: string;
   twilioWhatsappNumber?: string;
@@ -79,6 +96,8 @@ export interface VakAppStackProps extends cdk.StackProps {
   /** Business profile forwarded to the container — see providers/common/persona.py. */
   businessName?: string;
   businessVertical?: string;
+  /** Full custom persona override, bypassing businessVertical presets. */
+  businessRoleDescription?: string;
 
   /** Optional Bedrock AgentCore Memory ID for chat session persistence. */
   agentcoreMemoryId?: string;
@@ -231,6 +250,17 @@ export class VakAppStack extends cdk.Stack {
       twilioSecret.grantRead(taskExecutionRole);
     }
 
+    let anthropicSecret: secretsmanager.ISecret | undefined;
+    if (props.anthropicApiKeySecretArn) {
+      anthropicSecret = secretsmanager.Secret.fromSecretCompleteArn(this, 'AnthropicSecret', props.anthropicApiKeySecretArn);
+      anthropicSecret.grantRead(taskExecutionRole);
+    }
+    let openaiSecret: secretsmanager.ISecret | undefined;
+    if (props.openaiApiKeySecretArn) {
+      openaiSecret = secretsmanager.Secret.fromSecretCompleteArn(this, 'OpenAiSecret', props.openaiApiKeySecretArn);
+      openaiSecret.grantRead(taskExecutionRole);
+    }
+
     this.taskRole = new iam.Role(this, 'TaskRole', { assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com') });
     const taskRole = this.taskRole;
 
@@ -283,6 +313,8 @@ export class VakAppStack extends cdk.Stack {
     const containerSecrets: { [key: string]: ecs.Secret } = {};
     if (deepgramSecret) containerSecrets.DEEPGRAM_API_KEY = ecs.Secret.fromSecretsManager(deepgramSecret);
     if (twilioSecret) containerSecrets.TWILIO_AUTH_TOKEN = ecs.Secret.fromSecretsManager(twilioSecret);
+    if (anthropicSecret) containerSecrets.ANTHROPIC_API_KEY = ecs.Secret.fromSecretsManager(anthropicSecret);
+    if (openaiSecret) containerSecrets.OPENAI_API_KEY = ecs.Secret.fromSecretsManager(openaiSecret);
 
     const apiHost = props.domainName ?? 'PLACEHOLDER'; // replaced with the ALB DNS name below if unset
 
@@ -299,15 +331,19 @@ export class VakAppStack extends cdk.Stack {
 
         ...(props.businessName ? { BUSINESS_NAME: props.businessName } : {}),
         BUSINESS_VERTICAL: props.businessVertical ?? 'generic',
+        ...(props.businessRoleDescription ? { BUSINESS_ROLE_DESCRIPTION: props.businessRoleDescription } : {}),
+
+        LLM_PROVIDER: props.llmProvider ?? 'bedrock',
+        ...(props.llmModelId ? { LLM_MODEL_ID: props.llmModelId } : {}),
 
         DEEPGRAM_AGENT_LANGUAGE: 'en',
         DEEPGRAM_LISTENING_MODEL: 'flux-general-en',
         DEEPGRAM_LISTENING_VERSION: 'v2',
-        DEEPGRAM_THINKING_PROVIDER: 'google',
-        DEEPGRAM_THINKING_MODEL: 'gemini-2.5-flash',
-        DEEPGRAM_SPEAKING_PROVIDER: 'eleven_labs',
-        DEEPGRAM_SPEAKING_MODEL_ID: 'eleven_flash_v2_5',
-        DEEPGRAM_SPEAKING_VOICE_ID: 'cgSgspJ2msm6clMCkdW9',
+        DEEPGRAM_THINKING_PROVIDER: props.deepgramThinkingProvider ?? 'google',
+        DEEPGRAM_THINKING_MODEL: props.deepgramThinkingModel ?? 'gemini-2.5-flash',
+        DEEPGRAM_SPEAKING_PROVIDER: props.deepgramSpeakingProvider ?? 'eleven_labs',
+        DEEPGRAM_SPEAKING_MODEL_ID: props.deepgramSpeakingModelId ?? 'eleven_flash_v2_5',
+        DEEPGRAM_SPEAKING_VOICE_ID: props.deepgramSpeakingVoiceId ?? 'cgSgspJ2msm6clMCkdW9',
         DEEPGRAM_INPUT_SAMPLE_RATE: '48000',
         DEEPGRAM_OUTPUT_SAMPLE_RATE: '24000',
 
@@ -343,6 +379,8 @@ export class VakAppStack extends cdk.Stack {
 
     if (!deepgramSecret) container.addEnvironment('DEEPGRAM_API_KEY', props.deepgramApiKey || '');
     if (!twilioSecret && props.twilioAuthToken) container.addEnvironment('TWILIO_AUTH_TOKEN', props.twilioAuthToken);
+    if (!anthropicSecret && props.anthropicApiKey) container.addEnvironment('ANTHROPIC_API_KEY', props.anthropicApiKey);
+    if (!openaiSecret && props.openaiApiKey) container.addEnvironment('OPENAI_API_KEY', props.openaiApiKey);
 
     container.addPortMappings({ containerPort: 8080, protocol: ecs.Protocol.TCP });
 

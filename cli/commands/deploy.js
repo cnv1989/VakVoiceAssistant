@@ -18,8 +18,20 @@ const CONTEXT_KEYS = {
   ECR_REPOSITORY_NAME: 'ecrRepositoryName',
   DEEPGRAM_API_KEY: 'deepgramApiKey',
   DEEPGRAM_API_KEY_SECRET_ARN: 'deepgramApiKeySecretArn',
+  LLM_PROVIDER: 'llmProvider',
+  LLM_MODEL_ID: 'llmModelId',
+  ANTHROPIC_API_KEY: 'anthropicApiKey',
+  ANTHROPIC_API_KEY_SECRET_ARN: 'anthropicApiKeySecretArn',
+  OPENAI_API_KEY: 'openaiApiKey',
+  OPENAI_API_KEY_SECRET_ARN: 'openaiApiKeySecretArn',
+  DEEPGRAM_SPEAKING_PROVIDER: 'deepgramSpeakingProvider',
+  DEEPGRAM_SPEAKING_MODEL_ID: 'deepgramSpeakingModelId',
+  DEEPGRAM_SPEAKING_VOICE_ID: 'deepgramSpeakingVoiceId',
+  DEEPGRAM_THINKING_PROVIDER: 'deepgramThinkingProvider',
+  DEEPGRAM_THINKING_MODEL: 'deepgramThinkingModel',
   BUSINESS_NAME: 'businessName',
   BUSINESS_VERTICAL: 'businessVertical',
+  BUSINESS_ROLE_DESCRIPTION: 'businessRoleDescription',
   DOMAIN_NAME: 'domainName',
   HOSTED_ZONE_DOMAIN: 'hostedZoneDomain',
   CERTIFICATE_ARN: 'certificateArn',
@@ -65,13 +77,23 @@ async function preflight() {
   return true;
 }
 
+// Keys already configured for local dev (VakDeepGram/.env) that should carry
+// over to a deploy without re-entering them, for anyone who skipped the AWS
+// section of `vak init`. VakInfra/.env (spread second) always wins on conflict.
+const LOCAL_DEV_FALLBACK_KEYS = [
+  'DEEPGRAM_API_KEY', 'LLM_PROVIDER', 'LLM_MODEL_ID', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY',
+  'DEEPGRAM_SPEAKING_PROVIDER', 'BUSINESS_NAME', 'BUSINESS_VERTICAL', 'BUSINESS_ROLE_DESCRIPTION',
+];
+
 function buildContextArgs() {
   const infraEnv = readEnvFile(path.join(VAK_INFRA, '.env'));
   const deepgramEnv = readEnvFile(path.join(VAK_DEEPGRAM, '.env'));
 
-  // Fall back to the Deepgram key already configured for local dev so users
-  // who skipped the AWS section of `vak init` don't have to enter it twice.
-  const merged = { DEEPGRAM_API_KEY: deepgramEnv.DEEPGRAM_API_KEY, ...infraEnv };
+  const fallback = {};
+  for (const key of LOCAL_DEV_FALLBACK_KEYS) {
+    if (deepgramEnv[key] !== undefined) fallback[key] = deepgramEnv[key];
+  }
+  const merged = { ...fallback, ...infraEnv };
 
   const args = [];
   for (const [envKey, contextKey] of Object.entries(CONTEXT_KEYS)) {

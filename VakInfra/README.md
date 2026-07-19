@@ -69,8 +69,16 @@ one-offs, env vars for CI). Context takes precedence when both are set.
 | `ecrRepositoryName` | `ECR_REPOSITORY_NAME` | `vak-deepgram` | ECR repo name (created by the network stack) |
 | `deepgramApiKey` | `DEEPGRAM_API_KEY` | — | Deepgram API key (plaintext; fine for a first deploy) |
 | `deepgramApiKeySecretArn` | `DEEPGRAM_API_KEY_SECRET_ARN` | — | Secrets Manager ARN instead of plaintext (recommended for production) |
+| `llmProvider` | `LLM_PROVIDER` | `bedrock` | `bedrock` (default, no key needed), `anthropic`, or `openai` — see [docs/CONFIGURATION.md](../docs/CONFIGURATION.md) |
+| `llmModelId` | `LLM_MODEL_ID` | — | Overrides the provider's default model ID |
+| `anthropicApiKey` / `anthropicApiKeySecretArn` | `ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY_SECRET_ARN` | — | Required if `llmProvider=anthropic` |
+| `openaiApiKey` / `openaiApiKeySecretArn` | `OPENAI_API_KEY` / `OPENAI_API_KEY_SECRET_ARN` | — | Required if `llmProvider=openai` |
+| `deepgramSpeakingProvider` | `DEEPGRAM_SPEAKING_PROVIDER` | `eleven_labs` | TTS voice provider — `eleven_labs`, `deepgram`, or any other Deepgram's Voice Agent API supports |
+| `deepgramSpeakingModelId` / `deepgramSpeakingVoiceId` | `DEEPGRAM_SPEAKING_MODEL_ID` / `DEEPGRAM_SPEAKING_VOICE_ID` | ElevenLabs defaults | Voice selection, forwarded as-is |
+| `deepgramThinkingProvider` / `deepgramThinkingModel` | `DEEPGRAM_THINKING_PROVIDER` / `DEEPGRAM_THINKING_MODEL` | `google` / `gemini-2.5-flash` | LLM bridge *inside* the Deepgram Voice Agent (independent of `llmProvider`) |
 | `businessName` | `BUSINESS_NAME` | — | Forwarded to the container as `BUSINESS_NAME` |
 | `businessVertical` | `BUSINESS_VERTICAL` | `generic` | Forwarded as `BUSINESS_VERTICAL` — see [docs/CUSTOMIZING_YOUR_AGENT.md](../docs/CUSTOMIZING_YOUR_AGENT.md) |
+| `businessRoleDescription` | `BUSINESS_ROLE_DESCRIPTION` | — | Full custom persona override, bypassing `businessVertical` presets |
 | `domainName` | `DOMAIN_NAME` | — | Custom API domain, e.g. `voice.example.com` |
 | `hostedZoneDomain` | `HOSTED_ZONE_DOMAIN` | — | Name of an **existing** Route 53 public hosted zone that owns `domainName`; CDK creates a DNS-validated cert + A record automatically |
 | `certificateArn` | `CERTIFICATE_ARN` | — | Use a pre-existing ACM certificate instead of `hostedZoneDomain` |

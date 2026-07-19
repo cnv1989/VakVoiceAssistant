@@ -56,6 +56,19 @@ const appStack = new VakAppStack(app, `${stackName}AppStack`, {
   deepgramApiKey: opt('deepgramApiKey', 'DEEPGRAM_API_KEY'),
   deepgramApiKeySecretArn: opt('deepgramApiKeySecretArn', 'DEEPGRAM_API_KEY_SECRET_ARN'),
 
+  llmProvider: opt('llmProvider', 'LLM_PROVIDER', 'bedrock'),
+  llmModelId: opt('llmModelId', 'LLM_MODEL_ID'),
+  anthropicApiKey: opt('anthropicApiKey', 'ANTHROPIC_API_KEY'),
+  anthropicApiKeySecretArn: opt('anthropicApiKeySecretArn', 'ANTHROPIC_API_KEY_SECRET_ARN'),
+  openaiApiKey: opt('openaiApiKey', 'OPENAI_API_KEY'),
+  openaiApiKeySecretArn: opt('openaiApiKeySecretArn', 'OPENAI_API_KEY_SECRET_ARN'),
+
+  deepgramSpeakingProvider: opt('deepgramSpeakingProvider', 'DEEPGRAM_SPEAKING_PROVIDER'),
+  deepgramSpeakingModelId: opt('deepgramSpeakingModelId', 'DEEPGRAM_SPEAKING_MODEL_ID'),
+  deepgramSpeakingVoiceId: opt('deepgramSpeakingVoiceId', 'DEEPGRAM_SPEAKING_VOICE_ID'),
+  deepgramThinkingProvider: opt('deepgramThinkingProvider', 'DEEPGRAM_THINKING_PROVIDER'),
+  deepgramThinkingModel: opt('deepgramThinkingModel', 'DEEPGRAM_THINKING_MODEL'),
+
   twilioAccountSid: opt('twilioAccountSid', 'TWILIO_ACCOUNT_SID'),
   twilioFromNumber: opt('twilioFromNumber', 'TWILIO_FROM_NUMBER'),
   twilioWhatsappNumber: opt('twilioWhatsappNumber', 'TWILIO_WHATSAPP_NUMBER'),
@@ -66,6 +79,7 @@ const appStack = new VakAppStack(app, `${stackName}AppStack`, {
 
   businessName: opt('businessName', 'BUSINESS_NAME'),
   businessVertical: opt('businessVertical', 'BUSINESS_VERTICAL', 'generic'),
+  businessRoleDescription: opt('businessRoleDescription', 'BUSINESS_ROLE_DESCRIPTION'),
   agentcoreMemoryId: opt('agentcoreMemoryId', 'AGENTCORE_MEMORY_ID'),
 
   existingTables,
