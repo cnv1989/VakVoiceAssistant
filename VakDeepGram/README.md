@@ -42,6 +42,12 @@ Set the following environment variables in `.env`:
 DEEPGRAM_API_KEY=your_api_key
 DEEPGRAM_PROJECT_ID=your_project_id
 
+# AI model for /chat and voice tool-calling (separate from Deepgram's own
+# STT/TTS). Options: bedrock (default, uses AWS credentials), anthropic, openai.
+LLM_PROVIDER=bedrock
+# ANTHROPIC_API_KEY=   # if LLM_PROVIDER=anthropic
+# OPENAI_API_KEY=      # if LLM_PROVIDER=openai
+
 # Optional - Agent Configuration
 # If DEEPGRAM_AGENT_ID is not provided, a new agent will be created automatically
 # using the settings below. If provided, the pre-configured agent will be used.
@@ -60,7 +66,8 @@ DEEPGRAM_THINKING_PROVIDER=google
 DEEPGRAM_THINKING_MODEL=gemini-2.5-flash
 
 # Speaking/TTS Configuration
-# Set to "eleven_labs" to use ElevenLabs (default), or "deepgram" for Deepgram TTS
+# "eleven_labs" (default) and "deepgram" are first-class; any other value
+# Deepgram's Voice Agent API supports (e.g. "cartesia") passes through generically.
 DEEPGRAM_SPEAKING_PROVIDER=eleven_labs
 # For ElevenLabs:
 DEEPGRAM_SPEAKING_MODEL_ID=eleven_multilingual_v2
@@ -273,6 +280,12 @@ client-side view of this same protocol.
 - **Provider**: `deepgram`
 - **Model**: `aura-2-odysseus-en` (or other Aura models)
 - Native integration with Deepgram services
+
+### Any other provider Deepgram supports
+Set `DEEPGRAM_SPEAKING_PROVIDER` to any other value Deepgram's Voice Agent
+API accepts (e.g. `cartesia`) — it's passed through generically using
+`DEEPGRAM_SPEAKING_MODEL_ID` / `DEEPGRAM_SPEAKING_MODEL` /
+`DEEPGRAM_SPEAKING_VOICE_ID`. See `deepgram_handler.py`'s `_build_settings`.
 
 ## Architecture
 

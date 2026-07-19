@@ -49,7 +49,7 @@ flowchart TB
 
     subgraph External
         Deepgram["Deepgram<br/>(STT / TTS / LLM bridge)"]
-        Bedrock["AWS Bedrock<br/>(Claude)"]
+        LLM["Bedrock, Anthropic, or OpenAI<br/>(LLM_PROVIDER)"]
         Square["Square"]
         Setmore["Setmore"]
     end
@@ -58,7 +58,7 @@ flowchart TB
     Phone --> Transport
     SMS --> Transport
     Agent <--> Deepgram
-    Agent <--> Bedrock
+    Agent <--> LLM
     Agent --> Square
     Agent --> Setmore
 ```

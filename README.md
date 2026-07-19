@@ -93,8 +93,9 @@ protection, and Cognito auth are all optional add-ons layered on top; see
 ## Features
 
 - **Real-time voice** — bidirectional audio streaming over WebSocket, with barge-in support
-- **Any business vertical** — generic by default; built-in presets for barber, salon, spa, medical, fitness, and home services (see [docs/CUSTOMIZING_YOUR_AGENT.md](./docs/CUSTOMIZING_YOUR_AGENT.md))
-- **AI agent with tools** — Strands Agents on AWS Bedrock (Claude), with callable tools for hours, services, staff, availability, and booking
+- **Any use case** — a general assistant by default; built-in persona presets for barber, salon, spa, medical, fitness, and home services, or write your own (see [docs/CUSTOMIZING_YOUR_AGENT.md](./docs/CUSTOMIZING_YOUR_AGENT.md))
+- **Pick your AI model** — AWS Bedrock (Claude), Anthropic, or OpenAI for conversation and tool-calling; Deepgram, ElevenLabs, or any other Deepgram-supported voice for speech (see [docs/CONFIGURATION.md](./docs/CONFIGURATION.md))
+- **AI agent with tools** — Strands Agents, with callable tools for hours, services, staff, availability, and booking
 - **Two booking providers** — Square and Setmore, behind a common tool interface
 - **Phone support** — Twilio Media Streams for inbound/outbound calls, plus SMS and WhatsApp
 - **Text chat** — a REST `/chat` endpoint and a web chat UI, sharing the same agent and tools as voice

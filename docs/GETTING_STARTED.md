@@ -19,25 +19,32 @@ Run `./vak doctor` at any point to check what's installed and what's missing.
 ./vak init
 ```
 
-This asks a short series of questions and writes the `.env` files for you:
+Every question has a default — press Enter to accept it and move on. Only
+the Deepgram API key is actually required; everything else is optional and
+gets a sensible default.
 
-1. **Business profile** — a name (optional) and a vertical (barber, salon,
-   spa, medical, fitness, home services, generic, or a custom persona you
-   write yourself). This shapes the agent's system prompt — see
+1. **Use case** (optional) — a name and, optionally, what kind of assistant
+   this is (barber, salon, spa, medical, fitness, home services, or your own
+   custom persona). Skip it entirely for a general-purpose assistant. This
+   shapes the agent's system prompt — see
    [CUSTOMIZING_YOUR_AGENT.md](./CUSTOMIZING_YOUR_AGENT.md).
-2. **Deepgram** — your API key (required) and which TTS voice provider to
-   use. ElevenLabs voices are proxied through Deepgram's Voice Agent API, so
-   no separate ElevenLabs account is needed.
-3. **Business data** — choose **local test mode** for your first run. It
+2. **AI model** — which provider powers conversation and tool use: AWS
+   Bedrock/Claude (default, uses your AWS credentials, no key needed),
+   Anthropic directly, or OpenAI directly.
+3. **Voice** — your Deepgram API key (required — it always handles
+   speech-to-text) and which text-to-speech voice to use: ElevenLabs
+   (proxied through Deepgram, no separate account needed), Deepgram Aura, or
+   any other provider Deepgram's Voice Agent API supports.
+4. **Business data** — choose **local test mode** for your first run. It
    uses a mock business (fake hours, services, and staff) so you can hear
    the agent working immediately, with no Square/Setmore account required.
    Connecting a real account is a separate step — see
    [CONFIGURATION.md](./CONFIGURATION.md#connecting-a-real-square--setmore-account).
-4. **Twilio** (optional) — skip this unless you're wiring up phone calls
+5. **Twilio** (optional) — skip this unless you're wiring up phone calls
    right now.
-5. **Web client** — the WebSocket URL VakClient should connect to (defaults
+6. **Web client** — the WebSocket URL VakClient should connect to (defaults
    to your local backend).
-6. **AWS** (optional) — skip this until you're ready to deploy; see
+7. **AWS** (optional) — skip this until you're ready to deploy; see
    [DEPLOYMENT.md](./DEPLOYMENT.md).
 
 Re-running `./vak init` later only touches the keys you change — it won't

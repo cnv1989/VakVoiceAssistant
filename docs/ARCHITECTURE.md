@@ -24,7 +24,7 @@ choices, see [DESIGN.md](./DESIGN.md). For "how do I deploy this," see
 | VakClient | React 18, Vite, TypeScript |
 | VakDeepGram | FastAPI, Python, Strands Agents, Deepgram SDK |
 | VakInfra | AWS CDK v2 (TypeScript) |
-| LLM | AWS Bedrock (Claude), via Strands Agents |
+| LLM | AWS Bedrock (Claude, default), Anthropic, or OpenAI — via Strands Agents |
 | Voice | Deepgram Voice Agent API (STT, LLM bridge, TTS) |
 | Booking data | Square or Setmore |
 
@@ -97,6 +97,7 @@ VakDeepGram/
 │   ├── main.py                 # FastAPI app, routes, WebSocket handlers
 │   ├── config.py                # Settings (business profile, Deepgram, AWS, ...)
 │   ├── deepgram_handler.py       # Deepgram Voice Agent session management
+│   ├── llm.py                     # Builds the Strands model for LLM_PROVIDER (bedrock/anthropic/openai)
 │   ├── business_logic.py          # Booking/customer orchestration
 │   ├── agent_functions.py          # Deepgram function-call tool definitions
 │   ├── connection_store.py         # Per-connection context + business data resolution
@@ -128,7 +129,7 @@ flowchart TD
     Twilio --> Handler
     Handler <--> DGAgent["Deepgram Voice Agent<br/>wss://agent.deepgram.com"]
 
-    Chat --> Agent["Strands Agent<br/>(Bedrock/Claude)"]
+    Chat --> Agent["Strands Agent<br/>(LLM_PROVIDER: bedrock/anthropic/openai)"]
     DGAgent -. "function calls" .-> Tools["Agent tools"]
     Agent --> Tools
 

@@ -14,7 +14,27 @@ wizard asks.
 | `BUSINESS_VERTICAL` | `generic` | `generic`, `barber`, `salon`, `spa`, `medical`, `fitness`, `home_services` — see [CUSTOMIZING_YOUR_AGENT.md](./CUSTOMIZING_YOUR_AGENT.md) |
 | `BUSINESS_ROLE_DESCRIPTION` | — | Full override for the agent's role sentence, bypassing the vertical preset |
 
-### Deepgram
+### AI model (LLM provider)
+
+Powers the `/chat` endpoint and voice function-calling (the Strands Agent
+that decides when to check availability, book an appointment, etc.). This
+is separate from Deepgram's own STT/TTS and from the Deepgram Voice Agent's
+internal LLM bridge (`DEEPGRAM_THINKING_PROVIDER` below).
+
+| Variable | Default | Description |
+|---|---|---|
+| `LLM_PROVIDER` | `bedrock` | `bedrock` (AWS Bedrock/Claude — uses your AWS credentials, no key here), `anthropic` (direct Anthropic API), or `openai` (direct OpenAI API) |
+| `LLM_MODEL_ID` | provider default | Override the model (e.g. `claude-sonnet-4-5`, `gpt-4o`, a Bedrock inference profile ID) |
+| `ANTHROPIC_API_KEY` | — | Required if `LLM_PROVIDER=anthropic` |
+| `OPENAI_API_KEY` | — | Required if `LLM_PROVIDER=openai` |
+| `BEDROCK_MAX_TOKENS` / `BEDROCK_TEMPERATURE` | `8192` / `0.4` | Generation settings, shared across all three providers despite the name |
+
+Adding another Strands-supported provider (Gemini, Mistral, Ollama, ...)
+just needs a branch in
+[`VakDeepGram/src/vakdeepgram/llm.py`](../VakDeepGram/src/vakdeepgram/llm.py)
+— every call site already asks that module for "the configured model."
+
+### Deepgram (speech-to-text and voice text-to-speech)
 
 | Variable | Default | Description |
 |---|---|---|
@@ -24,12 +44,12 @@ wizard asks.
 | `DEEPGRAM_AGENT_LANGUAGE` | `en` | |
 | `DEEPGRAM_LISTENING_MODEL` | `flux-general-en` | STT model |
 | `DEEPGRAM_LISTENING_VERSION` | `v2` | |
-| `DEEPGRAM_THINKING_PROVIDER` | `google` | LLM bridge provider used by the Deepgram Voice Agent |
+| `DEEPGRAM_THINKING_PROVIDER` | `google` | LLM bridge used *inside* the Deepgram Voice Agent (voice calls only). Accepts any provider type Deepgram's Voice Agent API supports — `open_ai`, `anthropic`, `google`, `amazon_bedrock`, and others as Deepgram adds them — passed straight through |
 | `DEEPGRAM_THINKING_MODEL` | `gemini-2.0-flash` | |
-| `DEEPGRAM_SPEAKING_PROVIDER` | `eleven_labs` | `eleven_labs` or `deepgram` — ElevenLabs is proxied through Deepgram, no separate key needed |
-| `DEEPGRAM_SPEAKING_MODEL_ID` | `eleven_flash_v2_5` | Used when the speaking provider is `eleven_labs` |
-| `DEEPGRAM_SPEAKING_VOICE_ID` | — | ElevenLabs voice ID |
-| `DEEPGRAM_SPEAKING_MODEL` | — | Used when the speaking provider is `deepgram` (e.g. `aura-2-odysseus-en`) |
+| `DEEPGRAM_SPEAKING_PROVIDER` | `eleven_labs` | `eleven_labs` and `deepgram` (Aura) have first-class field mapping; any other value Deepgram's Voice Agent API supports (e.g. `cartesia`) is passed through generically via the fields below |
+| `DEEPGRAM_SPEAKING_MODEL_ID` | `eleven_flash_v2_5` | Used when the speaking provider is `eleven_labs`, or as the generic "model_id" field for other providers |
+| `DEEPGRAM_SPEAKING_VOICE_ID` | — | ElevenLabs voice ID, or the generic "voice_id" field for other providers |
+| `DEEPGRAM_SPEAKING_MODEL` | — | Used when the speaking provider is `deepgram` (e.g. `aura-2-odysseus-en`), or as the generic "model" field for other providers |
 | `DEEPGRAM_INPUT_SAMPLE_RATE` | `48000` | Must match the client's capture rate |
 | `DEEPGRAM_OUTPUT_SAMPLE_RATE` | `24000` | |
 | `DEEPGRAM_STS_TIMEOUT_SECONDS` | `300` | |
