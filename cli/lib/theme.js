@@ -3,7 +3,7 @@
 const isTTY = process.stdout.isTTY && process.env.NO_COLOR === undefined;
 
 function paint(code) {
-  return (text) => (isTTY ? `[${code}m${text}[0m` : String(text));
+  return (text) => (isTTY ? `[${code}m${text}[0m` : String(text));
 }
 
 const color = {
@@ -17,17 +17,19 @@ const color = {
   cyan: paint('36'),
 };
 
+/** A section header. Minimal by design: one blank line, bold text, no glyphs. */
 function heading(text) {
   console.log('');
-  console.log(color.bold(color.cyan(`▸ ${text}`)));
+  console.log(color.bold(text));
 }
 
+/** A quieter sub-line under a heading — context, not an instruction. */
 function info(text) {
   console.log(color.dim('  ' + text));
 }
 
 function success(text) {
-  console.log(color.green('  ✔ ') + text);
+  console.log(color.green('  ✓ ') + text);
 }
 
 function warn(text) {
@@ -35,13 +37,13 @@ function warn(text) {
 }
 
 function fail(text) {
-  console.log(color.red('  ✘ ') + text);
+  console.log(color.red('  ✗ ') + text);
 }
 
 function banner() {
   console.log('');
-  console.log(color.bold(color.magenta('  Vak — Voice Assistant Kit')));
-  console.log(color.dim('  Set up, run, and deploy your voice agent.'));
+  console.log(color.bold('vak'));
+  console.log(color.dim('Set up, run, and deploy a voice agent.'));
 }
 
 module.exports = { color, heading, info, success, warn, fail, banner, isTTY };

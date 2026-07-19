@@ -7,55 +7,75 @@ const { text, password, select, confirm, closePrompt } = require('../lib/prompt'
 const { upsertEnvFile } = require('../lib/env-file');
 const { ROOT, VAK_CLIENT, VAK_DEEPGRAM, VAK_INFRA } = require('../lib/paths');
 
-const VERTICALS = [
-  { value: 'generic', label: 'Generic service business (default)' },
+const USE_CASES = [
+  { value: 'generic', label: 'General assistant (default) — no specific industry' },
   { value: 'barber', label: 'Barber shop / grooming studio' },
   { value: 'salon', label: 'Hair salon' },
   { value: 'spa', label: 'Spa / wellness studio' },
   { value: 'medical', label: 'Medical / clinic' },
   { value: 'fitness', label: 'Fitness studio / gym' },
   { value: 'home_services', label: 'Home services (repair, cleaning, etc.)' },
-  { value: 'custom', label: 'Custom — write my own persona' },
+  { value: 'custom', label: 'Something else — write my own persona' },
+];
+
+const LLM_PROVIDERS = [
+  { value: 'bedrock', label: 'AWS Bedrock / Claude (default — uses your AWS credentials, no key needed)' },
+  { value: 'anthropic', label: 'Anthropic API directly' },
+  { value: 'openai', label: 'OpenAI API directly (GPT-4o, etc.)' },
+];
+
+const VOICE_PROVIDERS = [
+  { value: 'eleven_labs', label: 'ElevenLabs (default — richer voices, proxied through Deepgram, no extra key)' },
+  { value: 'deepgram', label: 'Deepgram Aura (lower latency)' },
+  { value: 'other', label: 'Something else Deepgram supports (e.g. Cartesia) — I\'ll type the name' },
 ];
 
 async function init() {
-  heading('Welcome to Vak');
-  info('This wizard configures VakClient, VakDeepGram, and (optionally) VakInfra.');
-  info('You can re-run `./vak init` any time — it only updates the keys you change.');
+  heading('vak init');
+  info('Every question below has a default — press Enter to accept it and move on.');
+  info('Re-running this later only touches the keys you change.');
 
-  // ── Business profile ────────────────────────────────────────────────────
-  heading('1. Business profile');
-  const businessName = await text('Business name (shown in greetings, optional)');
-  const vertical = await select('What kind of business is this?', VERTICALS, { default: 'generic' });
+  // ── Use case ─────────────────────────────────────────────────────────────
+  heading('Use case (optional)');
+  info('What should this assistant do? Skip for a general-purpose assistant.');
+  const businessName = await text('Name (shown in greetings, optional)');
+  const useCase = await select('Use case', USE_CASES, { default: 'generic' });
   let roleDescription = '';
-  if (vertical === 'custom') {
-    info('Describe your agent in one or two sentences — it follows "You are ...".');
+  if (useCase === 'custom') {
+    info('Describe it in a sentence or two — it follows "You are ...".');
     roleDescription = await text(
       'e.g. "a friendly front-desk assistant for an auto repair shop. You help with hours, quotes, and booking service appointments."'
     );
   }
 
-  // ── Deepgram ─────────────────────────────────────────────────────────────
-  heading('2. Deepgram (required — powers speech-to-text, the LLM bridge, and text-to-speech)');
-  info('Get a free API key at https://console.deepgram.com');
+  // ── AI model ─────────────────────────────────────────────────────────────
+  heading('AI model');
+  info('Powers conversation and tool use (booking, lookups, etc.).');
+  const llmProvider = await select('Provider', LLM_PROVIDERS, { default: 'bedrock' });
+  let anthropicApiKey = '';
+  let openaiApiKey = '';
+  if (llmProvider === 'anthropic') {
+    anthropicApiKey = await password('Anthropic API key');
+  } else if (llmProvider === 'openai') {
+    openaiApiKey = await password('OpenAI API key');
+  }
+
+  // ── Voice ────────────────────────────────────────────────────────────────
+  heading('Voice');
+  info('Deepgram handles speech-to-text always, and text-to-speech by default.');
+  info('Get a free key at https://console.deepgram.com');
   let deepgramApiKey = '';
   while (!deepgramApiKey) {
     deepgramApiKey = await password('Deepgram API key');
-    if (!deepgramApiKey) warn('A Deepgram API key is required to run the voice agent.');
+    if (!deepgramApiKey) warn('A Deepgram API key is required.');
   }
-  const deepgramProjectId = await text('Deepgram project ID (optional)');
+  let speakingProvider = await select('Text-to-speech voice', VOICE_PROVIDERS, { default: 'eleven_labs' });
+  if (speakingProvider === 'other') {
+    speakingProvider = await text('Deepgram TTS provider name (e.g. cartesia)');
+  }
 
-  const speakingProvider = await select(
-    'Which text-to-speech voice provider?',
-    [
-      { value: 'eleven_labs', label: 'ElevenLabs (richer voices, proxied through Deepgram — no extra key needed)' },
-      { value: 'deepgram', label: 'Deepgram Aura (lower latency)' },
-    ],
-    { default: 'eleven_labs' }
-  );
-
-  // ── Data mode ────────────────────────────────────────────────────────────
-  heading('3. Business data');
+  // ── Business data ────────────────────────────────────────────────────────
+  heading('Business data');
   const dataMode = await select(
     'How should the agent get business data (hours, services, staff, bookings)?',
     [
@@ -70,7 +90,7 @@ async function init() {
   }
 
   // ── Twilio (optional) ─────────────────────────────────────────────────────
-  heading('4. Phone calls via Twilio (optional)');
+  heading('Phone calls via Twilio (optional)');
   const setupTwilio = await confirm('Set up Twilio phone integration now?', { default: false });
   let twilio = {};
   if (setupTwilio) {
@@ -82,10 +102,12 @@ async function init() {
   // ── Write VakDeepGram/.env ────────────────────────────────────────────────
   const deepgramEnv = {
     BUSINESS_NAME: businessName || undefined,
-    BUSINESS_VERTICAL: vertical === 'custom' ? 'generic' : vertical,
+    BUSINESS_VERTICAL: useCase === 'custom' ? 'generic' : useCase,
     BUSINESS_ROLE_DESCRIPTION: roleDescription || undefined,
+    LLM_PROVIDER: llmProvider,
+    ANTHROPIC_API_KEY: anthropicApiKey || undefined,
+    OPENAI_API_KEY: openaiApiKey || undefined,
     DEEPGRAM_API_KEY: deepgramApiKey,
-    DEEPGRAM_PROJECT_ID: deepgramProjectId || undefined,
     DEEPGRAM_SPEAKING_PROVIDER: speakingProvider,
     ENVIRONMENT: dataMode === 'local' ? 'development' : 'production',
     OAUTH_ALLOW_LOCALHOST_NOAUTH: dataMode === 'local' ? 'true' : 'false',
@@ -99,7 +121,7 @@ async function init() {
   success(`Wrote ${path.relative(ROOT, path.join(VAK_DEEPGRAM, '.env'))}`);
 
   // ── Write VakClient/.env ──────────────────────────────────────────────────
-  heading('5. Web client');
+  heading('Web client');
   const wsUrl = await text('Backend WebSocket URL for local dev', { default: 'ws://localhost:8080/ws' });
   upsertEnvFile(path.join(VAK_CLIENT, '.env'), {
     VITE_WS_URL: wsUrl,
@@ -108,7 +130,7 @@ async function init() {
   success(`Wrote ${path.relative(ROOT, path.join(VAK_CLIENT, '.env'))}`);
 
   // ── AWS deployment (optional) ────────────────────────────────────────────
-  heading('6. AWS deployment (optional — you can run this later with `./vak deploy`)');
+  heading('AWS deployment (optional — you can run this later with `./vak deploy`)');
   const setupAws = await confirm('Configure AWS deployment settings now?', { default: false });
   if (setupAws) {
     const region = await text('AWS region', { default: 'us-west-2' });
@@ -127,7 +149,7 @@ async function init() {
     upsertEnvFile(path.join(VAK_INFRA, '.env'), {
       AWS_REGION: region,
       BUSINESS_NAME: businessName || undefined,
-      BUSINESS_VERTICAL: vertical === 'custom' ? 'generic' : vertical,
+      BUSINESS_VERTICAL: useCase === 'custom' ? 'generic' : useCase,
       DOMAIN_NAME: domainName,
       HOSTED_ZONE_DOMAIN: hostedZoneDomain,
       API_KEY: apiKey,
@@ -139,11 +161,10 @@ async function init() {
 
   closePrompt();
 
-  heading('You\'re set up!');
-  console.log('  Next steps:');
-  console.log(`    ${color.cyan('./vak dev')}      Start the backend + web client locally`);
-  console.log(`    ${color.cyan('./vak deploy')}   Deploy to AWS when you're ready`);
-  console.log(`    ${color.cyan('./vak doctor')}   Re-check your environment any time`);
+  heading('Ready');
+  console.log(`  ${color.cyan('./vak dev')}      Start the backend + web client locally`);
+  console.log(`  ${color.cyan('./vak deploy')}   Deploy to AWS when you're ready`);
+  console.log(`  ${color.cyan('./vak doctor')}   Re-check your environment any time`);
   console.log('');
 }
 
