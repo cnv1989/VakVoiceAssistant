@@ -156,6 +156,9 @@ def send_booking_link_sms(
     if not twilio_account_sid or not twilio_auth_token:
         logger.error("Twilio credentials not configured for booking link SMS")
         return {"success": False, "error": "Twilio credentials not configured."}
+    if not from_number:
+        logger.error("No Twilio from_number available for booking link SMS (set TWILIO_FROM_NUMBER or TWILIO_BUSINESS_NUMBER)")
+        return {"success": False, "error": "No Twilio sending number configured."}
 
     # Build prefilled URL when we have IDs; fall back to base URL
     if service_key or staff_key or customer_key:
@@ -1297,7 +1300,7 @@ async def schedule_appointment_with_contact(
         msg_channel = None  # "sms"
         if to_number:
             sms_result = send_booking_link_sms(
-                from_number=config.settings.twilio_from_number or "+18664766609",
+                from_number=config.settings.twilio_from_number or config.settings.twilio_business_number or "",
                 to_number=to_number,
                 booking_page_url=booking_page_url or "",
                 service_name=service_name,

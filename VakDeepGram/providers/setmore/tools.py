@@ -549,7 +549,7 @@ async def create_appointment(
     if to_number:
         try:
             from vakdeepgram import config as _config
-            sms_from = _config.settings.twilio_from_number or "+18664766609"
+            sms_from = _config.settings.twilio_from_number or _config.settings.twilio_business_number or ""
             sms_result = send_booking_link_sms(
                 from_number=sms_from,
                 to_number=to_number,

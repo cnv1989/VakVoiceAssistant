@@ -156,11 +156,16 @@ def verify_twilio_signature(request_url: str, params: dict, signature: str) -> b
     logger.debug(f"Signature header received: {signature}")
     logger.debug(f"Auth token configured: {bool(config.settings.twilio_auth_token)}")
     logger.debug(f"Auth token length: {len(config.settings.twilio_auth_token) if config.settings.twilio_auth_token else 0}")
-    
+
     if not config.settings.twilio_auth_token:
-        logger.warning("Twilio auth token not configured, skipping signature verification")
-        return True  # Allow connection if token not configured (for development)
-    
+        # Fail closed, not open: an unset token must not be indistinguishable
+        # from "verified". Callers gate on TWILIO_SIGNATURE_VERIFICATION_ENABLED
+        # (and, for the WS endpoint, environment) to decide whether to actually
+        # reject or just warn — that's the intended escape hatch for local dev,
+        # not a missing token silently defeating verification everywhere.
+        logger.error("TWILIO_AUTH_TOKEN is not configured — cannot verify Twilio signatures")
+        return False
+
     if not signature:
         logger.error("Missing X-Twilio-Signature header")
         return False
@@ -837,8 +842,9 @@ def verify_twilio_http_signature(request: Request, body: bytes) -> bool:
     logger.info("verify_twilio_http_signature called")
 
     if not config.settings.twilio_auth_token:
-        logger.warning("Twilio auth token not configured, skipping signature verification")
-        return True  # Allow in development
+        # Fail closed — see the matching comment in verify_twilio_signature above.
+        logger.error("TWILIO_AUTH_TOKEN is not configured — cannot verify Twilio signatures")
+        return False
 
     signature = request.headers.get("X-Twilio-Signature", "")
     if not signature:
