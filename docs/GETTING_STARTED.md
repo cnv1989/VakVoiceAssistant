@@ -1,7 +1,9 @@
 # Getting Started
 
 This walks through going from a fresh clone to talking with your voice
-agent in the browser, then (optionally) deploying it to AWS.
+agent in the browser, then (optionally) deploying it to AWS. Prefer a
+shorter, more visual walkthrough? See
+[TUTORIAL.md](./TUTORIAL.md) — "Your First Voice Agent in 10 Minutes."
 
 ## 1. Prerequisites
 
@@ -73,7 +75,9 @@ Open [http://localhost:5173](http://localhost:5173):
    appointment."*
 
 The transcript and the agent's replies appear in the **Conversation**
-panel as the call progresses.
+panel as the call progresses:
+
+![Vak's voice page mid-conversation, showing a message pair with the customer's question and the assistant's reply](./images/client-voice-conversation.png)
 
 ### Trying the chat interface
 
