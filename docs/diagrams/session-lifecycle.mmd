@@ -1,0 +1,6 @@
+stateDiagram-v2
+    [*] --> Connect
+    Connect --> Active: business context resolved
+    Active --> Active: tool calls, transcripts, TTS
+    Active --> Idle: call ends / WS closes
+    Idle --> [*]: TTL expiry (DynamoDB) or explicit cleanup

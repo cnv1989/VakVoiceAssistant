@@ -1,0 +1,19 @@
+flowchart LR
+    subgraph Clients
+        Browser["VakClient<br/>(browser)"]
+        Phone["Phone / Twilio"]
+    end
+
+    subgraph Backend["VakDeepGram"]
+        WS["FastAPI<br/>WebSocket + REST"]
+    end
+
+    Deepgram["Deepgram<br/>Voice Agent API<br/>(STT + LLM bridge + TTS)"]
+    LLM["Bedrock, Anthropic, or OpenAI<br/>(LLM_PROVIDER)"]
+    Providers["Square / Setmore<br/>(booking data)"]
+
+    Browser -- "WebSocket" --> WS
+    Phone -- "Media Stream" --> WS
+    WS <--> Deepgram
+    WS <--> LLM
+    WS <--> Providers

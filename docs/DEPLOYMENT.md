@@ -3,17 +3,7 @@
 This is a guided walkthrough. For the full context/env-var reference, see
 [VakInfra/README.md](../VakInfra/README.md).
 
-```mermaid
-flowchart TD
-    A["./vak deploy"] --> B["cdk bootstrap<br/>(one-time per account/region)"]
-    B --> C["Confirm — creates real<br/>AWS resources"]
-    C --> D["cdk deploy --all"]
-    D --> E["VakNetworkStack<br/>VPC + ECR repo"]
-    D --> F["VakAppStack<br/>ECS Fargate + ALB +<br/>DynamoDB + S3"]
-    D --> G["VakMonitoringStack<br/>Dashboards + alarms"]
-    F --> H["./deploy-to-ecr.sh<br/>(build + push image)"]
-    H --> I["aws ecs update-service<br/>--force-new-deployment"]
-```
+![Deploy flow: ./vak deploy runs cdk bootstrap, asks for confirmation, then cdk deploy --all across the network/app/monitoring stacks, followed by pushing the image and forcing an ECS deployment](./images/deploy-flow.png)
 
 ## Prerequisites
 

@@ -1,0 +1,7 @@
+flowchart LR
+    Mic["getUserMedia()"] --> Stream["MediaStream"]
+    Stream --> Ctx["AudioContext<br/>(48kHz)"]
+    Ctx --> Proc["ScriptProcessorNode<br/>Float32 → PCM16"]
+    Proc -- "binary WebSocket frames" --> WS["/ws"]
+    WS -- "base64 TTS audio" --> Queue["Playback queue<br/>(per messageId)"]
+    Queue --> Out["AudioContext<br/>playback (24kHz)"]

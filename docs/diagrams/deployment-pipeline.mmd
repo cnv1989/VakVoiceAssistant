@@ -1,0 +1,6 @@
+flowchart LR
+    Push["Push to main"] --> Infra["deploy-vak-infra.yml<br/>(if VakInfra/** changed)"]
+    Push --> App["deploy-vakdeepgram.yml<br/>(if VakDeepGram/** changed)"]
+    Infra --> CDK["cdk deploy --all"]
+    App --> Build["docker build + push to ECR"]
+    Build --> ECS["ecs update-service<br/>--force-new-deployment"]

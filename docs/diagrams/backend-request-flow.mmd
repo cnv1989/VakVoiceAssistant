@@ -1,0 +1,17 @@
+flowchart TD
+    subgraph FastAPI
+        WSEP["/ws — web client"]
+        Twilio["/twilio — phone media stream"]
+        Chat["/chat — REST"]
+    end
+
+    WSEP --> Handler["Deepgram handler<br/>session management"]
+    Twilio --> Handler
+    Handler <--> DGAgent["Deepgram Voice Agent<br/>wss://agent.deepgram.com"]
+
+    Chat --> Agent["Strands Agent<br/>(LLM_PROVIDER: bedrock/anthropic/openai)"]
+    DGAgent -. "function calls" .-> Tools["Agent tools"]
+    Agent --> Tools
+
+    Tools --> Providers["Provider factory<br/>(Square / Setmore)"]
+    Providers --> External["Square API / Setmore API"]

@@ -17,27 +17,7 @@ It ships as three parts that deploy independently but work as one system:
 Everything is driven by one interactive setup wizard — no manual `.env`
 editing required to get started.
 
-```mermaid
-flowchart LR
-    subgraph Clients
-        Browser["VakClient<br/>(browser)"]
-        Phone["Phone / Twilio"]
-    end
-
-    subgraph Backend["VakDeepGram"]
-        WS["FastAPI<br/>WebSocket + REST"]
-    end
-
-    Deepgram["Deepgram<br/>Voice Agent API<br/>(STT + LLM bridge + TTS)"]
-    Bedrock["AWS Bedrock<br/>(Claude)"]
-    Providers["Square / Setmore<br/>(booking data)"]
-
-    Browser -- "WebSocket" --> WS
-    Phone -- "Media Stream" --> WS
-    WS <--> Deepgram
-    WS <--> Bedrock
-    WS <--> Providers
-```
+![System overview: VakClient and phone/Twilio connect over WebSocket to VakDeepGram's FastAPI server, which talks to Deepgram, your chosen LLM provider, and Square/Setmore](./docs/images/system-overview.png)
 
 ## Quick start
 
@@ -57,6 +37,10 @@ Open [http://localhost:5173](http://localhost:5173), click **Connect**, then
 **Start Conversation** and talk to your agent. That's it — `./vak init`'s
 "local test mode" runs a mock business with no Square/Setmore account
 required, so you can hear it working in under two minutes.
+
+![Vak's voice page mid-conversation](./docs/images/client-voice-conversation.png)
+
+Full walkthrough with more screenshots: [docs/TUTORIAL.md](./docs/TUTORIAL.md).
 
 Run `./vak doctor` any time to check your environment, or `./vak help` to
 see all commands.
@@ -79,7 +63,8 @@ protection, and Cognito auth are all optional add-ons layered on top; see
 
 | Doc | What's in it |
 |---|---|
-| [docs/GETTING_STARTED.md](./docs/GETTING_STARTED.md) | Guided first run: `./vak init` → `./vak dev` → your first conversation |
+| [docs/TUTORIAL.md](./docs/TUTORIAL.md) | **Start here.** A short, screenshot-illustrated walkthrough to your first conversation |
+| [docs/GETTING_STARTED.md](./docs/GETTING_STARTED.md) | The same journey in more depth, with every wizard question explained |
 | [docs/CONFIGURATION.md](./docs/CONFIGURATION.md) | Full environment variable reference for all three components |
 | [docs/CUSTOMIZING_YOUR_AGENT.md](./docs/CUSTOMIZING_YOUR_AGENT.md) | Give the agent a business name, pick a vertical, or write your own persona |
 | [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) | Deploying to AWS, step by step |

@@ -1,0 +1,21 @@
+flowchart TD
+    subgraph NetworkStack["VakNetworkStack"]
+        VPC["VPC (2 AZs)"]
+        ECR["ECR repository"]
+    end
+
+    subgraph AppStack["VakAppStack"]
+        ECS["ECS Fargate service"]
+        ALB["Application Load Balancer"]
+        DDB["8 DynamoDB tables"]
+        S3["S3 artifacts bucket"]
+        WAF["WAF (optional)"]
+        Cognito["Cognito (optional)"]
+    end
+
+    subgraph MonitoringStack["VakMonitoringStack"]
+        Dash["CloudWatch dashboards"]
+        Alarms["Alarms + SNS"]
+    end
+
+    NetworkStack --> AppStack --> MonitoringStack

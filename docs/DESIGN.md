@@ -31,37 +31,7 @@ deploy in an afternoon.
 
 ## System overview
 
-```mermaid
-flowchart TB
-    subgraph Channels
-        Web["Browser<br/>(voice + chat)"]
-        Phone["Phone (Twilio)"]
-        SMS["SMS / WhatsApp"]
-    end
-
-    subgraph Vak["VakDeepGram"]
-        direction TB
-        Transport["Transport layer<br/>(WebSocket / REST / webhooks)"]
-        Context["Business context resolution<br/>(who is this? which provider?)"]
-        Agent["Strands Agent<br/>+ tool registry"]
-        Transport --> Context --> Agent
-    end
-
-    subgraph External
-        Deepgram["Deepgram<br/>(STT / TTS / LLM bridge)"]
-        LLM["Bedrock, Anthropic, or OpenAI<br/>(LLM_PROVIDER)"]
-        Square["Square"]
-        Setmore["Setmore"]
-    end
-
-    Web --> Transport
-    Phone --> Transport
-    SMS --> Transport
-    Agent <--> Deepgram
-    Agent <--> LLM
-    Agent --> Square
-    Agent --> Setmore
-```
+![System overview: browser, phone, and SMS/WhatsApp channels all flow through VakDeepGram's transport layer into business context resolution and a single Strands Agent, which talks to Deepgram, the configured LLM provider, and Square/Setmore](./images/design-system-overview.png)
 
 Every channel converges on the same context-resolution step and the same
 agent + tool registry — a booking made over the phone is visible to a

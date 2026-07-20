@@ -1,0 +1,5 @@
+flowchart LR
+    Client["VakClient<br/>(browser / Twilio)"] -- "WebSocket" --> API["FastAPI server<br/>(src/vakdeepgram/main.py)"]
+    API -- "STS WebSocket<br/>wss://agent.deepgram.com/v1/agent/converse" --> DG["Deepgram Voice Agent API<br/>STT → LLM → TTS"]
+    DG --> API
+    API -- "WebSocket" --> Client

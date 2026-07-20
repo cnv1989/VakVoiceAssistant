@@ -44,15 +44,7 @@ VakClient/src/
 
 ### Audio pipeline
 
-```mermaid
-flowchart LR
-    Mic["getUserMedia()"] --> Stream["MediaStream"]
-    Stream --> Ctx["AudioContext<br/>(48kHz)"]
-    Ctx --> Proc["ScriptProcessorNode<br/>Float32 → PCM16"]
-    Proc -- "binary WebSocket frames" --> WS["/ws"]
-    WS -- "base64 TTS audio" --> Queue["Playback queue<br/>(per messageId)"]
-    Queue --> Out["AudioContext<br/>playback (24kHz)"]
-```
+![Client audio pipeline: microphone through getUserMedia, MediaStream, AudioContext, PCM16 conversion, WebSocket frames out, and a per-message playback queue for TTS audio coming back](./images/client-audio-pipeline.png)
 
 The client captures raw PCM16 audio at 48kHz and streams it as binary
 WebSocket frames; the server resamples as needed. TTS audio comes back
@@ -117,25 +109,7 @@ VakDeepGram/
 
 ### Request flow
 
-```mermaid
-flowchart TD
-    subgraph FastAPI
-        WSEP["/ws — web client"]
-        Twilio["/twilio — phone media stream"]
-        Chat["/chat — REST"]
-    end
-
-    WSEP --> Handler["Deepgram handler<br/>session management"]
-    Twilio --> Handler
-    Handler <--> DGAgent["Deepgram Voice Agent<br/>wss://agent.deepgram.com"]
-
-    Chat --> Agent["Strands Agent<br/>(LLM_PROVIDER: bedrock/anthropic/openai)"]
-    DGAgent -. "function calls" .-> Tools["Agent tools"]
-    Agent --> Tools
-
-    Tools --> Providers["Provider factory<br/>(Square / Setmore)"]
-    Providers --> External["Square API / Setmore API"]
-```
+![Backend request flow: /ws and /twilio route to the Deepgram handler, which talks to the Deepgram Voice Agent; /chat routes to a Strands Agent; both reach the same agent tools, which go through a Square/Setmore provider factory](./images/backend-request-flow.png)
 
 ### Provider abstraction
 
@@ -179,42 +153,13 @@ import existing tables instead):
 
 ### Session lifecycle
 
-```mermaid
-stateDiagram-v2
-    [*] --> Connect
-    Connect --> Active: business context resolved
-    Active --> Active: tool calls, transcripts, TTS
-    Active --> Idle: call ends / WS closes
-    Idle --> [*]: TTL expiry (DynamoDB) or explicit cleanup
-```
+![Session lifecycle: Connect, then Active once business context resolves, looping on tool calls/transcripts/TTS, then Idle once the call ends, then cleaned up on TTL expiry](./images/session-lifecycle.png)
 
 ## VakInfra
 
 ### Stack hierarchy
 
-```mermaid
-flowchart TD
-    subgraph NetworkStack["VakNetworkStack"]
-        VPC["VPC (2 AZs)"]
-        ECR["ECR repository"]
-    end
-
-    subgraph AppStack["VakAppStack"]
-        ECS["ECS Fargate service"]
-        ALB["Application Load Balancer"]
-        DDB["8 DynamoDB tables"]
-        S3["S3 artifacts bucket"]
-        WAF["WAF (optional)"]
-        Cognito["Cognito (optional)"]
-    end
-
-    subgraph MonitoringStack["VakMonitoringStack"]
-        Dash["CloudWatch dashboards"]
-        Alarms["Alarms + SNS"]
-    end
-
-    NetworkStack --> AppStack --> MonitoringStack
-```
+![Stack hierarchy: VakNetworkStack (VPC, ECR) feeds VakAppStack (ECS Fargate, ALB, 8 DynamoDB tables, S3, optional WAF/Cognito), which feeds VakMonitoringStack (dashboards, alarms)](./images/infra-stack-hierarchy.png)
 
 One environment per deployment by default (`stage` defaults to
 `production`); run `cdk deploy` again with a different `-c stage=` /
@@ -224,14 +169,7 @@ reference.
 
 ### Deployment pipeline
 
-```mermaid
-flowchart LR
-    Push["Push to main"] --> Infra["deploy-vak-infra.yml<br/>(if VakInfra/** changed)"]
-    Push --> App["deploy-vakdeepgram.yml<br/>(if VakDeepGram/** changed)"]
-    Infra --> CDK["cdk deploy --all"]
-    App --> Build["docker build + push to ECR"]
-    Build --> ECS["ecs update-service<br/>--force-new-deployment"]
-```
+![Deployment pipeline: a push to main triggers deploy-vak-infra.yml (cdk deploy --all) and deploy-vakdeepgram.yml (docker build/push then ecs update-service) in parallel, gated by which paths changed](./images/deployment-pipeline.png)
 
 Both workflows are also runnable manually (`workflow_dispatch`) and via
 `./vak deploy` / `VakDeepGram/deploy-to-ecr.sh` locally.

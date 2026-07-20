@@ -289,13 +289,7 @@ API accepts (e.g. `cartesia`) — it's passed through generically using
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    Client["VakClient<br/>(browser / Twilio)"] -- "WebSocket" --> API["FastAPI server<br/>(src/vakdeepgram/main.py)"]
-    API -- "STS WebSocket<br/>wss://agent.deepgram.com/v1/agent/converse" --> DG["Deepgram Voice Agent API<br/>STT → LLM → TTS"]
-    DG --> API
-    API -- "WebSocket" --> Client
-```
+![VakDeepGram architecture: the client connects over WebSocket to the FastAPI server, which connects to the Deepgram Voice Agent API via an STS WebSocket for STT, LLM, and TTS](../docs/images/vakdeepgram-architecture.png)
 
 See [../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md) for the full
 system-level diagram and data model.
