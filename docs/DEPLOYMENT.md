@@ -94,7 +94,10 @@ including using a pre-existing certificate instead.
   at the ALB layer: `-c cognitoDomainPrefix=your-app-name`
 
 See [VakInfra/README.md](../VakInfra/README.md#configuration) for the full
-list.
+list. If you're connecting a real Twilio phone number, run `./vak twilio`
+after deploying and see [docs/TWILIO.md](./TWILIO.md) for the full
+security model (signature verification, credential handling, IP
+allowlisting).
 
 ## Redeploying after a code change
 

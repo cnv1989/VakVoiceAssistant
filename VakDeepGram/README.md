@@ -196,6 +196,11 @@ you're fronting Vak with your own authenticated business dashboard; set
 [../docs/CONFIGURATION.md](../docs/CONFIGURATION.md)). Without them, `/ws`
 and `/chat` fall back to the `CHAT_API_KEY` / local dev checks.
 
+See [../docs/TWILIO.md](../docs/TWILIO.md) for how to connect a real
+Twilio phone number (via `./vak twilio`) and the security model behind
+these endpoints — signature verification, credential handling, and
+optional IP allowlisting.
+
 ### Multi-Tenant SMS & Voice Routing
 
 Each business has a dedicated Twilio phone number stored in the

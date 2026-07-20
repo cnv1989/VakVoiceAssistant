@@ -68,6 +68,7 @@ protection, and Cognito auth are all optional add-ons layered on top; see
 | [docs/CONFIGURATION.md](./docs/CONFIGURATION.md) | Full environment variable reference for all three components |
 | [docs/CUSTOMIZING_YOUR_AGENT.md](./docs/CUSTOMIZING_YOUR_AGENT.md) | Give the agent a business name, pick a vertical, or write your own persona |
 | [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) | Deploying to AWS, step by step |
+| [docs/TWILIO.md](./docs/TWILIO.md) | Connecting a real phone number, and the security model behind it |
 | [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) | Module-level technical reference, with diagrams |
 | [docs/DESIGN.md](./docs/DESIGN.md) | System design and the reasoning behind it |
 | [docs/FAQ.md](./docs/FAQ.md) | Common problems and fixes |

@@ -88,9 +88,13 @@ just needs a branch in
 | `TWILIO_ACCOUNT_SID` | — | |
 | `TWILIO_AUTH_TOKEN` | — | Required for signature verification and sending SMS |
 | `TWILIO_SIGNATURE_VERIFICATION_ENABLED` | `true` | Set `false` only for local testing |
-| `TWILIO_FROM_NUMBER` | — | Outbound SMS sender (defaults to the business number) |
+| `TWILIO_FROM_NUMBER` | — | Outbound SMS sender (defaults to `TWILIO_BUSINESS_NUMBER`) |
 | `TWILIO_BUSINESS_NUMBER` | — | Inbound Twilio number |
 | `TWILIO_WHATSAPP_NUMBER` | Twilio sandbox number | |
+
+Once these are set, run `./vak twilio` to point a real Twilio phone number's
+Voice/SMS webhooks at this backend — see
+[docs/TWILIO.md](./TWILIO.md) for the full setup and security model.
 
 ### Providers, storage, and AWS
 
