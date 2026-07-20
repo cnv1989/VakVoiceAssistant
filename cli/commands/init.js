@@ -97,6 +97,7 @@ async function init() {
     twilio.accountSid = await text('Twilio Account SID');
     twilio.authToken = await password('Twilio Auth Token');
     twilio.fromNumber = await text('Twilio phone number (E.164, e.g. +15551234567)');
+    info('Run `./vak twilio` next to point that number\'s webhooks at this backend.');
   }
 
   // ── Write VakDeepGram/.env ────────────────────────────────────────────────
@@ -116,6 +117,7 @@ async function init() {
     deepgramEnv.TWILIO_ACCOUNT_SID = twilio.accountSid;
     deepgramEnv.TWILIO_AUTH_TOKEN = twilio.authToken;
     deepgramEnv.TWILIO_FROM_NUMBER = twilio.fromNumber;
+    deepgramEnv.TWILIO_BUSINESS_NUMBER = twilio.fromNumber;
   }
   upsertEnvFile(path.join(VAK_DEEPGRAM, '.env'), deepgramEnv);
   success(`Wrote ${path.relative(ROOT, path.join(VAK_DEEPGRAM, '.env'))}`);

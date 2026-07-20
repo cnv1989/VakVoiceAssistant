@@ -13,6 +13,8 @@ Commands:
             first run).
   deploy    Deploy VakInfra to AWS (prompts for confirmation before making
             changes).
+  twilio    Point a Twilio phone number's webhooks at this backend
+            (prompts for confirmation before changing anything).
   doctor    Check that your environment has everything Vak needs.
   help      Show this message.
 `;
@@ -27,6 +29,8 @@ async function main() {
       return require('./cli/commands/dev').dev(rest);
     case 'deploy':
       return require('./cli/commands/deploy').deploy(rest);
+    case 'twilio':
+      return require('./cli/commands/twilio').twilio(rest);
     case 'doctor':
       return require('./cli/commands/doctor').doctor(rest);
     case 'help':
