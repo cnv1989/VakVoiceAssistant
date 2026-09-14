@@ -5,7 +5,7 @@ Manual OAuth API smoke test for Integrin endpoints.
 Usage:
   cd VakDeepGram
   python -m scripts.tests.test_oauth_api --base-url http://localhost:8080 \
-    --token "$INTEGRIN_OAUTH_TOKEN" --business-number +15104054454
+    --token "$INTEGRIN_OAUTH_TOKEN" --business-number +15550001111
 """
 from __future__ import annotations
 

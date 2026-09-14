@@ -24,16 +24,16 @@ from providers.setmore.helpers import (
 
 
 def test_normalize_booking_url() -> None:
-    assert normalize_booking_url("themissionbarber") == "https://themissionbarber.setmore.com"
-    assert normalize_booking_url("themissionbarber.setmore.com") == "https://themissionbarber.setmore.com"
-    assert "https://themissionbarber.setmore.com" in normalize_booking_url("https://themissionbarber.setmore.com")
+    assert normalize_booking_url("examplebusiness") == "https://examplebusiness.setmore.com"
+    assert normalize_booking_url("examplebusiness.setmore.com") == "https://examplebusiness.setmore.com"
+    assert "https://examplebusiness.setmore.com" in normalize_booking_url("https://examplebusiness.setmore.com")
     assert normalize_booking_url("  ") == ""  # strip() then empty returns ""
 
 
 def test_build_booking_url() -> None:
     # Minimal: just base URL
-    url = build_booking_url("themissionbarber")
-    assert "themissionbarber.setmore.com" in url
+    url = build_booking_url("examplebusiness")
+    assert "examplebusiness.setmore.com" in url
     assert "/book" in url
     assert "step=user-details" in url
     assert "type=service" in url
@@ -41,13 +41,13 @@ def test_build_booking_url() -> None:
     # With service, staff, slot, customer
     start_dt = datetime(2026, 2, 17, 14, 0, 0, tzinfo=timezone.utc)  # 2 PM UTC
     url = build_booking_url(
-        "https://themissionbarber.setmore.com",
+        "https://examplebusiness.setmore.com",
         service_key="cab1c0ce-9195-4623-bf9a-890a21fce0f9",
         staff_key="e6e0f716-ae01-42ba-9452-caf3205ff7a1",
         start_dt=start_dt,
         customer_key="31a34811-4069-4835-9f08-7c48e0e1ab21",
     )
-    assert "themissionbarber.setmore.com" in url
+    assert "examplebusiness.setmore.com" in url
     assert "/book" in url
     assert "products=cab1c0ce" in url or "products=" in url
     assert "staff=e6e0f716" in url or "staff=" in url

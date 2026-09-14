@@ -23,7 +23,7 @@ async def main() -> int:
     from vakdeepgram.connection_store import resolve_business_context
     from providers.setmore.tools import create_appointment
 
-    business_number = "+15104054454"
+    business_number = "+15550001111"
     print("Resolving business context ...")
     ctx = await resolve_business_context(business_number)
     if not ctx.get("success"):
@@ -50,7 +50,7 @@ async def main() -> int:
             service_name = getattr(first_svc, "name", None) or getattr(first_svc, "item_data", {}).get("name", service_name)
 
     # Pass customer_id="" and phone so the tool creates the customer, then creates the appointment
-    ctx["caller"] = "+15105796565"
+    ctx["caller"] = "+15550002222"
     mock_tc = MockToolContext(ctx)
     print(f"Calling create_appointment (service={service_name}, date=2026-02-20T14:00:00, create customer from phone) ...")
     result = await create_appointment(
@@ -61,8 +61,8 @@ async def main() -> int:
         date="2026-02-20T14:00:00",
         service=service_name,
         staff_id=None,
-        phone_number="+15105796565",
-        caller_number="+15105796565",
+        phone_number="+15550002222",
+        caller_number="+15550002222",
     )
 
     if not result.get("success"):

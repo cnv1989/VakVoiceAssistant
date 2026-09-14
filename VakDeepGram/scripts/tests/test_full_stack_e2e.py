@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Full-stack integration test for business +15104054454.
+Full-stack integration test for business +15550001111.
 
 Coverage:
 1. Provider context + provider clients
@@ -44,7 +44,7 @@ from providers.clients import (
 from vakdeepgram.agent_functions import get_function_definitions_for_provider
 from utils.square_helpers import parse_square_response
 
-BUSINESS_NUMBER = "+15104054454"
+BUSINESS_NUMBER = "+15550001111"
 DEFAULT_BASE_URL = "http://localhost:8080"
 
 

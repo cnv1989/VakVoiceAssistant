@@ -29,7 +29,7 @@ SRC_DIR = os.path.join(ROOT_DIR, "src")
 sys.path.insert(0, ROOT_DIR)
 sys.path.insert(0, SRC_DIR)
 
-BUSINESS_NUMBER = "+15104054454"
+BUSINESS_NUMBER = "+15550001111"
 DEFAULT_BASE_URL = "http://localhost:8080"
 
 

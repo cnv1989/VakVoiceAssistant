@@ -2,7 +2,7 @@
 """
 Test script: Fetch available appointment slots for the next week.
 
-Resolves business context for +15104054454 (Mission Barber / Setmore), then
+Resolves business context for +15550001111 (Example Business / Setmore), then
 calls the Setmore slots API for each day of the next 7 days and prints
 available times per day.
 
@@ -25,7 +25,7 @@ SRC_DIR = os.path.join(ROOT_DIR, "src")
 sys.path.insert(0, ROOT_DIR)
 sys.path.insert(0, SRC_DIR)
 
-BUSINESS_NUMBER = "+15104054454"
+BUSINESS_NUMBER = "+15550001111"
 DEFAULT_DAYS = 7
 
 

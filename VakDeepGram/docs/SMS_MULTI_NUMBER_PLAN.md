@@ -11,7 +11,7 @@ Each Integrin customer (business) gets a dedicated Twilio phone number. That num
 | Inbound SMS routing | Working — `/twilio-chat` routes by `To` number |
 | Inbound voice routing | Working — `/twilio` WebSocket routes by `customParameters.businessNumber` |
 | Outbound SMS (booking links) | Working — `send_booking_link_sms()` via Twilio REST |
-| Number provisioning | **Hardcoded** single number `+15104054454` in `generateBusinessNumber` Lambda |
+| Number provisioning | **Hardcoded** single number `+15550001111` in `generateBusinessNumber` Lambda |
 | Webhook configuration | Manual — must be set per number in Twilio Console |
 | A2P compliance | Documented only — no automation |
 

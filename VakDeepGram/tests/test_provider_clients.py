@@ -13,7 +13,7 @@ async def test_token_resolver_setmore_prefers_dynamodb():
         new=AsyncMock(return_value={"success": True, "access_token": "sm-token-from-ddb"}),
     ):
         result = await ensure_provider_access_context(
-            business_context={"provider": "setmore", "business_number": "+15104054454"},
+            business_context={"provider": "setmore", "business_number": "+15550001111"},
         )
     assert result["success"] is True
     assert result["provider"] == "setmore"
@@ -34,7 +34,7 @@ async def test_token_resolver_square_rehydrates_context():
         ),
     ):
         result = await ensure_provider_access_context(
-            business_context={"provider": "square", "business_number": "+15104054454"},
+            business_context={"provider": "square", "business_number": "+15550001111"},
             require_location=True,
         )
     assert result["success"] is True

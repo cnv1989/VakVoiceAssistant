@@ -6,7 +6,7 @@ Usage:
   python -m scripts.tests.test_integrin_cognito_oauth \
     --username vak.oauth.test@tutzi.ai \
     --password 'VakTest1234!' \
-    --business-number +15104054454 \
+    --business-number +15550001111 \
     --base-url http://127.0.0.1:8080
 """
 from __future__ import annotations
@@ -109,7 +109,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--client-id", default=os.environ.get("INTEGRIN_USER_POOL_CLIENT_ID", DEFAULT_CLIENT_ID))
     parser.add_argument("--username", default=os.environ.get("INTEGRIN_TEST_USERNAME"), required=False)
     parser.add_argument("--password", default=os.environ.get("INTEGRIN_TEST_PASSWORD"), required=False)
-    parser.add_argument("--business-number", default="+15104054454")
+    parser.add_argument("--business-number", default="+15550001111")
     parser.add_argument("--customer-number", default="+15105550000")
     parser.add_argument("--message", default="Hi, what services are available this week?")
     parser.add_argument(

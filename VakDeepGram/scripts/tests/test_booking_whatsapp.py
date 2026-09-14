@@ -12,7 +12,7 @@ Twilio credentials are fetched from AWS Secrets Manager automatically:
 Usage:
   cd VakDeepGram
   python -m scripts.tests.test_booking_whatsapp
-  python -m scripts.tests.test_booking_whatsapp --customer-phone "+15105796565"
+  python -m scripts.tests.test_booking_whatsapp --customer-phone "+15550002222"
   python -m scripts.tests.test_booking_whatsapp --service "Regular Haircut"
 """
 from __future__ import annotations
@@ -29,8 +29,8 @@ sys.path.insert(0, ROOT_DIR)
 sys.path.insert(0, SRC_DIR)
 
 
-BUSINESS_NUMBER = "+15104054454"
-DEFAULT_CUSTOMER_PHONE = "+15105796565"
+BUSINESS_NUMBER = "+15550001111"
+DEFAULT_CUSTOMER_PHONE = "+15550002222"
 
 # Twilio Account SID (not sensitive, same value used in CDK stack)
 TWILIO_ACCOUNT_SID = "ACd00787e66384ec2d2ed3e262748525af"

@@ -30,7 +30,7 @@ sys.path.insert(0, SRC_DIR)
 from vakdeepgram.connection_store import get_setmore_access_token_from_dynamodb, resolve_business_context
 from utils import setmore_api
 
-# Default Setmore business number (Mission Barber)
+# Default Setmore business number (Example Business)
 DEFAULT_BUSINESS_NUMBER = "510 405 4454"
 
 

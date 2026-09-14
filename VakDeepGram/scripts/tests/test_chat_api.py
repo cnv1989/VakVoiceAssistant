@@ -2,8 +2,8 @@
 """
 Test the /chat API on localhost for a specific business and customer number.
 
-Business Number : +15104054454
-Customer Number : +15105796565
+Business Number : +15550001111
+Customer Number : +15550002222
 
 Modes:
   - Default (no flags): sends a preset sequence of messages.
@@ -34,8 +34,8 @@ sys.path.insert(0, SRC_DIR)
 import httpx
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
-BUSINESS_NUMBER = "+15104054454"
-CUSTOMER_NUMBER = "+15105796565"
+BUSINESS_NUMBER = "+15550001111"
+CUSTOMER_NUMBER = "+15550002222"
 DEFAULT_BASE_URL = "http://localhost:8080"
 
 # Preset conversation for the automated run
@@ -247,7 +247,7 @@ async def main(args: argparse.Namespace) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Test /chat API on localhost for business +15104054454",
+        description="Test /chat API on localhost for business +15550001111",
     )
     parser.add_argument(
         "--base-url",

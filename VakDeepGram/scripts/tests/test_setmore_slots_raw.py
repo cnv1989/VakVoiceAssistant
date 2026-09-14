@@ -28,7 +28,7 @@ from vakdeepgram import config
 from vakdeepgram.connection_store import resolve_business_context
 from providers.clients import ensure_provider_access_context
 
-BUSINESS_NUMBER = "+15104054454"
+BUSINESS_NUMBER = "+15550001111"
 
 
 async def main(selected_date_override: str | None = None) -> int:

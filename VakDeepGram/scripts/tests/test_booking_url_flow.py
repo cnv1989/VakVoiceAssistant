@@ -34,8 +34,8 @@ sys.path.insert(0, SRC_DIR)
 
 import httpx
 
-BUSINESS_NUMBER = "+15104054454"
-CUSTOMER_NUMBER = "+15105796565"
+BUSINESS_NUMBER = "+15550001111"
+CUSTOMER_NUMBER = "+15550002222"
 DEFAULT_BASE_URL = "http://localhost:8080"
 # Total test timeout (all messages). Single request still limited by httpx timeout.
 DEFAULT_TEST_TIMEOUT_SEC = 300  # 5 min
