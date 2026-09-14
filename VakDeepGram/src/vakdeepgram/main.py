@@ -495,7 +495,7 @@ def _get_chat_session_manager(session_id: str, actor_id: Optional[str] = None):
     Parameters
     ----------
     session_id : str
-        Session identifier (e.g. ``chat:+15104054454:+14155551234``).
+        Session identifier (e.g. ``chat:+15550001111:+14155551234``).
     actor_id : str, optional
         Actor identifier. Defaults to ``config.settings.agentcore_actor_id``.
     """
@@ -1212,6 +1212,12 @@ async def twilio_chat(request: Request):
                     sms_message.sid, business_number, customer_phone)
         emit_message_delivery("sms", True)
 
+    except HTTPException:
+        # Already a deliberate, well-described failure (e.g. missing credentials).
+        # Re-raise as-is instead of relabelling it a 502 "send failed", which
+        # reports a misconfiguration as an upstream Twilio outage.
+        emit_message_delivery("sms", False)
+        raise
     except Exception as sms_exc:
         logger.error("Failed to send SMS via Twilio: %s", sms_exc, exc_info=True)
         emit_message_delivery("sms", False)
@@ -1491,6 +1497,11 @@ async def whatsapp_chat(request: Request):
         )
         logger.info("Sent WhatsApp reply: sid=%s from=%s to=%s", wa_message.sid, wa_from, wa_to)
         emit_message_delivery("whatsapp", True)
+    except HTTPException:
+        # See the matching comment on the SMS path: don't relabel a deliberate
+        # failure (missing credentials) as a 502 send failure.
+        emit_message_delivery("whatsapp", False)
+        raise
     except Exception as wa_exc:
         logger.error("Failed to send WhatsApp reply: %s", wa_exc, exc_info=True)
         emit_message_delivery("whatsapp", False)

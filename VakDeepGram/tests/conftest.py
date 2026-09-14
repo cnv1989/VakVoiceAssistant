@@ -16,6 +16,23 @@ sys.path.insert(0, SRC_DIR)
 os.environ.setdefault("DEEPGRAM_API_KEY", "test-api-key")
 os.environ.setdefault("ENVIRONMENT", "development")
 
+# Some code paths (call records, context resolution) reach for DynamoDB even
+# when the behaviour under test is mocked, and swallow the resulting error. On
+# a machine with real AWS credentials in the environment that means the suite
+# can write junk rows into real tables — including Vak-CallRecord-production.
+# Force dummy credentials and a table namespace that cannot collide, so a test
+# run is never able to authenticate against a real account. Set unconditionally
+# rather than with setdefault: inheriting the developer's credentials is the
+# exact failure mode being prevented.
+os.environ["AWS_ACCESS_KEY_ID"] = "testing"
+os.environ["AWS_SECRET_ACCESS_KEY"] = "testing"
+os.environ["AWS_SESSION_TOKEN"] = "testing"
+os.environ["AWS_DEFAULT_REGION"] = "us-west-2"
+os.environ["AWS_REGION"] = "us-west-2"
+# Don't let botocore hunt for instance/container credentials either.
+os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
+os.environ.setdefault("CALL_RECORD_TABLE", "Vak-CallRecord-test")
+
 
 @pytest.fixture
 def mock_square_response_success():

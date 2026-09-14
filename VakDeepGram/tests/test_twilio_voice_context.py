@@ -37,7 +37,7 @@ def test_parse_twilio_start_event_custom_parameters_called_caller():
             "callSid": "CAxx",
             "tracks": ["inbound"],
             "customParameters": {
-                "Called": "+15104054454",
+                "Called": "+15550001111",
                 "Caller": "+15105551234",
                 "Service": "voice",
             },
@@ -45,7 +45,7 @@ def test_parse_twilio_start_event_custom_parameters_called_caller():
         "streamSid": "MZxx",
     }
     out = _parse_twilio_start_event(payload)
-    assert out["to_number"] == "+15104054454"
+    assert out["to_number"] == "+15550001111"
     assert out["from_number"] == "+15105551234"
     assert out["stream_sid"] == "MZxx"
     assert out["call_sid"] == "CAxx"
@@ -151,7 +151,7 @@ async def test_twilio_voice_start_resolves_business_context():
 
     from vakdeepgram.api.main import app
 
-    business_number = "+15104054454"
+    business_number = "+15550001111"
     caller_number = "+15105550000"
     stream_sid = f"MZ{uuid.uuid4().hex[:12]}"
     call_sid = f"CA{uuid.uuid4().hex[:8]}"
@@ -178,7 +178,16 @@ async def test_twilio_voice_start_resolves_business_context():
     captured_business_number = []
     captured_extra = []
 
-    async def fake_resolve(connection_id: str, business_number_arg: str, *, extra_context: dict | None = None):
+    # **kwargs, not an explicit list: this stands in for a service function that
+    # has grown keyword args over time (account_id, provider, location_id...).
+    # Pinning them here just makes the test fail on the next one added.
+    async def fake_resolve(
+        connection_id: str,
+        business_number_arg: str,
+        *,
+        extra_context: dict | None = None,
+        **kwargs,
+    ):
         captured_connection_id.append(connection_id)
         captured_business_number.append(business_number_arg)
         captured_extra.append(extra_context or {})
@@ -211,5 +220,5 @@ async def test_twilio_voice_start_resolves_business_context():
     extra = captured_extra[0]
     assert extra.get("caller") == caller_number
     assert extra.get("called") == business_number
-    assert extra.get("callSid") == call_sid
-    assert extra.get("accountSid") == account_sid
+    assert extra.get("call_sid") == call_sid
+    assert extra.get("account_sid") == account_sid

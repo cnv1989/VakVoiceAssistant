@@ -1697,16 +1697,20 @@ async def forward_call_to_location(connection_id: Optional[str]) -> Dict[str, An
         return {"success": False, "error": "Twilio auth token not configured."}
 
     context = get_connection_context_by_id(connection_id)
-    account_sid = context.get("accountSid")
-    call_sid = context.get("callSid")
+    # The Twilio start handler stores these snake_case (see _parse_twilio_start_event
+    # and the extra_context it builds), and connection contexts resolved from a
+    # provider go through to_snake_case(). Accept camelCase too so a context built
+    # by some other caller still forwards instead of silently failing.
+    account_sid = context.get("account_sid") or context.get("accountSid")
+    call_sid = context.get("call_sid") or context.get("callSid")
     location = context.get("location") or {}
-    voice_config = context.get("voice_config") or {}
+    voice_config = context.get("voice_config") or context.get("voiceConfig") or {}
 
     # Priority: voice_config.forwarding_number > location.phone_number
-    forwarding_number = (
-        voice_config.get("forwarding_number")
-        or location.get("phone_number")
+    configured_forwarding = (
+        voice_config.get("forwarding_number") or voice_config.get("forwardingNumber")
     )
+    forwarding_number = configured_forwarding or location.get("phone_number")
 
     if not account_sid or not call_sid:
         emit_forward_call_metrics(False)
@@ -1720,7 +1724,7 @@ async def forward_call_to_location(connection_id: Optional[str]) -> Dict[str, An
         "Forwarding call %s to %s (source=%s)",
         connection_id,
         normalized,
-        "voice_config" if voice_config.get("forwarding_number") else "location",
+        "voice_config" if configured_forwarding else "location",
     )
     client = TwilioClient(account_sid, config.settings.twilio_auth_token)
     try:

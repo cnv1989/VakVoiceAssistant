@@ -12,15 +12,29 @@ from vakdeepgram.main import app
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-BUSINESS_PHONE = "+15104054454"
+BUSINESS_PHONE = "+15550001111"
 CUSTOMER_PHONE = "+14155551234"
+
+
+@pytest.fixture
+def twilio_credentials(monkeypatch):
+    """Configure Twilio credentials for endpoints that send a reply.
+
+    /twilio-chat and /whatsapp-chat refuse to send without these and return an
+    error response, so any test asserting a 200 needs them set.
+    """
+    from vakdeepgram import config
+
+    monkeypatch.setattr(config.settings, "twilio_account_sid", "ACtestsid", raising=False)
+    monkeypatch.setattr(config.settings, "twilio_auth_token", "test-auth-token", raising=False)
+
 
 FAKE_BUSINESS_CONTEXT = {
     "success": True,
     "provider": "setmore",
     "phone_number": BUSINESS_PHONE,
     "location": {
-        "business_name": "Test Barber",
+        "business_name": "Test Business",
         "timezone": "America/Los_Angeles",
         "phone_number": BUSINESS_PHONE,
     },
@@ -119,7 +133,7 @@ async def test_chat_requires_business_number(monkeypatch):
 # ── /whatsapp-chat endpoint tests ───────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_whatsapp_chat_with_booking_link_lookup(monkeypatch):
+async def test_whatsapp_chat_with_booking_link_lookup(monkeypatch, twilio_credentials):
     """WhatsApp chat resolves business from UserBookingLink when To is the shared WA number."""
     monkeypatch.setattr("vakdeepgram.main.verify_twilio_http_signature", lambda req, body: True)
     monkeypatch.setattr("vakdeepgram.main.resolve_context_for_request", _fake_resolve_context)
@@ -177,7 +191,7 @@ async def test_whatsapp_chat_with_booking_link_lookup(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_whatsapp_chat_no_booking_link_falls_back(monkeypatch):
+async def test_whatsapp_chat_no_booking_link_falls_back(monkeypatch, twilio_credentials):
     """When no booking link found, falls back to WhatsApp number as business."""
     monkeypatch.setattr("vakdeepgram.main.verify_twilio_http_signature", lambda req, body: True)
     monkeypatch.setattr("vakdeepgram.main.resolve_context_for_request", _fake_resolve_context)

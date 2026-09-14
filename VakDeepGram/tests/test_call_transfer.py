@@ -4,6 +4,8 @@ Tests for call transfer and talk_to_owner functionality.
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
+from utils.case import to_snake_case
+
 
 @pytest.fixture
 def mock_voice_config_with_forwarding():
@@ -20,12 +22,19 @@ def mock_voice_config_with_forwarding():
 
 @pytest.fixture
 def mock_context_with_twilio(mock_connection_context, mock_voice_config_with_forwarding):
-    """Mock connection context with Twilio identifiers and voice config."""
+    """Connection context as the Twilio voice path actually stores it.
+
+    Keys are snake_case here on purpose: the /twilio start handler writes
+    account_sid/call_sid directly, and provider-resolved contexts are passed
+    through to_snake_case(). An earlier version of this fixture used camelCase,
+    which matched a camelCase read in forward_call_to_location and so hid the
+    fact that neither key was ever found on a real call.
+    """
     return {
         **mock_connection_context,
-        "accountSid": "AC123456789",
-        "callSid": "CA987654321",
-        "voiceConfig": mock_voice_config_with_forwarding,
+        "account_sid": "AC123456789",
+        "call_sid": "CA987654321",
+        "voice_config": to_snake_case(mock_voice_config_with_forwarding),
     }
 
 

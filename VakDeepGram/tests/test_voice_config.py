@@ -28,62 +28,105 @@ def mock_context_with_voice_config(mock_connection_context, mock_voice_config):
     }
 
 
+BUSINESS_NUMBER = "+15550001111"
+MERCHANT_ID = "MERCH123"
+LOCATION_ID = "LOC123"
+
+
+def _patch_dynamodb(get_item_return):
+    """Patch aioboto3 so connection_store reads `get_item_return` from any table.
+
+    Returns (context_manager, mock_table) — assert on mock_table.get_item to see
+    which key the code looked up.
+    """
+    mock_table = AsyncMock()
+    mock_table.get_item = AsyncMock(return_value=get_item_return)
+
+    mock_resource = AsyncMock()
+    mock_resource.Table = MagicMock(return_value=mock_table)
+
+    patcher = patch("vakdeepgram.connection_store.aioboto3.Session")
+    mock_session = patcher.start()
+    mock_session_instance = MagicMock()
+    mock_session_instance.resource = MagicMock(return_value=AsyncMock(
+        __aenter__=AsyncMock(return_value=mock_resource),
+        __aexit__=AsyncMock(return_value=None),
+    ))
+    mock_session.return_value = mock_session_instance
+    return patcher, mock_table
+
+
 class TestVoiceConfigFetch:
-    """Tests for voice config fetching from DynamoDB."""
+    """Tests for voice config fetching from DynamoDB.
+
+    Voice config has two sources: the BusinessNumber table (primary, keyed by
+    phone number, works for every provider) and the BusinessAutomations table
+    (Square-only fallback, keyed by merchantId+locationId).
+    """
 
     @pytest.mark.asyncio
-    async def test_fetch_voice_config_success(self, mock_voice_config):
-        """Voice config is fetched successfully from DynamoDB."""
+    async def test_fetch_voice_config_from_business_number(self, mock_voice_config):
+        """Primary source: BusinessNumber record carrying voice fields directly."""
         from vakdeepgram.connection_store import _fetch_voice_config
 
-        mock_table = AsyncMock()
-        mock_table.get_item = AsyncMock(return_value={
-            "Item": {
-                "merchantId": "MERCH123",
-                "locationId": "LOC123",
-                "voiceAiConfig": mock_voice_config,
-            }
-        })
+        patcher, mock_table = _patch_dynamodb({"Item": dict(mock_voice_config)})
+        try:
+            result = await _fetch_voice_config(BUSINESS_NUMBER)
+        finally:
+            patcher.stop()
 
-        mock_resource = AsyncMock()
-        mock_resource.Table = MagicMock(return_value=mock_table)
+        assert result is not None
+        assert result["voiceType"] == "charlotte"
+        assert result["voiceProvider"] == "eleven_labs"
+        mock_table.get_item.assert_awaited_once_with(Key={"phoneNumber": BUSINESS_NUMBER})
 
-        with patch("vakdeepgram.connection_store.aioboto3.Session") as mock_session:
-            mock_session_instance = MagicMock()
-            mock_session_instance.resource = MagicMock(return_value=AsyncMock(
-                __aenter__=AsyncMock(return_value=mock_resource),
-                __aexit__=AsyncMock(return_value=None),
-            ))
-            mock_session.return_value = mock_session_instance
+    @pytest.mark.asyncio
+    async def test_fetch_voice_config_falls_back_to_automations(self, mock_voice_config):
+        """No voiceType on the BusinessNumber record -> BusinessAutomations is tried."""
+        from vakdeepgram.connection_store import _fetch_voice_config
 
-            result = await _fetch_voice_config("MERCH123", "LOC123")
+        # Same stub serves both lookups: the first returns a record with no
+        # voiceType (so it is rejected), the second a voiceAiConfig blob.
+        patcher, mock_table = _patch_dynamodb(None)
+        mock_table.get_item = AsyncMock(side_effect=[
+            {"Item": {"phoneNumber": BUSINESS_NUMBER}},
+            {"Item": {"voiceAiConfig": dict(mock_voice_config)}},
+        ])
+        try:
+            result = await _fetch_voice_config(BUSINESS_NUMBER, MERCHANT_ID, LOCATION_ID)
+        finally:
+            patcher.stop()
 
-            assert result is not None
-            assert result["voiceType"] == "charlotte"
-            assert result["voiceProvider"] == "eleven_labs"
+        assert result is not None
+        assert result["voiceType"] == "charlotte"
+        assert mock_table.get_item.await_count == 2
 
     @pytest.mark.asyncio
     async def test_fetch_voice_config_not_found(self):
-        """Returns None when voice config not found."""
+        """Returns None when neither source has a config."""
         from vakdeepgram.connection_store import _fetch_voice_config
 
-        mock_table = AsyncMock()
-        mock_table.get_item = AsyncMock(return_value={"Item": None})
+        patcher, _ = _patch_dynamodb({"Item": None})
+        try:
+            result = await _fetch_voice_config(BUSINESS_NUMBER, MERCHANT_ID, LOCATION_ID)
+        finally:
+            patcher.stop()
 
-        mock_resource = AsyncMock()
-        mock_resource.Table = MagicMock(return_value=mock_table)
+        assert result is None
 
-        with patch("vakdeepgram.connection_store.aioboto3.Session") as mock_session:
-            mock_session_instance = MagicMock()
-            mock_session_instance.resource = MagicMock(return_value=AsyncMock(
-                __aenter__=AsyncMock(return_value=mock_resource),
-                __aexit__=AsyncMock(return_value=None),
-            ))
-            mock_session.return_value = mock_session_instance
+    @pytest.mark.asyncio
+    async def test_fetch_voice_config_no_fallback_without_square_ids(self):
+        """Without merchant/location ids there is nothing to fall back to."""
+        from vakdeepgram.connection_store import _fetch_voice_config
 
-            result = await _fetch_voice_config("MERCH123", "LOC123")
+        patcher, mock_table = _patch_dynamodb({"Item": {"phoneNumber": BUSINESS_NUMBER}})
+        try:
+            result = await _fetch_voice_config(BUSINESS_NUMBER)
+        finally:
+            patcher.stop()
 
-            assert result is None
+        assert result is None
+        assert mock_table.get_item.await_count == 1
 
 
 class TestVoiceSettingsApplied:
