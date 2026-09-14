@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { heading, success, warn, fail, info } = require('../lib/theme');
 const { commandExists, capture } = require('../lib/exec');
+const { readEnvFile } = require('../lib/env-file');
 const { ROOT } = require('../lib/paths');
 
 async function checkNode() {
@@ -76,22 +77,51 @@ async function checkCdk() {
   return true;
 }
 
+// A file that exists but is missing the keys the app needs is worse than a
+// missing one: `vak dev` starts and then fails at runtime. So check contents,
+// not just presence.
+const ENV_CHECKS = [
+  {
+    file: ['VakDeepGram', '.env'],
+    required: ['DEEPGRAM_API_KEY'],
+    // Keys that are required only when another key has a particular value.
+    conditional: [
+      { when: 'LLM_PROVIDER', equals: 'anthropic', require: 'ANTHROPIC_API_KEY' },
+      { when: 'LLM_PROVIDER', equals: 'openai', require: 'OPENAI_API_KEY' },
+      { when: 'TWILIO_ACCOUNT_SID', present: true, require: 'TWILIO_AUTH_TOKEN' },
+    ],
+  },
+  { file: ['VakClient', '.env'], required: ['VITE_WS_URL'] },
+];
+
 function checkEnvFiles() {
-  const files = [
-    path.join(ROOT, 'VakDeepGram', '.env'),
-    path.join(ROOT, 'VakClient', '.env'),
-  ];
-  let allPresent = true;
-  for (const file of files) {
+  let ok = true;
+  for (const check of ENV_CHECKS) {
+    const file = path.join(ROOT, ...check.file);
     const rel = path.relative(ROOT, file);
-    if (fs.existsSync(file)) {
-      success(`${rel} exists`);
-    } else {
+    if (!fs.existsSync(file)) {
       warn(`${rel} missing — run \`./vak init\` to create it`);
-      allPresent = false;
+      ok = false;
+      continue;
+    }
+
+    const env = readEnvFile(file);
+    const missing = (check.required || []).filter((key) => !env[key]);
+    for (const { when, equals, present, require: needed } of check.conditional || []) {
+      const triggered = present ? Boolean(env[when]) : env[when] === equals;
+      if (triggered && !env[needed]) {
+        missing.push(`${needed} (required because ${when}=${env[when]})`);
+      }
+    }
+
+    if (missing.length === 0) {
+      success(`${rel} looks complete`);
+    } else {
+      warn(`${rel} is missing: ${missing.join(', ')}`);
+      ok = false;
     }
   }
-  return allPresent;
+  return ok;
 }
 
 async function doctor() {
