@@ -2,7 +2,7 @@
 Configuration settings for VakDeepGram service
 """
 from enum import Enum
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 
 
@@ -32,10 +32,7 @@ class Settings(BaseSettings):
 
     # Deepgram Configuration
     deepgram_api_key: str
-    deepgram_project_id: Optional[str] = None
-    # Optional: If not provided, agent will be created dynamically via API
-    deepgram_agent_id: Optional[str] = None
-    
+
     # Twilio Configuration
     twilio_account_sid: Optional[str] = None  # Required for sending SMS via Twilio API
     twilio_auth_token: Optional[str] = None  # Required for signature verification and sending SMS
@@ -160,9 +157,15 @@ class Settings(BaseSettings):
     # providers/common/persona.py.
     deepgram_agent_greeting: Optional[str] = "Hi, how can I help you today?"
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        # Ignore rather than reject unrecognised keys. A .env carried over from
+        # an older version (or holding vars for another tool) must not crash the
+        # app at import time with a raw pydantic traceback — that failure mode
+        # is opaque and hits people during setup, when they can least debug it.
+        extra="ignore",
+    )
 
 
 settings = Settings()

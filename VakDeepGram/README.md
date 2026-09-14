@@ -40,7 +40,6 @@ Set the following environment variables in `.env`:
 ```bash
 # Required
 DEEPGRAM_API_KEY=your_api_key
-DEEPGRAM_PROJECT_ID=your_project_id
 
 # AI model for /chat and voice tool-calling (separate from Deepgram's own
 # STT/TTS). Options: bedrock (default, uses AWS credentials), anthropic, openai.
@@ -48,22 +47,17 @@ LLM_PROVIDER=bedrock
 # ANTHROPIC_API_KEY=   # if LLM_PROVIDER=anthropic
 # OPENAI_API_KEY=      # if LLM_PROVIDER=openai
 
-# Optional - Agent Configuration
-# If DEEPGRAM_AGENT_ID is not provided, a new agent will be created automatically
-# using the settings below. If provided, the pre-configured agent will be used.
-DEEPGRAM_AGENT_ID=your_agent_id  # Optional: Leave empty to create agent dynamically
-
 # Optional - Server Configuration
 HOST=0.0.0.0
 PORT=8080
-LOG_LEVEL=debug
+LOG_LEVEL=info
 
 # Optional - Voice Agent Configuration
 DEEPGRAM_AGENT_LANGUAGE=en
 DEEPGRAM_LISTENING_MODEL=flux-general-en
 DEEPGRAM_LISTENING_VERSION=v2
 DEEPGRAM_THINKING_PROVIDER=google
-DEEPGRAM_THINKING_MODEL=gemini-2.5-flash
+DEEPGRAM_THINKING_MODEL=gemini-2.0-flash
 
 # Speaking/TTS Configuration
 # "eleven_labs" (default) and "deepgram" are first-class; any other value
@@ -88,15 +82,14 @@ The system prompt itself isn't a raw env var — it's generated from
 `BUSINESS_NAME` / `BUSINESS_VERTICAL` (or a full `BUSINESS_ROLE_DESCRIPTION`
 override). See [../docs/CUSTOMIZING_YOUR_AGENT.md](../docs/CUSTOMIZING_YOUR_AGENT.md).
 
-**Note**: 
-- **Option 1 (Recommended)**: Leave `DEEPGRAM_AGENT_ID` empty or unset. The agent will be created automatically using the configuration settings below.
-- **Option 2**: Provide a pre-created `DEEPGRAM_AGENT_ID` from the Deepgram Console to use an existing agent.
-
-The agent configuration (listening model, thinking provider, speaking provider, prompt, etc.) is defined in the environment variables below and will be used when creating agents dynamically.
+**Note**: the Voice Agent is configured per-connection from these environment
+variables — there's no pre-created agent to register in the Deepgram Console.
+The listening/thinking/speaking settings above are sent in the `Settings`
+message when each session opens.
 
 **Default Configuration:**
 - **Listening**: Deepgram Flux (flux-general-en, v2)
-- **Thinking**: Google Gemini 2.5 Flash
+- **Thinking**: Google Gemini 2.0 Flash
 - **Speaking**: ElevenLabs (eleven_multilingual_v2) with voice ID `cgSgspJ2msm6clMCkdW9`
 - **Prompt**: Pre-configured virtual assistant prompt (see `config.py` for details)
 - **Greeting**: "Hello! How may I help you?"
