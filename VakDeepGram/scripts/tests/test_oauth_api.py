@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Manual OAuth API smoke test for Integrin endpoints.
+Manual OAuth API smoke test for the OAuth-protected endpoints.
 
 Usage:
   cd VakDeepGram
   python -m scripts.tests.test_oauth_api --base-url http://localhost:8080 \
-    --token "$INTEGRIN_OAUTH_TOKEN" --business-number +15550001111
+    --token "$VAK_OAUTH_TOKEN" --business-number +15550001111
 """
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ async def main(args: argparse.Namespace) -> int:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="OAuth endpoint smoke test")
     parser.add_argument("--base-url", default="http://localhost:8080")
-    parser.add_argument("--token", required=True, help="OAuth bearer token from Integrin app")
+    parser.add_argument("--token", required=True, help="OAuth bearer token from your companion app")
     parser.add_argument("--business-number", required=True)
     parser.add_argument("--customer-number", default="+15105550000")
     parser.add_argument("--message", default="Hi, what services do you offer?")

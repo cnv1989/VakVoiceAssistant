@@ -1,6 +1,6 @@
 # Multi-Number Twilio SMS & Voice Plan
 
-Each Integrin customer (business) gets a dedicated Twilio phone number. That number handles both **inbound SMS** (AI text chat) and **inbound voice calls** (AI voice agent), and is also used as the `from` number for **outbound SMS** (booking links, confirmations).
+Each customer (business) gets a dedicated Twilio phone number. That number handles both **inbound SMS** (AI text chat) and **inbound voice calls** (AI voice agent), and is also used as the `from` number for **outbound SMS** (booking links, confirmations).
 
 ---
 
@@ -194,7 +194,7 @@ await twilioClient.messaging.v1.services(service.sid)
 
 ---
 
-## Phase 5: Number Lifecycle Management (Integrin UI)
+## Phase 5: Number Lifecycle Management (companion app UI)
 
 ### BusinessNumber management UI (future)
 

@@ -146,7 +146,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--oauth-token",
-        default=os.environ.get("INTEGRIN_OAUTH_TOKEN"),
+        default=os.environ.get("VAK_OAUTH_TOKEN"),
         help="OAuth bearer token for /chat and /ws E2E (required for --with-e2e).",
     )
     parser.add_argument(

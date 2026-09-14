@@ -18,10 +18,9 @@ import { VakNetworkStack } from './vak-network-stack';
 
 /**
  * Table names to import instead of creating fresh ones — use this if you
- * already run a companion business-management app (e.g. the Integrin
- * dashboard) that owns these tables. Any field left unset gets a brand-new
- * table created by this stack, so a from-scratch deployment works with zero
- * external dependencies.
+ * already run a companion business-management app or dashboard that owns
+ * these tables. Any field left unset gets a brand-new table created by this
+ * stack, so a from-scratch deployment works with zero external dependencies.
  */
 export interface ExistingTableNames {
   squareAccount?: string;

@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """
-End-to-end OAuth smoke test using Integrin Cognito user pool credentials.
+End-to-end OAuth smoke test using Cognito user pool credentials.
+
+Needs a real Cognito user pool and a test user in it. Pass the pool details
+via --user-pool-id/--client-id (or COGNITO_USER_POOL_ID /
+COGNITO_USER_POOL_CLIENT_ID) and prefer the environment for the password.
 
 Usage:
-  python -m scripts.tests.test_integrin_cognito_oauth \
-    --username vak.oauth.test@tutzi.ai \
-    --password 'VakTest1234!' \
+  export COGNITO_USER_POOL_ID=us-west-2_xxxxxxxxx
+  export COGNITO_USER_POOL_CLIENT_ID=xxxxxxxxxxxxxxxxxxxxxxxxxx
+  export COGNITO_TEST_USERNAME='you@example.com'
+  export COGNITO_TEST_PASSWORD='...'
+  python -m scripts.tests.test_cognito_oauth \
     --business-number +15550001111 \
     --base-url http://127.0.0.1:8080
 """
@@ -28,9 +34,11 @@ sys.path.insert(0, ROOT_DIR)
 sys.path.insert(0, SRC_DIR)
 
 
-DEFAULT_POOL_ID = "us-west-2_9T0qoUbEe"
-DEFAULT_CLIENT_ID = "6mlpas326rc65o19q7mhj7bqq8"
-DEFAULT_REGION = "us-west-2"
+# No defaults for the pool/client: they identify one specific deployment, so
+# they have to come from your own environment or the command line.
+DEFAULT_POOL_ID = os.environ.get("COGNITO_USER_POOL_ID")
+DEFAULT_CLIENT_ID = os.environ.get("COGNITO_USER_POOL_CLIENT_ID")
+DEFAULT_REGION = os.environ.get("AWS_REGION", "us-west-2")
 
 
 def get_cognito_tokens(*, region: str, client_id: str, username: str, password: str) -> Dict[str, str]:
@@ -70,7 +78,7 @@ async def exercise_endpoints(
         "message": message,
         "business_number": business_number,
         "customer_number": customer_number,
-        "session_id": "integrin-cognito-oauth-smoke",
+        "session_id": "cognito-oauth-smoke",
     }
 
     async with httpx.AsyncClient(timeout=90) as client:
@@ -102,13 +110,13 @@ async def exercise_endpoints(
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="VakDeepGram OAuth E2E with Integrin Cognito credentials")
+    parser = argparse.ArgumentParser(description="VakDeepGram OAuth E2E with Cognito credentials")
     parser.add_argument("--base-url", default="http://127.0.0.1:8080")
-    parser.add_argument("--region", default=os.environ.get("INTEGRIN_AWS_REGION", DEFAULT_REGION))
-    parser.add_argument("--user-pool-id", default=os.environ.get("INTEGRIN_USER_POOL_ID", DEFAULT_POOL_ID))
-    parser.add_argument("--client-id", default=os.environ.get("INTEGRIN_USER_POOL_CLIENT_ID", DEFAULT_CLIENT_ID))
-    parser.add_argument("--username", default=os.environ.get("INTEGRIN_TEST_USERNAME"), required=False)
-    parser.add_argument("--password", default=os.environ.get("INTEGRIN_TEST_PASSWORD"), required=False)
+    parser.add_argument("--region", default=os.environ.get("AWS_REGION", DEFAULT_REGION))
+    parser.add_argument("--user-pool-id", default=os.environ.get("COGNITO_USER_POOL_ID", DEFAULT_POOL_ID))
+    parser.add_argument("--client-id", default=os.environ.get("COGNITO_USER_POOL_CLIENT_ID", DEFAULT_CLIENT_ID))
+    parser.add_argument("--username", default=os.environ.get("COGNITO_TEST_USERNAME"), required=False)
+    parser.add_argument("--password", default=os.environ.get("COGNITO_TEST_PASSWORD"), required=False)
     parser.add_argument("--business-number", default="+15550001111")
     parser.add_argument("--customer-number", default="+15105550000")
     parser.add_argument("--message", default="Hi, what services are available this week?")
@@ -128,7 +136,7 @@ def _parser() -> argparse.ArgumentParser:
 
 async def _main(args: argparse.Namespace) -> int:
     if not args.username or not args.password:
-        raise RuntimeError("Provide --username/--password or INTEGRIN_TEST_USERNAME/INTEGRIN_TEST_PASSWORD.")
+        raise RuntimeError("Provide --username/--password or COGNITO_TEST_USERNAME/COGNITO_TEST_PASSWORD.")
 
     tokens = get_cognito_tokens(
         region=args.region,

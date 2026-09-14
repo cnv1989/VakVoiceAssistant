@@ -730,7 +730,7 @@ async def voice_oauth_connect(
     request: Request,
     oauth_auth: dict = Depends(verify_oauth_auth),
 ):
-    """OAuth-protected voice connect endpoint for Integrin clients.
+    """OAuth-protected voice connect endpoint for an OAuth-authenticated companion app.
 
     Returns a browser voice websocket URL pre-populated with business info.
     """
@@ -804,7 +804,7 @@ async def chat_oauth(
     request: Request,
     oauth_auth: dict = Depends(verify_oauth_auth),
 ):
-    """OAuth-protected chat endpoint for Integrin clients."""
+    """OAuth-protected chat endpoint for an OAuth-authenticated companion app."""
     try:
         payload = await request.json()
     except Exception:
@@ -1864,7 +1864,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 try:
                     data = json.loads(message["text"])
                     # Client-initiated disconnect: stop listening immediately.
-                    # This is sent by Integrin when the user clicks "End Call".
+                    # This is sent by a companion app when the user clicks "End Call".
                     if data.get("type") == "disconnect":
                         reason = data.get("reason") or "user_ended_call"
                         logger.info(f"Client disconnect received for {connection_id} (reason={reason})")

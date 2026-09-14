@@ -2,7 +2,7 @@
 Async utility for writing per-call analytics records to DynamoDB.
 
 Records are written at the end of each call and contain key metrics
-that power the Integrin call analytics dashboard.
+that power a call analytics dashboard.
 """
 from __future__ import annotations
 

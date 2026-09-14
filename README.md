@@ -91,13 +91,14 @@ protection, and Cognito auth are all optional add-ons layered on top; see
 
 ```
 .
-├── vak                     # CLI entry point (./vak init | dev | deploy | doctor)
-├── cli/                    # CLI implementation
-├── VakClient/              # React + Vite frontend
+├── vak                      # CLI entry point (./vak init | dev | deploy | twilio | doctor)
+├── cli/                     # CLI implementation
+├── VakClient/               # React + Vite frontend
 ├── VakDeepGram/             # FastAPI voice agent backend
 ├── VakInfra/                # AWS CDK infrastructure
 ├── docs/                    # Guides, tutorials, architecture
-└── .github/workflows/       # CI/CD (deploy on push to main)
+├── scripts/                 # Repo maintenance (docs link checker)
+└── .github/workflows/       # CI on every PR, deploy on push to main
 ```
 
 ## Contributing

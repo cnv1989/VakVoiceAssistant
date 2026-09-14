@@ -36,7 +36,7 @@ async def test_voice_oauth_connect_success(monkeypatch):
             headers={
                 "Authorization": "Bearer valid-token",
                 "X-Forwarded-Proto": "https",
-                "X-Forwarded-Host": "integrin.example",
+                "X-Forwarded-Host": "companion.example",
             },
             json={
                 "business_number": "+15550001111",
@@ -49,7 +49,7 @@ async def test_voice_oauth_connect_success(monkeypatch):
     assert body["success"] is True
     assert body["oauth_subject"] == "user-123"
     assert body["websocket_url"].startswith(
-        "wss://integrin.example/ws?businessNumber=%2B15550001111&customerPhone=%2B15105550000"
+        "wss://companion.example/ws?businessNumber=%2B15550001111&customerPhone=%2B15105550000"
     )
     assert "access_token=valid-token" in body["websocket_url"]
     assert body["business_number"] == "+15550001111"
