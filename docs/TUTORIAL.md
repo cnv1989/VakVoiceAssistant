@@ -110,7 +110,7 @@ you're pointing the client at a deployed backend instead of localhost:
 - **Give it a name and a personality** — [CUSTOMIZING_YOUR_AGENT.md](./CUSTOMIZING_YOUR_AGENT.md)
   walks through picking a vertical preset or writing your own persona.
 - **Connect a real Square or Setmore account** instead of local test mode —
-  see [CONFIGURATION.md](./CONFIGURATION.md#connecting-a-real-square--setmore-account).
+  see [CONFIGURATION.md](./CONFIGURATION.md#connecting-a-real-square-or-setmore-account).
 - **Wire up phone calls, SMS, or WhatsApp** via Twilio — see
   [VakDeepGram/README.md](../VakDeepGram/README.md).
 - **Deploy to AWS** — `./vak deploy` and [DEPLOYMENT.md](./DEPLOYMENT.md).

@@ -41,7 +41,7 @@ gets a sensible default.
    uses a mock business (fake hours, services, and staff) so you can hear
    the agent working immediately, with no Square/Setmore account required.
    Connecting a real account is a separate step — see
-   [CONFIGURATION.md](./CONFIGURATION.md#connecting-a-real-square--setmore-account).
+   [CONFIGURATION.md](./CONFIGURATION.md#connecting-a-real-square-or-setmore-account).
 5. **Twilio** (optional) — skip this unless you're wiring up phone calls
    right now.
 6. **Web client** — the WebSocket URL VakClient should connect to (defaults

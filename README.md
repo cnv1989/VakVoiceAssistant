@@ -107,4 +107,4 @@ Issues and PRs welcome. See [AGENTS.md](./AGENTS.md) for repo conventions
 
 ## License
 
-ISC
+ISC — see [LICENSE](./LICENSE).

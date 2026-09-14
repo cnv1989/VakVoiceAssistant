@@ -9,7 +9,7 @@ tier is enough to try Vak.
 **Do I need a Square or Setmore account to try Vak?**
 No. `./vak init`'s "local test mode" runs a mock business (fake hours,
 services, and staff) so you can hear the full flow before connecting a real
-account. See [CONFIGURATION.md](./CONFIGURATION.md#connecting-a-real-square--setmore-account).
+account. See [CONFIGURATION.md](./CONFIGURATION.md#connecting-a-real-square-or-setmore-account).
 
 **`./vak dev` fails to create the Python virtual environment.**
 Make sure `python3 -m venv` works standalone (`python3 -m venv /tmp/test-venv`).
@@ -48,6 +48,16 @@ Common causes, roughly in order of likelihood:
 4. **Certificate doesn't cover your domain.** `openssl s_client -connect <your-domain>:443 -servername <your-domain> </dev/null 2>&1 | grep -E "Verify return code|CN="`.
 5. **DNS not pointing at the ALB.** `dig +short <your-domain>` should
    resolve to the ALB's IPs.
+
+To narrow it down quickly, open your deployed client and run this in the
+browser console — the close code tells you which of the above it is:
+
+```javascript
+const ws = new WebSocket('wss://your-domain.example.com/ws');
+ws.onopen = () => console.log('connected');
+ws.onclose = (e) => console.log('closed:', e.code, e.reason);
+ws.onerror = (e) => console.error('error:', e);
+```
 
 **Common WebSocket close codes:**
 

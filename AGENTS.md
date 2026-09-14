@@ -6,19 +6,19 @@
   - WebSocket signing logic: `src/ws-signer.ts`.
   - Styling lives in `src/*.css`.
 - `VakDeepGram/` is the FastAPI WebSocket server that connects to Deepgram Voice Agents.
-  - Entrypoint: `main.py`.
-  - Core behavior: `deepgram_handler.py`, `business_logic.py`, `agent_functions.py`, `store_tools.py`, `connection_store.py`.
+  - Entrypoint: `src/vakdeepgram/main.py` (`vakdeepgram.api.main:app` re-exports it for uvicorn).
+  - Core behavior: `deepgram_handler.py`, `business_logic.py`, `agent_functions.py`, `store_tools.py`, `connection_store.py` — all under `src/vakdeepgram/`.
   - Layers: `services/` (auth/business context), `repositories/` (connection context), `providers/clients/` (Square/Setmore APIs), `providers/setmore/`, `providers/square/` (tools, prompts).
-  - New package: `src/vakdeepgram/` (api, core, domain, providers, repositories, services, utils). See `VakDeepGram/docs/PROJECT_STRUCTURE.md`.
-  - Config: `config.py`, `.env.example`.
+  - Package layout: `src/vakdeepgram/` (api, core, domain, providers, repositories, services, utils). See `VakDeepGram/docs/PROJECT_STRUCTURE.md`.
+  - Config: `src/vakdeepgram/config.py`, `.env.example`.
   - Tests: `tests/` with `pytest` configuration in `pytest.ini`; `scripts/tests/` for API and full-stack scripts.
   - Manual client: `test_client.html`.
 - `VakInfra/` contains AWS CDK v2 stacks for networking and app deployment.
   - Entrypoint: `bin/vak-infra.ts`.
   - Stacks: `lib/vak-network-stack.ts`, `lib/vak-app-stack.ts`.
   - Deployment helpers and docs live alongside the stacks.
-- `cli/` implements the `./vak` CLI (`init`/`dev`/`deploy`/`doctor`) — the primary entry point for setup and local dev; see `docs/GETTING_STARTED.md`.
-- `docs/` has the full guide set (getting started, configuration, customizing the agent, deployment, architecture, design, FAQ). Root-level `CONNECT_INTEGRATION.md` and `DEBUG_WSS.md` cover specific integration/debugging deep-dives.
+- `cli/` implements the `./vak` CLI (`init`/`dev`/`deploy`/`twilio`/`doctor`) — the primary entry point for setup and local dev; see `docs/GETTING_STARTED.md`.
+- `docs/` has the full guide set (tutorial, getting started, configuration, customizing the agent, deployment, Twilio, architecture, design, FAQ), plus `docs/diagrams/` (Mermaid sources) and `docs/images/` (rendered diagrams and screenshots).
 
 ## Build, Test, and Development Commands
 - Quickest path: `./vak init` then `./vak dev` from the repo root (see `docs/GETTING_STARTED.md`).
@@ -45,8 +45,14 @@
 
 ## Testing Guidelines
 - `VakDeepGram` uses `pytest` with tests under `VakDeepGram/tests/`.
-  - Run with `cd VakDeepGram && pytest` after installing `requirements-dev.txt` if needed.
-- No automated tests are configured for `VakClient` or `VakInfra` yet.
+  - `cd VakDeepGram && pip install -r requirements-dev.txt` (this installs the
+    runtime pins too), then `PYTHONPATH=src pytest`.
+  - `tests/conftest.py` pins dummy AWS credentials so a run can't reach a real
+    account — don't override them in a test.
+  - `scripts/tests/` holds manual scripts that DO hit live APIs; they are not
+    collected by `pytest` and need real credentials.
+- No automated tests are configured for `VakClient` or `VakInfra` yet; CI
+  (`.github/workflows/ci.yml`) builds both and runs `cdk synth` as a smoke test.
 
 ## Commit & Pull Request Guidelines
 - Prefer short, capitalized, imperative commit messages (e.g., "Update websocket handling").
