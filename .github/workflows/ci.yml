@@ -1,0 +1,128 @@
+# Verifies the repo actually builds and passes its tests. Deploy workflows
+# (deploy-vak-infra.yml, deploy-vakdeepgram.yml) run separately on main.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: {}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: VakDeepGram (pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: VakDeepGram
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: VakDeepGram/requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Check for conflicting pins
+        run: pip check
+
+      - name: Run tests
+        env:
+          PYTHONPATH: src
+        run: pytest -q
+
+      - name: Import the ASGI app
+        # Catches import-time breakage (bad settings, circular imports) that
+        # unit tests can miss but that would crash the container on boot.
+        env:
+          PYTHONPATH: src
+          DEEPGRAM_API_KEY: ci-placeholder
+        run: python -c "from vakdeepgram.api.main import app; print(f'{len(app.routes)} routes')"
+
+  client:
+    name: VakClient (build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: VakClient
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: VakClient/package-lock.json
+      - run: npm ci
+      - name: Type-check and build
+        run: npm run build
+
+  infra:
+    name: VakInfra (synth)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: VakInfra
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: VakInfra/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - name: Synthesize CloudFormation
+        # No AWS credentials needed: synth is offline. Proves the stacks are
+        # valid before a deploy workflow tries them for real.
+        env:
+          DEEPGRAM_API_KEY: ci-placeholder
+        run: npx cdk synth --quiet
+
+  cli:
+    name: vak CLI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Syntax-check every command
+        run: |
+          node -c vak
+          for f in cli/commands/*.js cli/lib/*.js; do
+            echo "checking $f"
+            node -c "$f"
+          done
+
+      - name: vak help and doctor run
+        run: |
+          ./vak help
+          ./vak doctor
+
+      - name: vak init is scriptable end to end
+        # Piped answers exercise the non-TTY prompt path, then assert init
+        # actually wrote the keys the app needs.
+        run: |
+          printf 'CI Test Co\n\n\nci-deepgram-key\n\n\n\n\n\n' | ./vak init
+          grep -q '^DEEPGRAM_API_KEY=ci-deepgram-key$' VakDeepGram/.env
+          grep -q '^VITE_WS_URL=' VakClient/.env
+          ./vak doctor | grep -q 'looks complete'
+
+  docs:
+    name: Docs links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check relative links and heading anchors resolve
+        run: python3 scripts/check_docs_links.py
